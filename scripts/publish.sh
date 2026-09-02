@@ -1,0 +1,2 @@
+#!/bin/sh
+rabbitmqadmin -u austro -p austro publish exchange=amq.default routing_key=austro.events payload='{"event_id":"publish-test-002","event_type":"created","actor_type":"system","actor_id":"00000000-0000-0000-0000-000000000001","target_type":"workspace","target_id":"00000000-0000-0000-0000-000000000001","constitutional_principle":"Vision First","workspace_id":"11111111-1111-1111-1111-111111111111","outcome":"success"}'

@@ -1,0 +1,50 @@
+# Secrets and credentials
+.env
+.env.*
+!.env.example
+*.env
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.jks
+*.keystore
+credentials
+creds.json
+service-account*.json
+*.secret
+*.token
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+*.mdb
+
+# Go build artifacts
+/bin/
+*.exe
+*.dll
+*.test
+*.out
+vendor/
+
+# IDE / editor state
+.idea/
+.vscode/
+*.iml
+.agenix/
+.vscode-server/
+
+# Docker runtime artifacts
+docker-compose.override.yml
+*.log
+
+# OS / temp
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak
+.verify_reports/

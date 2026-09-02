@@ -1,0 +1,130 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg15
+    container_name: austro-postgres
+    environment:
+      - POSTGRES_DB=austro
+      - POSTGRES_USER=austro
+      - POSTGRES_PASSWORD=austro
+      - POSTGRES_INITDB_AUTHENTICATION=trust
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U austro -d austro"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - austro_net
+
+  redis:
+    image: redis:7-alpine
+    container_name: austro-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --save "" --appendonly no
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - austro_net
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: austro-rabbitmq
+    environment:
+      - RABBITMQ_DEFAULT_USER=austro
+      - RABBITMQ_DEFAULT_PASS=austro
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmqctl", "status"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - austro_net
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: austro-api
+    environment:
+      - AUSTRO_ENV=development
+      - AUSTRO_POSTGRES_DSN=postgres://austro:austro@postgres:5432/austro?sslmode=disable
+      - AUSTRO_REDIS_ADDR=redis:6379
+      - AUSTRO_RABBITMQ_URL=amqp://austro:austro@rabbitmq:5672
+      - AUSTRO_JWT_SECRET=austro-dev-jwt-secret-key-min-32-chars
+      - AUSTRO_JWT_REFRESH_SECRET=austro-dev-jwt-refresh-secret-min-32-chars
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - austro_net
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: austro-worker
+    command: /app/worker
+    environment:
+      - AUSTRO_ENV=development
+      - AUSTRO_POSTGRES_DSN=postgres://austro:austro@postgres:5432/austro?sslmode=disable
+      - AUSTRO_REDIS_ADDR=redis:6379
+      - AUSTRO_RABBITMQ_URL=amqp://austro:austro@rabbitmq:5672
+      - AUSTRO_JWT_SECRET=austro-dev-jwt-secret-key-min-32-chars
+      - AUSTRO_JWT_REFRESH_SECRET=austro-dev-jwt-refresh-secret-min-32-chars
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - austro_net
+
+  test:
+    image: golang:1.22-alpine
+    container_name: austro-test
+    working_dir: /app
+    command: >
+      sh -c "for i in 1 2 3 4 5; do go mod download && break || sleep 3; done && go test -v -count=1 -timeout 300s ./tests/..."
+    environment:
+      - GOPROXY=https://proxy.golang.org,direct
+      - AUSTRO_ENV=development
+      - AUSTRO_POSTGRES_DSN=postgres://austro:austro@postgres:5432/austro?sslmode=disable
+      - AUSTRO_REDIS_ADDR=redis:6379
+      - AUSTRO_RABBITMQ_URL=amqp://austro:austro@rabbitmq:5672
+      - AUSTRO_JWT_SECRET=austro-dev-jwt-secret-key-min-32-chars
+      - AUSTRO_JWT_REFRESH_SECRET=austro-dev-jwt-refresh-secret-min-32-chars
+      - AUSTRO_API_URL=http://api:8080
+    volumes:
+      - .:/app
+      - gomodcache:/root/go/pkg/mod
+    depends_on:
+      api:
+        condition: service_started
+    networks:
+      - austro_net
+
+volumes:
+  postgres_data:
+  gomodcache:
+
+networks:
+  austro_net:
+    driver: bridge

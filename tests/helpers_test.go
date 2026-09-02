@@ -1,0 +1,123 @@
+package austro_os_test
+
+import (
+	"database/sql"
+	"fmt"
+	"net/url"
+	"os"
+	"sync"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/redis/go-redis/v9"
+)
+
+// testEnv holds the connection destinations for the live infrastructure.
+// They default to the docker-compose network hostnames so that the suite runs
+// cleanly from a `test` service on the shared network, and can also be
+// overridden externally (e.g. localhost) when run from a host.
+type testEnv struct {
+	postgresDSN string
+	redisAddr   string
+	rabbitURL   string
+}
+
+func envOrDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func loadTestEnv() *testEnv {
+	return &testEnv{
+		postgresDSN: envOrDefault("AUSTRO_POSTGRES_DSN", "postgres://austro:austro@postgres:5432/austro?sslmode=disable"),
+		redisAddr:   envOrDefault("AUSTRO_REDIS_ADDR", "redis:6379"),
+		rabbitURL:   envOrDefault("AUSTRO_RABBITMQ_URL", "amqp://austro:austro@rabbitmq:5672"),
+	}
+}
+
+func (e *testEnv) AdminDB() (*sql.DB, error) {
+	return sql.Open("pgx", e.postgresDSN)
+}
+
+var (
+	envOnce sync.Once
+	env     *testEnv
+)
+
+func getEnv() *testEnv {
+	envOnce.Do(func() {
+		env = loadTestEnv()
+	})
+	return env
+}
+
+// Workspace identifiers used by the isolation tests.
+const (
+	workspaceA = "11111111-1111-1111-1111-111111111111"
+	workspaceB = "22222222-2222-2222-2222-222222222222"
+	workspaceARole = "workspace_a_user"
+	workspaceBRole = "workspace_b_user"
+)
+
+// ensureIsolationRoles idempotently provisions the two restricted database
+// roles and the workspace rows required by the isolation tests. It is called
+// only by the RLS test setup and runs as the admin (austro) role.
+func ensureIsolationRoles(db *sql.DB, nameA, nameB string) error {
+	for _, ws := range []struct {
+		id   string
+		name string
+	}{
+		{workspaceA, nameA},
+		{workspaceB, nameB},
+	} {
+		var exists bool
+		if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM workspaces WHERE id=$1)`, ws.id).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			if _, err := db.Exec(`INSERT INTO workspaces (id, name) VALUES ($1, $2)`, ws.id, ws.name); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Restricted roles: only SELECT/DML on rows their own RLS policy exposes.
+	for _, role := range []string{workspaceARole, workspaceBRole} {
+		var roleExists bool
+		if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname=$1)`, role).Scan(&roleExists); err != nil {
+			return err
+		}
+		if !roleExists {
+			if _, err := db.Exec(fmt.Sprintf(`CREATE ROLE %s LOGIN PASSWORD 'test-password'`, role)); err != nil {
+				return err
+			}
+		}
+		// Always (re)set the password so a pre-existing role from an earlier
+		// provisioned DB still authenticates as the fixed test principal.
+		if _, err := db.Exec(fmt.Sprintf(`ALTER ROLE %s WITH LOGIN PASSWORD 'test-password'`, role)); err != nil {
+			return err
+		}
+	}
+	if _, err := db.Exec(`GRANT SELECT, INSERT, UPDATE, DELETE ON workspaces, departments, teams, ai_employees, memory_embeddings TO ` + workspaceARole + `, ` + workspaceBRole); err != nil {
+		return err
+	}
+	return nil
+}
+
+// connectAs dials PostgreSQL as a specific role, used to exercise the RLS
+// boundary from the perspective of that restricted principal. Only the role
+// (and its fixed test password) is changed; host/port/db are preserved.
+func connectAs(dsn, role string) (*sql.DB, error) {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return nil, err
+	}
+	u.User = url.UserPassword(role, "test-password")
+	return sql.Open("pgx", u.String())
+}
+
+// redisClient returns a redis client bound to the live Redis instance.
+func redisClient() *redis.Client {
+	return redis.NewClient(&redis.Options{Addr: getEnv().redisAddr})
+}
