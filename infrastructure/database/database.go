@@ -142,6 +142,20 @@ func createTables(db *sql.DB) {
 	CREATE INDEX IF NOT EXISTS idx_tasks_workspace ON tasks(workspace_id);
 	CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 	CREATE INDEX IF NOT EXISTS idx_tasks_workspace_status ON tasks(workspace_id, status);
+
+	CREATE TABLE IF NOT EXISTS knowledge_documents (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+		kind TEXT NOT NULL,
+		title TEXT NOT NULL,
+		content TEXT NOT NULL,
+		embedding vector(10),
+		created_at TIMESTAMP DEFAULT NOW(),
+		updated_at TIMESTAMP DEFAULT NOW()
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_knowledge_workspace ON knowledge_documents(workspace_id);
+	CREATE INDEX IF NOT EXISTS idx_knowledge_kind ON knowledge_documents(workspace_id, kind);
 `
 	_, err := db.Exec(schema)
 	if err != nil {
@@ -151,7 +165,7 @@ func createTables(db *sql.DB) {
 }
 
 func enableRLS(db *sql.DB) {
-	tables := []string{"workspaces", "departments", "teams", "ai_employees", "ceos", "tasks"}
+	tables := []string{"workspaces", "departments", "teams", "ai_employees", "ceos", "tasks", "knowledge_documents"}
 	for _, table := range tables {
 		_, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ENABLE ROW LEVEL SECURITY", table))
 		if err != nil {
@@ -203,6 +217,12 @@ func setupRLSPolicies(db *sql.DB) {
 		-- Tasks: direct match on workspace_id column
 		IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'workspace_isolation_policy' AND polrelid = 'tasks'::regclass) THEN
 			EXECUTE 'CREATE POLICY workspace_isolation_policy ON tasks
+				USING (workspace_id = current_setting(''app.current_workspace'', true)::UUID)';
+		END IF;
+
+		-- Knowledge documents: direct match on workspace_id column
+		IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'workspace_isolation_policy' AND polrelid = 'knowledge_documents'::regclass) THEN
+			EXECUTE 'CREATE POLICY workspace_isolation_policy ON knowledge_documents
 				USING (workspace_id = current_setting(''app.current_workspace'', true)::UUID)';
 		END IF;
 	END$$;
