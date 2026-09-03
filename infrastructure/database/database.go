@@ -178,6 +178,22 @@ func createTables(db *sql.DB) {
 
 	CREATE INDEX IF NOT EXISTS idx_publications_workspace ON publications(workspace_id);
 	CREATE INDEX IF NOT EXISTS idx_publications_status ON publications(workspace_id, status);
+
+	CREATE TABLE IF NOT EXISTS pipelines (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+		goal_id UUID,
+		stage TEXT NOT NULL,
+		status TEXT NOT NULL,
+		task_id UUID,
+		publication_id UUID,
+		trace_id TEXT,
+		created_at TIMESTAMP DEFAULT NOW(),
+		updated_at TIMESTAMP DEFAULT NOW()
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_pipelines_workspace ON pipelines(workspace_id);
+	CREATE INDEX IF NOT EXISTS idx_pipelines_status ON pipelines(workspace_id, status);
 `
 	_, err := db.Exec(schema)
 	if err != nil {
@@ -187,7 +203,7 @@ func createTables(db *sql.DB) {
 }
 
 func enableRLS(db *sql.DB) {
-	tables := []string{"workspaces", "departments", "teams", "ai_employees", "ceos", "tasks", "knowledge_documents", "publications"}
+	tables := []string{"workspaces", "departments", "teams", "ai_employees", "ceos", "tasks", "knowledge_documents", "publications", "pipelines"}
 	for _, table := range tables {
 		_, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ENABLE ROW LEVEL SECURITY", table))
 		if err != nil {
@@ -251,6 +267,12 @@ func setupRLSPolicies(db *sql.DB) {
 		-- Publications: direct match on workspace_id column
 		IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'workspace_isolation_policy' AND polrelid = 'publications'::regclass) THEN
 			EXECUTE 'CREATE POLICY workspace_isolation_policy ON publications
+				USING (workspace_id = current_setting(''app.current_workspace'', true)::UUID)';
+		END IF;
+
+		-- Pipelines: direct match on workspace_id column
+		IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'workspace_isolation_policy' AND polrelid = 'pipelines'::regclass) THEN
+			EXECUTE 'CREATE POLICY workspace_isolation_policy ON pipelines
 				USING (workspace_id = current_setting(''app.current_workspace'', true)::UUID)';
 		END IF;
 	END$$;
