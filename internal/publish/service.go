@@ -7,6 +7,7 @@ import (
 	"time"
 
 	logger "austro-os/internal/log"
+	"austro-os/internal/security"
 	"github.com/google/uuid"
 )
 
@@ -177,7 +178,11 @@ func (s *Service) Publish(ctx context.Context, workspaceID, id uuid.UUID, humanA
 	p.PublishedAt = &now
 	updated, err := s.apply(ctx, workspaceID, p, StatusPublished, "human", humanActor)
 	if updated != nil {
-		log(workspaceID, "publication-delivered").With("publication_id", updated.ID).With("platform", updated.Platform).With("ref", ref).Log()
+		// Minimal disclosure: never emit a raw external/platform reference;
+		// emit an irreversible digest on the record and a redacted value in logs.
+		digest, _ := security.NewExternalIDHasher([]byte("publish")).Hash(ref)
+		log(workspaceID, "publication-delivered").With("publication_id", updated.ID).
+			With("platform", updated.Platform).With("ref", security.RedactSecret(ref)).With("ref_digest", digest).Log()
 	}
 	return updated, err
 }
