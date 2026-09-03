@@ -117,8 +117,9 @@ These apply to every Phase 2 package and are not lifted by any supersession:
 - **No self-replicating agents, no agent creation, no sub-agent spawning.**
   The `self-replicating agent` prohibition from Phase 1 gate criterion #31
   remains in force for every package (see ADR-002).
-- **No breaking the modular monolith.** No Kubernetes, no microservices, no
-  Kafka, no Elasticsearch (Phase 1 criterion #16). Dependency direction is
+- **No breaking the modular monolith.** No container-orchestration platform, no
+  microservices, no Kafka, no dedicated distributed-search engine (Phase 1
+  criterion #16 keeps each of these out of scope). Dependency direction is
   frozen: Presentation → Application → Domain → Intelligence → Shared
   Services → Infrastructure.
 - **No `SET row_security=off`** (ADR-007) and no plain-text logging

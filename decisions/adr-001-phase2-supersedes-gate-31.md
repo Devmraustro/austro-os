@@ -43,7 +43,8 @@ Implementation):
 - Keeps the Phase 1 gate honest: it never implied content automation is
   permanently forbidden — it deferred it to a later phase.
 - The modular-monolith / technology constraints (criterion #16) are **not**
-  superseded and remain global (no K8s/microservices/Kafka/ES).
+  superseded and remain global (no orchestration platform/microservices/Kafka/
+  dedicated search engine).
 
 ## Consequences
 

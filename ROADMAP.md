@@ -64,8 +64,9 @@ workflow**) to bound scope and to make exit criterion #1 objectively testable.
 
 ### 2.2 MUST NOT implement (FROZEN)
 
-- **No breaking the modular monolith.** No Kubernetes, no microservices, no
-  Kafka, no Elasticsearch (Phase 1 gate criterion #16). Dependency direction is
+- **No breaking the modular monolith.** No container-orchestration platform, no
+  microservices, no Kafka, no dedicated distributed-search engine (Phase 1 gate
+  criterion #16 keeps each of these out of scope). Dependency direction is
   frozen: Presentation → Application → Domain → Intelligence → Shared Services
   → Infrastructure (`.github/workflows/phase1-exit-criteria.yml`).
 - **No self-replicating or unscoped autonomous agents.** Agents execute assigned
@@ -282,7 +283,8 @@ across async steps (P13).
 7. **Security**: no secrets in logs; `SET row_security=off` prohibited across new
    code; `CREATE POLICY` present for every new table (ADR-007).
 8. **Migration safety**: 100% Phase 1 regression — all 33 Phase 1 criteria and all
-   61 Phase 1 tests still PASS; monolith preserved (no K8s/microservices/Kafka/ES).
+   61 Phase 1 tests still PASS; monolith preserved (no orchestration
+   platform/microservices/Kafka/dedicated search engine).
 9. **Documentation**: ROADMAP (this doc) and architecture docs populated; each exit
    criterion traceable to a doc.
 10. **No premature later-phase features**: marketplace, plugin ecosystem,
