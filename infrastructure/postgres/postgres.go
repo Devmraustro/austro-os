@@ -54,6 +54,8 @@ func enableRLSPolicies(db *sql.DB) {
 				USING (department_workspace_id = current_setting('app.current_workspace', true));
 			CREATE POLICY workspace_isolation_policy ON ai_employees
 				USING (team_department_workspace_id = current_setting('app.current_workspace', true));
+			CREATE POLICY workspace_isolation_policy ON tasks
+				USING (workspace_id = current_setting('app.current_workspace', true));
 		END IF;
 	END$$;`)
 	if err != nil {
@@ -161,6 +163,24 @@ func createTables(db *sql.DB) {
 	CREATE INDEX IF NOT EXISTS idx_audit_events_actor ON audit_events(actor_type, actor_id);
 	CREATE INDEX IF NOT EXISTS idx_audit_events_timestamp ON audit_events(timestamp);
 	CREATE INDEX IF NOT EXISTS idx_audit_events_constitutional ON audit_events(constitutional_principle);
+
+	CREATE TABLE IF NOT EXISTS tasks (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+		title TEXT NOT NULL,
+		description TEXT,
+		status TEXT NOT NULL DEFAULT 'backlog',
+		priority TEXT NOT NULL DEFAULT 'normal',
+		assignee_type TEXT NOT NULL DEFAULT 'ai_employee',
+		assignee_id UUID,
+		deadline TIMESTAMP,
+		created_at TIMESTAMP DEFAULT NOW(),
+		updated_at TIMESTAMP DEFAULT NOW()
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_tasks_workspace ON tasks(workspace_id);
+	CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+	CREATE INDEX IF NOT EXISTS idx_tasks_workspace_status ON tasks(workspace_id, status);
 	`
 	_, err := db.Exec(schema)
 	if err != nil {

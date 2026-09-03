@@ -124,6 +124,24 @@ func createTables(db *sql.DB) {
 	CREATE INDEX IF NOT EXISTS idx_audit_events_actor ON audit_events(actor_type, actor_id);
 	CREATE INDEX IF NOT EXISTS idx_audit_events_timestamp ON audit_events(timestamp);
 	CREATE INDEX IF NOT EXISTS idx_audit_events_constitutional ON audit_events(constitutional_principle);
+
+	CREATE TABLE IF NOT EXISTS tasks (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+		title TEXT NOT NULL,
+		description TEXT,
+		status TEXT NOT NULL DEFAULT 'backlog',
+		priority TEXT NOT NULL DEFAULT 'normal',
+		assignee_type TEXT NOT NULL DEFAULT 'ai_employee',
+		assignee_id UUID,
+		deadline TIMESTAMP,
+		created_at TIMESTAMP DEFAULT NOW(),
+		updated_at TIMESTAMP DEFAULT NOW()
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_tasks_workspace ON tasks(workspace_id);
+	CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+	CREATE INDEX IF NOT EXISTS idx_tasks_workspace_status ON tasks(workspace_id, status);
 `
 	_, err := db.Exec(schema)
 	if err != nil {
@@ -133,7 +151,7 @@ func createTables(db *sql.DB) {
 }
 
 func enableRLS(db *sql.DB) {
-	tables := []string{"workspaces", "departments", "teams", "ai_employees", "ceos"}
+	tables := []string{"workspaces", "departments", "teams", "ai_employees", "ceos", "tasks"}
 	for _, table := range tables {
 		_, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ENABLE ROW LEVEL SECURITY", table))
 		if err != nil {
@@ -180,6 +198,12 @@ func setupRLSPolicies(db *sql.DB) {
 		IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'workspace_isolation_policy' AND polrelid = 'ai_employees'::regclass) THEN
 			EXECUTE 'CREATE POLICY workspace_isolation_policy ON ai_employees
 				USING (team_id IN (SELECT t.id FROM teams t JOIN departments d ON t.department_id = d.id WHERE d.workspace_id = current_setting(''app.current_workspace'', true)::UUID))';
+		END IF;
+
+		-- Tasks: direct match on workspace_id column
+		IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'workspace_isolation_policy' AND polrelid = 'tasks'::regclass) THEN
+			EXECUTE 'CREATE POLICY workspace_isolation_policy ON tasks
+				USING (workspace_id = current_setting(''app.current_workspace'', true)::UUID)';
 		END IF;
 	END$$;
 	`
