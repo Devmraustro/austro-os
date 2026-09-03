@@ -58,6 +58,8 @@ func enableRLSPolicies(db *sql.DB) {
 				USING (workspace_id = current_setting('app.current_workspace', true));
 			CREATE POLICY workspace_isolation_policy ON knowledge_documents
 				USING (workspace_id = current_setting('app.current_workspace', true));
+			CREATE POLICY workspace_isolation_policy ON publications
+				USING (workspace_id = current_setting('app.current_workspace', true));
 		END IF;
 	END$$;`)
 	if err != nil {
@@ -197,6 +199,28 @@ func createTables(db *sql.DB) {
 
 	CREATE INDEX IF NOT EXISTS idx_knowledge_workspace ON knowledge_documents(workspace_id);
 	CREATE INDEX IF NOT EXISTS idx_knowledge_kind ON knowledge_documents(workspace_id, kind);
+
+	CREATE TABLE IF NOT EXISTS publications (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+		goal_id UUID,
+		task_id UUID,
+		title TEXT NOT NULL,
+		body TEXT NOT NULL,
+		platform TEXT NOT NULL,
+		status TEXT NOT NULL,
+		content_hash TEXT NOT NULL,
+		approved_by TEXT,
+		approved_at TIMESTAMP,
+		rejected_by TEXT,
+		rejected_at TIMESTAMP,
+		published_at TIMESTAMP,
+		created_at TIMESTAMP DEFAULT NOW(),
+		updated_at TIMESTAMP DEFAULT NOW()
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_publications_workspace ON publications(workspace_id);
+	CREATE INDEX IF NOT EXISTS idx_publications_status ON publications(workspace_id, status);
 	`
 	_, err := db.Exec(schema)
 	if err != nil {

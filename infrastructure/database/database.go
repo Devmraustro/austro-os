@@ -156,6 +156,28 @@ func createTables(db *sql.DB) {
 
 	CREATE INDEX IF NOT EXISTS idx_knowledge_workspace ON knowledge_documents(workspace_id);
 	CREATE INDEX IF NOT EXISTS idx_knowledge_kind ON knowledge_documents(workspace_id, kind);
+
+	CREATE TABLE IF NOT EXISTS publications (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+		goal_id UUID,
+		task_id UUID,
+		title TEXT NOT NULL,
+		body TEXT NOT NULL,
+		platform TEXT NOT NULL,
+		status TEXT NOT NULL,
+		content_hash TEXT NOT NULL,
+		approved_by TEXT,
+		approved_at TIMESTAMP,
+		rejected_by TEXT,
+		rejected_at TIMESTAMP,
+		published_at TIMESTAMP,
+		created_at TIMESTAMP DEFAULT NOW(),
+		updated_at TIMESTAMP DEFAULT NOW()
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_publications_workspace ON publications(workspace_id);
+	CREATE INDEX IF NOT EXISTS idx_publications_status ON publications(workspace_id, status);
 `
 	_, err := db.Exec(schema)
 	if err != nil {
@@ -165,7 +187,7 @@ func createTables(db *sql.DB) {
 }
 
 func enableRLS(db *sql.DB) {
-	tables := []string{"workspaces", "departments", "teams", "ai_employees", "ceos", "tasks", "knowledge_documents"}
+	tables := []string{"workspaces", "departments", "teams", "ai_employees", "ceos", "tasks", "knowledge_documents", "publications"}
 	for _, table := range tables {
 		_, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ENABLE ROW LEVEL SECURITY", table))
 		if err != nil {
@@ -223,6 +245,12 @@ func setupRLSPolicies(db *sql.DB) {
 		-- Knowledge documents: direct match on workspace_id column
 		IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'workspace_isolation_policy' AND polrelid = 'knowledge_documents'::regclass) THEN
 			EXECUTE 'CREATE POLICY workspace_isolation_policy ON knowledge_documents
+				USING (workspace_id = current_setting(''app.current_workspace'', true)::UUID)';
+		END IF;
+
+		-- Publications: direct match on workspace_id column
+		IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'workspace_isolation_policy' AND polrelid = 'publications'::regclass) THEN
+			EXECUTE 'CREATE POLICY workspace_isolation_policy ON publications
 				USING (workspace_id = current_setting(''app.current_workspace'', true)::UUID)';
 		END IF;
 	END$$;
