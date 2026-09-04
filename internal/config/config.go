@@ -4,9 +4,25 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	logger "austro-os/internal/log"
+)
+
+// Reserved adapter names. The default (stub) adapters are the only ones that
+// may run without external configuration: they never contact a real external
+// service and hold no credential. Selecting any other backend requires the
+// corresponding external settings to be supplied securely (see Validate).
+const (
+	// AIBackendStub is the deterministic, offline AI adapter (default).
+	AIBackendStub = "stub"
+	// AIBackendOpenAICompatible is a real OpenAI-compatible HTTP endpoint.
+	AIBackendOpenAICompatible = "openai-compatible"
+	// PublishBackendStub is the deterministic, offline publishing adapter (default).
+	PublishBackendStub = "stub"
+	// PublishBackendGenericHTTP is a real generic HTTP delivery endpoint.
+	PublishBackendGenericHTTP = "generic-http"
 )
 
 type Config struct {
@@ -18,6 +34,31 @@ type Config struct {
 	JWTRefreshSecret string
 	Environment      string
 	WorkspaceID      string
+
+	// AIBackend selects the AI Provider adapter (AIBackendStub by default).
+	// A non-stub backend is CONFIGURATION_REQUIRED: AIModel, AIBaseURL and
+	// AIAPIKey must be present and secure, or validation fails fast.
+	AIBackend string
+	// AIModel is the model identifier used by a non-stub AI backend.
+	AIModel string
+	// AIBaseURL is the OpenAI-compatible endpoint base URL (non-stub only).
+	AIBaseURL string
+	// AIAPIKey is the credential for the AI backend (non-stub only). It is
+	// never logged and never echoed into validation errors.
+	AIAPIKey string
+	// AIUsageLimitPerWorkspace caps total AI operations per workspace (0 =
+	// no ceiling; forwarded to the usage guard).
+	AIUsageLimitPerWorkspace uint64
+
+	// PublishBackend selects the Publisher adapter (PublishBackendStub by
+	// default). A non-stub backend is CONFIGURATION_REQUIRED: PublishWebhookURL
+	// and PublishToken must be present and secure.
+	PublishBackend string
+	// PublishWebhookURL is the external delivery endpoint (non-stub only).
+	PublishWebhookURL string
+	// PublishToken is the bearer credential for the delivery endpoint
+	// (non-stub only). It is never logged.
+	PublishToken string
 }
 
 var globalConfig *Config
@@ -27,6 +68,14 @@ var globalConfig *Config
 var ErrConfigInvalid = errors.New("invalid configuration")
 
 func defaults() *Config {
+	usageLimit := uint64(0)
+	if raw := os.Getenv("AUSTRO_AI_USAGE_LIMIT_PER_WORKSPACE"); raw != "" {
+		// Best-effort parse; a malformed value is treated as "no ceiling" here
+		// and surfaced by Validate as a named setting.
+		if v, err := strconv.ParseUint(raw, 10, 64); err == nil {
+			usageLimit = v
+		}
+	}
 	return &Config{
 		ServerAddress:    getEnv("AUSTRO_SERVER_ADDR", "0.0.0.0:8080"),
 		PostgresDSN:      getEnv("AUSTRO_POSTGRES_DSN", "postgres://austro:austro@localhost:5432/austro?sslmode=disable"),
@@ -36,6 +85,16 @@ func defaults() *Config {
 		JWTRefreshSecret: getEnv("AUSTRO_JWT_REFRESH_SECRET", "change-me-in-production"),
 		Environment:      getEnv("AUSTRO_ENV", "development"),
 		WorkspaceID:      getEnv("AUSTRO_WORKSPACE_ID", "default"),
+
+		AIBackend:              getEnv("AUSTRO_AI_BACKEND", AIBackendStub),
+		AIModel:                os.Getenv("AUSTRO_AI_MODEL"),
+		AIBaseURL:              os.Getenv("AUSTRO_AI_BASE_URL"),
+		AIAPIKey:               os.Getenv("AUSTRO_AI_API_KEY"),
+		AIUsageLimitPerWorkspace: usageLimit,
+
+		PublishBackend:    getEnv("AUSTRO_PUBLISH_BACKEND", PublishBackendStub),
+		PublishWebhookURL: os.Getenv("AUSTRO_PUBLISH_WEBHOOK_URL"),
+		PublishToken:      os.Getenv("AUSTRO_PUBLISH_TOKEN"),
 	}
 }
 
@@ -77,10 +136,74 @@ func (c *Config) Validate() error {
 			missing = append(missing, name)
 		}
 	}
+
+	missing = append(missing, c.validateBackends()...)
+
 	if len(missing) > 0 {
 		return fmt.Errorf("%w: required settings missing or insecure: %s", ErrConfigInvalid, strings.Join(missing, ", "))
 	}
 	return nil
+}
+
+// validateBackends enforces the cross-field rules for the AI and publishing
+// adapter selection. The deterministic stub adapters require no external
+// configuration; selecting any real backend is CONFIGURATION_REQUIRED and its
+// settings must be present and secure, or validation fails fast. Supplying
+// external settings while the stub backend is selected is rejected so a
+// configured credential is never silently ignored.
+func (c *Config) validateBackends() []string {
+	var missing []string
+
+	switch c.AIBackend {
+	case "", AIBackendStub:
+		// Offline adapter: no external credential may be present.
+		for name, value := range map[string]string{
+			"AUSTRO_AI_MODEL":    c.AIModel,
+			"AUSTRO_AI_BASE_URL": c.AIBaseURL,
+			"AUSTRO_AI_API_KEY":  c.AIAPIKey,
+		} {
+			if value != "" {
+				missing = append(missing, name)
+			}
+		}
+	case AIBackendOpenAICompatible:
+		for name, value := range map[string]string{
+			"AUSTRO_AI_MODEL":    c.AIModel,
+			"AUSTRO_AI_BASE_URL": c.AIBaseURL,
+			"AUSTRO_AI_API_KEY":  c.AIAPIKey,
+		} {
+			if isInsecure(value) {
+				missing = append(missing, name)
+			}
+		}
+	default:
+		missing = append(missing, "AUSTRO_AI_BACKEND")
+	}
+
+	switch c.PublishBackend {
+	case "", PublishBackendStub:
+		for name, value := range map[string]string{
+			"AUSTRO_PUBLISH_WEBHOOK_URL": c.PublishWebhookURL,
+			"AUSTRO_PUBLISH_TOKEN":       c.PublishToken,
+		} {
+			if value != "" {
+				missing = append(missing, name)
+			}
+		}
+	case PublishBackendGenericHTTP:
+		for name, value := range map[string]string{
+			"AUSTRO_PUBLISH_WEBHOOK_URL": c.PublishWebhookURL,
+			"AUSTRO_PUBLISH_TOKEN":       c.PublishToken,
+		} {
+			if isInsecure(value) {
+				missing = append(missing, name)
+			}
+		}
+	default:
+		missing = append(missing, "AUSTRO_PUBLISH_BACKEND")
+	}
+
+	return missing
 }
 
 // MustLoad is the runtime startup gate: it validates required configuration
