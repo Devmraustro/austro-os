@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -176,4 +177,28 @@ func TestOpenAICompatibleEmptyChoices(t *testing.T) {
 	})
 	require.Error(t, err)
 	require.Contains(t, strings.ToLower(err.Error()), "no completion")
+}
+
+// TestOpenAICompatibleOversizedResponseRejected verifies an oversized provider
+// response fails the operation instead of buffering unbounded memory.
+func TestOpenAICompatibleOversizedResponseRejected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(bytes.Repeat([]byte("a"), maxResponseBytes+1))
+	}))
+	defer srv.Close()
+	p, err := NewOpenAICompatibleProvider(ProviderConfig{
+		Backend:    BackendOpenAICompatible,
+		Model:      "gpt-test",
+		BaseURL:    srv.URL,
+		APIKey:     "sk-prod-9f8e7d6c5b4a",
+		HTTPClient: srv.Client(),
+	})
+	require.NoError(t, err)
+	_, err = p.Complete(context.Background(), CompletionRequest{
+		Scope:       mustScope("ws-a"),
+		Instruction: "x",
+	})
+	require.Error(t, err)
+	require.Contains(t, strings.ToLower(err.Error()), "too large")
 }

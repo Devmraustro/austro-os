@@ -11,6 +11,11 @@ import (
 	"time"
 )
 
+// maxResponseBytes bounds the response body read from the external delivery
+// endpoint. The endpoint is CONFIGURATION_REQUIRED and operator-configured, but
+// the boundary still guards against an oversized or misbehaving response.
+const maxResponseBytes = 64 << 20 // 64 MiB
+
 // GenericHTTPPublisher is a real (CONFIGURATION_REQUIRED) Publisher that
 // delivers an approved publication to a generic HTTP endpoint. It implements
 // the Publisher port so callers never depend on it directly (Replaceability,
@@ -73,9 +78,12 @@ func (p *GenericHTTPPublisher) Publish(ctx context.Context, pub *Publication) (s
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("publish: read delivery response: %w", err)
+	}
+	if len(raw) > maxResponseBytes {
+		return "", fmt.Errorf("publish: delivery response too large")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// Never surface the token; report only the status.

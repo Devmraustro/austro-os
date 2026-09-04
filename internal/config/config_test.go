@@ -123,6 +123,32 @@ func TestValidateRejectsUnknownBackend(t *testing.T) {
 	require.Contains(t, err.Error(), "AUSTRO_PUBLISH_BACKEND")
 }
 
+// TestValidateRejectsMalformedUsageLimit verifies a malformed usage-limit value
+// fails fast under strict validation instead of being silently treated as
+// "unlimited" (fail-fast discipline for the external-boundary settings).
+func TestValidateRejectsMalformedUsageLimit(t *testing.T) {
+	cfg := secureCore()
+	cfg.usageLimitRaw = "not-a-number"
+	err := cfg.Validate()
+	require.ErrorIs(t, err, ErrConfigInvalid)
+	require.Contains(t, err.Error(), "AUSTRO_AI_USAGE_LIMIT_PER_WORKSPACE")
+}
+
+// TestLoadStrictRejectsMalformedUsageLimitEnv verifies the strict loader fails
+// fast when the usage-limit environment value is not a valid unsigned integer.
+func TestLoadStrictRejectsMalformedUsageLimitEnv(t *testing.T) {
+	t.Setenv("AUSTRO_POSTGRES_DSN", "postgres://austro:austro@db:5432/austro?sslmode=disable")
+	t.Setenv("AUSTRO_REDIS_ADDR", "redis:6379")
+	t.Setenv("AUSTRO_RABBITMQ_URL", "amqp://austro:austro@rabbitmq:5672")
+	t.Setenv("AUSTRO_JWT_SECRET", "prod-access-secret-1234567890-abcdef")
+	t.Setenv("AUSTRO_JWT_REFRESH_SECRET", "prod-refresh-secret-1234567890-abcdef")
+	t.Setenv("AUSTRO_AI_USAGE_LIMIT_PER_WORKSPACE", "banana")
+
+	_, err := LoadStrict()
+	require.ErrorIs(t, err, ErrConfigInvalid)
+	require.Contains(t, err.Error(), "AUSTRO_AI_USAGE_LIMIT_PER_WORKSPACE")
+}
+
 // TestLoadStrictRespectsBackendEnv verifies LoadStrict enforces the backend
 // rules when values are supplied through the environment.
 func TestLoadStrictRespectsBackendEnv(t *testing.T) {

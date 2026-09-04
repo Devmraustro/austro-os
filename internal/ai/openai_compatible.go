@@ -11,6 +11,12 @@ import (
 	"time"
 )
 
+// maxResponseBytes bounds the response body read from an external AI endpoint.
+// A real provider is CONFIGURATION_REQUIRED and operator-configured, but the
+// boundary still guards against an oversized or misbehaving response by failing
+// the operation instead of buffering unbounded memory.
+const maxResponseBytes = 64 << 20 // 64 MiB
+
 // OpenAICompatibleProvider is a real (CONFIGURATION_REQUIRED) Provider that
 // calls an OpenAI-compatible HTTP endpoint. It implements the Provider port so
 // callers never depend on it directly (Replaceability, Principles 6 and 8).
@@ -183,9 +189,12 @@ func (p *OpenAICompatibleProvider) post(ctx context.Context, path string, payloa
 	}
 	defer resp.Body.Close()
 
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return fmt.Errorf("ai: read provider response: %w", err)
+	}
+	if len(raw) > maxResponseBytes {
+		return fmt.Errorf("ai: provider response too large")
 	}
 	if resp.StatusCode != http.StatusOK {
 		// Never include the key; surface only the status and a truncated body.

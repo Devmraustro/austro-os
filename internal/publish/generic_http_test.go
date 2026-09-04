@@ -1,10 +1,12 @@
 package publish
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -133,4 +135,26 @@ func TestGenericHTTPPublisherFallbackRef(t *testing.T) {
 	ref, err := httpPub.Publish(context.Background(), pub)
 	require.NoError(t, err)
 	require.Equal(t, "generic-http://"+pub.ContentHash, ref)
+}
+
+// TestGenericHTTPPublisherOversizedResponseRejected verifies an oversized
+// delivery response fails the publish instead of buffering unbounded memory.
+func TestGenericHTTPPublisherOversizedResponseRejected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(bytes.Repeat([]byte("a"), maxResponseBytes+1))
+	}))
+	defer srv.Close()
+
+	httpPub, err := NewGenericHTTPPublisher(PublisherConfig{
+		Backend:    BackendGenericHTTP,
+		WebhookURL: srv.URL,
+		Token:      "tok-prod-1a2b3c4d5e6f",
+		HTTPClient: srv.Client(),
+	})
+	require.NoError(t, err)
+
+	_, err = httpPub.Publish(context.Background(), approvedPublication(t))
+	require.Error(t, err)
+	require.Contains(t, strings.ToLower(err.Error()), "too large")
 }

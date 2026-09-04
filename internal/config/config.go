@@ -49,6 +49,10 @@ type Config struct {
 	// AIUsageLimitPerWorkspace caps total AI operations per workspace (0 =
 	// no ceiling; forwarded to the usage guard).
 	AIUsageLimitPerWorkspace uint64
+	// usageLimitRaw is the raw environment value for AIUsageLimitPerWorkspace.
+	// Strict validation rejects a value that does not parse as an unsigned
+	// integer (fail-fast) rather than silently treating it as "no ceiling".
+	usageLimitRaw string
 
 	// PublishBackend selects the Publisher adapter (PublishBackendStub by
 	// default). A non-stub backend is CONFIGURATION_REQUIRED: PublishWebhookURL
@@ -69,10 +73,9 @@ var ErrConfigInvalid = errors.New("invalid configuration")
 
 func defaults() *Config {
 	usageLimit := uint64(0)
-	if raw := os.Getenv("AUSTRO_AI_USAGE_LIMIT_PER_WORKSPACE"); raw != "" {
-		// Best-effort parse; a malformed value is treated as "no ceiling" here
-		// and surfaced by Validate as a named setting.
-		if v, err := strconv.ParseUint(raw, 10, 64); err == nil {
+	usageLimitRaw := os.Getenv("AUSTRO_AI_USAGE_LIMIT_PER_WORKSPACE")
+	if usageLimitRaw != "" {
+		if v, err := strconv.ParseUint(usageLimitRaw, 10, 64); err == nil {
 			usageLimit = v
 		}
 	}
@@ -91,6 +94,7 @@ func defaults() *Config {
 		AIBaseURL:              os.Getenv("AUSTRO_AI_BASE_URL"),
 		AIAPIKey:               os.Getenv("AUSTRO_AI_API_KEY"),
 		AIUsageLimitPerWorkspace: usageLimit,
+		usageLimitRaw:          usageLimitRaw,
 
 		PublishBackend:    getEnv("AUSTRO_PUBLISH_BACKEND", PublishBackendStub),
 		PublishWebhookURL: os.Getenv("AUSTRO_PUBLISH_WEBHOOK_URL"),
@@ -138,6 +142,12 @@ func (c *Config) Validate() error {
 	}
 
 	missing = append(missing, c.validateBackends()...)
+
+	if c.usageLimitRaw != "" {
+		if _, err := strconv.ParseUint(c.usageLimitRaw, 10, 64); err != nil {
+			missing = append(missing, "AUSTRO_AI_USAGE_LIMIT_PER_WORKSPACE")
+		}
+	}
 
 	if len(missing) > 0 {
 		return fmt.Errorf("%w: required settings missing or insecure: %s", ErrConfigInvalid, strings.Join(missing, ", "))
