@@ -3,6 +3,7 @@ package security
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -87,6 +88,24 @@ func TestThrottlerFailClosed(t *testing.T) {
 	tk.Reset("ws-a:user-1")
 	if !tk.Allow("ws-a:user-1") {
 		t.Fatal("after reset the key must be allowed again")
+	}
+}
+
+// TestThrottlerHonorsWindow verifies the fixed window is actually enforced: a
+// key that exhausts its budget is refused, and once the window elapses the same
+// key is allowed again without an explicit reset (the historic defect kept the
+// budget permanently and never reset the window).
+func TestThrottlerHonorsWindow(t *testing.T) {
+	tk := NewThrottler(30*time.Millisecond, 1)
+	if !tk.Allow("ws:user") {
+		t.Fatal("first hit within the window must be allowed")
+	}
+	if tk.Allow("ws:user") {
+		t.Fatal("second hit within the window must be denied")
+	}
+	time.Sleep(60 * time.Millisecond)
+	if !tk.Allow("ws:user") {
+		t.Fatal("after the window elapses the key budget must reset")
 	}
 }
 

@@ -254,8 +254,13 @@ func TestRateLimiting(t *testing.T) {
 	if _, err := svc.Approve(ctx(), ws, p.ID, "alice"); err != nil {
 		t.Fatalf("Approve: %v", err)
 	}
-	svc.throttle.limit = 1 // small limit for test
-	svc.throttle.hits[ws] = svc.throttle.limit
+	// Exhaust the per-workspace publish budget (newPublishThrottle default is 10
+	// per minute), then a further publish must be refused before any state work.
+	for i := 0; i < 10; i++ {
+		if !svc.throttle.Allow(ws.String()) {
+			t.Fatalf("throttle budget expired before 10 hits (i=%d)", i)
+		}
+	}
 	if _, err := svc.Publish(ctx(), ws, p.ID, "bob"); err != ErrRateLimited {
 		t.Fatalf("expected ErrRateLimited, got %v", err)
 	}

@@ -3,10 +3,10 @@ package orchestration
 import (
 	"context"
 	"errors"
-	"sync"
 	"time"
 
 	logger "austro-os/internal/log"
+	"austro-os/internal/security"
 	"github.com/google/uuid"
 )
 
@@ -24,7 +24,7 @@ type Service struct {
 	publish  Publisher
 	audit    AuditSink
 	events   EventSink
-	throttle *advanceThrottle
+	throttle *security.Throttler
 }
 
 // NewService wires a Service from its ports. A nil audit or event sink is
@@ -51,7 +51,7 @@ func NewService(store PipelineStore, research Researcher, script ScriptWriter, r
 	}
 	return &Service{
 		store: store, research: research, script: script, review: review,
-		publish: publish, audit: audit, events: events, throttle: newAdvanceThrottle(10),
+		publish: publish, audit: audit, events: events, throttle: security.NewThrottler(time.Minute, 10),
 	}
 }
 
@@ -87,7 +87,7 @@ func (s *Service) Advance(ctx context.Context, workspaceID, id uuid.UUID, startS
 	if workspaceID == uuid.Nil {
 		return nil, ErrWorkspaceMismatch
 	}
-	if !s.throttle.Allow(workspaceID) {
+	if !s.throttle.Allow(workspaceID.String()) {
 		s.audit.Record(ctx, AuditRecord{
 			EventType: "pipeline.advance", ConstitutionalPrinciple: "Security by Design",
 			Outcome: "failed", WorkspaceID: workspaceID.String(), PipelineID: id.String(),
@@ -208,31 +208,6 @@ func (s *Service) getOwned(ctx context.Context, workspaceID, id uuid.UUID) (*Pip
 		return nil, ErrWorkspaceMismatch
 	}
 	return p, nil
-}
-
-// advanceThrottle is a fixed-window per-workspace pipeline-advance limiter.
-type advanceThrottle struct {
-	mu     sync.Mutex
-	window time.Duration
-	limit  int
-	hits   map[uuid.UUID]int
-}
-
-func newAdvanceThrottle(limit int) *advanceThrottle {
-	if limit <= 0 {
-		limit = 10
-	}
-	return &advanceThrottle{window: time.Minute, limit: limit, hits: map[uuid.UUID]int{}}
-}
-
-func (t *advanceThrottle) Allow(id uuid.UUID) bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.hits[id] >= t.limit {
-		return false
-	}
-	t.hits[id]++
-	return true
 }
 
 func logTrace(workspaceID uuid.UUID, msg string) *logger.Entry {

@@ -12,8 +12,8 @@ import (
 // (internal/config): "stub" selects the offline deterministic adapter; any
 // other value selects a real HTTP delivery backend that is CONFIGURATION_REQUIRED.
 const (
-	BackendStub         = "stub"
-	BackendGenericHTTP  = "generic-http"
+	BackendStub        = "stub"
+	BackendGenericHTTP = "generic-http"
 )
 
 // PublisherConfig selects and configures the Publisher adapter at the

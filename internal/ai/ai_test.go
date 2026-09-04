@@ -179,6 +179,20 @@ func TestConfigurableUsageGuardBlocksAfterBudget(t *testing.T) {
 	assert.Equal(t, uint64(2), g.Used("ws-a"))
 }
 
+func TestUsageGuardRecordsUsageWithoutCeiling(t *testing.T) {
+	g := ai.NewConfigurableUsageGuard(ai.Config{}) // no ceiling
+	gw := newGateway(t, ai.StubProvider{}, g)
+	ctx := context.Background()
+	req := ai.CompletionRequest{Scope: scoped("ws-a"), Instruction: "x"}
+	for i := 0; i < 5; i++ {
+		_, err := gw.Complete(ctx, req)
+		require.NoError(t, err)
+	}
+	// Unlimited guardianship must still record usage so operators can observe it.
+	require.Equal(t, uint64(5), g.Used("ws-a"))
+	require.Equal(t, uint64(0), g.Used("ws-untouched"), "unused workspace must record nothing")
+}
+
 func TestUsageGuardIsWorkspaceIsolated(t *testing.T) {
 	g := ai.NewConfigurableUsageGuard(ai.Config{MaxPerWorkspace: 1})
 	gw := newGateway(t, ai.StubProvider{}, g)

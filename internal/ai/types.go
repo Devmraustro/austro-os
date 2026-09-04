@@ -164,20 +164,17 @@ func NewConfigurableUsageGuard(cfg Config) *ConfigurableUsageGuard {
 	}
 }
 
-// Allow permits the operation when the workspace budget has not been capped.
+// Allow permits the operation when the workspace budget has not been capped. It
+// always records usage (so callers can observe it deterministically), even when
+// no ceiling is configured; the ceiling check simply never rejects then.
 func (g *ConfigurableUsageGuard) Allow(workspaceID string, unit uint64) (bool, error) {
 	if workspaceID == "" {
 		return false, nil
 	}
-	if g.cfg.MaxPerWorkspace == 0 {
-		// No ceiling configured: the guard is effectively unlimited but still
-		// records usage so callers can observe it deterministically.
-		return true, nil
-	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	next := g.used[workspaceID] + unit
-	if next > g.cfg.MaxPerWorkspace {
+	if g.cfg.MaxPerWorkspace > 0 && next > g.cfg.MaxPerWorkspace {
 		return false, nil
 	}
 	g.used[workspaceID] = next

@@ -30,6 +30,7 @@ type Config struct {
 	PostgresDSN      string
 	RedisAddr        string
 	RabbitMQURL      string
+	RabbitMQQueue    string
 	JWTSecret        string
 	JWTRefreshSecret string
 	Environment      string
@@ -84,17 +85,18 @@ func defaults() *Config {
 		PostgresDSN:      getEnv("AUSTRO_POSTGRES_DSN", "postgres://austro:austro@localhost:5432/austro?sslmode=disable"),
 		RedisAddr:        getEnv("AUSTRO_REDIS_ADDR", "localhost:6379"),
 		RabbitMQURL:      getEnv("AUSTRO_RABBITMQ_URL", "amqp://austro:austro@localhost:5672"),
+		RabbitMQQueue:    getEnv("AUSTRO_RABBITMQ_QUEUE", "austro.events"),
 		JWTSecret:        getEnv("AUSTRO_JWT_SECRET", "change-me-in-production"),
 		JWTRefreshSecret: getEnv("AUSTRO_JWT_REFRESH_SECRET", "change-me-in-production"),
 		Environment:      getEnv("AUSTRO_ENV", "development"),
 		WorkspaceID:      getEnv("AUSTRO_WORKSPACE_ID", "default"),
 
-		AIBackend:              getEnv("AUSTRO_AI_BACKEND", AIBackendStub),
-		AIModel:                os.Getenv("AUSTRO_AI_MODEL"),
-		AIBaseURL:              os.Getenv("AUSTRO_AI_BASE_URL"),
-		AIAPIKey:               os.Getenv("AUSTRO_AI_API_KEY"),
+		AIBackend:                getEnv("AUSTRO_AI_BACKEND", AIBackendStub),
+		AIModel:                  os.Getenv("AUSTRO_AI_MODEL"),
+		AIBaseURL:                os.Getenv("AUSTRO_AI_BASE_URL"),
+		AIAPIKey:                 os.Getenv("AUSTRO_AI_API_KEY"),
 		AIUsageLimitPerWorkspace: usageLimit,
-		usageLimitRaw:          usageLimitRaw,
+		usageLimitRaw:            usageLimitRaw,
 
 		PublishBackend:    getEnv("AUSTRO_PUBLISH_BACKEND", PublishBackendStub),
 		PublishWebhookURL: os.Getenv("AUSTRO_PUBLISH_WEBHOOK_URL"),

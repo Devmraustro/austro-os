@@ -3,7 +3,6 @@ package publish
 import (
 	"context"
 	"strings"
-	"sync"
 	"time"
 
 	logger "austro-os/internal/log"
@@ -20,7 +19,7 @@ type Service struct {
 	pub      Publisher
 	audit    AuditSink
 	events   EventSink
-	throttle *publishThrottle
+	throttle *security.Throttler
 }
 
 // NewService wires a Service from its ports. A nil audit or event sink is
@@ -36,7 +35,7 @@ func NewService(store PublicationStore, pub Publisher, audit AuditSink, events E
 	if pub == nil {
 		pub = StubPublisher{}
 	}
-	return &Service{store: store, pub: pub, audit: audit, events: events, throttle: newPublishThrottle(10)}
+	return &Service{store: store, pub: pub, audit: audit, events: events, throttle: security.NewThrottler(time.Minute, 10)}
 }
 
 // Create persists a new queued publication for the workspace.
@@ -133,7 +132,7 @@ func (s *Service) Publish(ctx context.Context, workspaceID, id uuid.UUID, humanA
 		})
 		return nil, ErrUnauthorizedPublisher
 	}
-	if !s.throttle.Allow(workspaceID) {
+	if !s.throttle.Allow(workspaceID.String()) {
 		s.audit.Record(ctx, AuditRecord{
 			EventType: "publication.publish", ConstitutionalPrinciple: "Security by Design",
 			Outcome: "failed", WorkspaceID: workspaceID.String(), PublicationID: id.String(),
@@ -254,31 +253,6 @@ func (s *Service) getOwned(ctx context.Context, workspaceID, id uuid.UUID) (*Pub
 // HasApproval reports whether a recorded human approval is present.
 func (p *Publication) HasApproval() bool {
 	return p.Status == StatusApproved && p.ApprovedBy != nil && p.ApprovedAt != nil
-}
-
-// publishThrottle is a fixed-window per-workspace publish limiter.
-type publishThrottle struct {
-	mu     sync.Mutex
-	window time.Duration
-	limit  int
-	hits   map[uuid.UUID]int
-}
-
-func newPublishThrottle(limit int) *publishThrottle {
-	if limit <= 0 {
-		limit = 10
-	}
-	return &publishThrottle{window: time.Minute, limit: limit, hits: map[uuid.UUID]int{}}
-}
-
-func (t *publishThrottle) Allow(id uuid.UUID) bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.hits[id] >= t.limit {
-		return false
-	}
-	t.hits[id]++
-	return true
 }
 
 func log(workspaceID uuid.UUID, msg string) *logger.Entry {

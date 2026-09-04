@@ -6,21 +6,27 @@ import (
 	"os/signal"
 	"syscall"
 
+	"austro-os/internal/config"
 	"austro-os/internal/event"
 	logger "austro-os/internal/log"
 	"austro-os/internal/worker"
 )
 
 func main() {
-	rabbitMQURL := os.Getenv("AUSTRO_RABBITMQ_URL")
-	if rabbitMQURL == "" {
-		rabbitMQURL = "amqp://austro:austro@rabbitmq:5672"
+	// Runtime entrypoints use LoadStrict: missing or insecure settings fail fast
+	// instead of silently degrading to development defaults (fail-fast
+	// discipline). There is no insecure default RabbitMQ fallback here.
+	cfg, err := config.LoadStrict()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Invalid configuration: %v\n", err)
+		os.Exit(1)
+	}
+	if cfg.RabbitMQURL == "" || cfg.RabbitMQQueue == "" {
+		fmt.Fprintf(os.Stderr, "Invalid configuration: required settings missing or insecure: AUSTRO_RABBITMQ_URL, AUSTRO_RABBITMQ_QUEUE\n")
+		os.Exit(1)
 	}
 
-	queueName := os.Getenv("AUSTRO_RABBITMQ_QUEUE")
-	if queueName == "" {
-		queueName = "austro.events"
-	}
+	queueName := cfg.RabbitMQQueue
 
 	handler := func(env *event.UniversalEnvelope) error {
 		logger.NewEntry("worker-handled").
@@ -32,7 +38,7 @@ func main() {
 	}
 
 	wConfig := worker.WorkerConfig{
-		URL:       rabbitMQURL,
+		URL:       cfg.RabbitMQURL,
 		QueueName: queueName,
 	}
 

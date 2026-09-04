@@ -184,8 +184,13 @@ func TestRateLimiting(t *testing.T) {
 	svc := NewService(store, StubResearcher{}, StubScriptWriter{}, StubReviewer{}, StubPublisher{}, nil, nil)
 	ws := validWS()
 	p := basePipeline(t, store, ws)
-	svc.throttle.limit = 1
-	svc.throttle.hits[ws] = svc.throttle.limit
+	// Exhaust the per-workspace advance budget (default 10 per minute), then a
+	// further advance must be refused before any state work.
+	for i := 0; i < 10; i++ {
+		if !svc.throttle.Allow(ws.String()) {
+			t.Fatalf("throttle budget expired before 10 hits (i=%d)", i)
+		}
+	}
 	if _, err := svc.Advance(ctx(), ws, p.ID, StageResearch, StageScript); err != ErrRateLimited {
 		t.Fatalf("expected ErrRateLimited, got %v", err)
 	}

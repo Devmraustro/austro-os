@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/google/uuid"
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 type WorkerConfig struct {
@@ -112,12 +112,28 @@ func (w *Worker) processMessage(msg amqp.Delivery) {
 
 	if traceID != nil {
 		if tid, ok := traceID.(string); ok {
-			env.TraceID = uuid.MustParse(tid)
+			parsed, err := uuid.Parse(tid)
+			if err != nil {
+				logger.NewEntry("worker-invalid-trace-id").
+					With("message_id", msg.MessageId).
+					WithError(err).
+					Log()
+			} else {
+				env.TraceID = parsed
+			}
 		}
 	}
 	if spanID != nil {
 		if sid, ok := spanID.(string); ok {
-			env.SpanID = uuid.MustParse(sid)
+			parsed, err := uuid.Parse(sid)
+			if err != nil {
+				logger.NewEntry("worker-invalid-span-id").
+					With("message_id", msg.MessageId).
+					WithError(err).
+					Log()
+			} else {
+				env.SpanID = parsed
+			}
 		}
 	}
 
