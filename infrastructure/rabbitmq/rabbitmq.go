@@ -12,8 +12,9 @@ import (
 )
 
 var (
-	conn    *amqp.Connection
-	channel *amqp.Channel
+	conn      *amqp.Connection
+	channel   *amqp.Channel
+	queueName = "austro.events"
 )
 
 func Initialize(cfg *config.Config) {
@@ -30,8 +31,12 @@ func Initialize(cfg *config.Config) {
 		os.Exit(1)
 	}
 
+	if cfg.RabbitMQQueue != "" {
+		queueName = cfg.RabbitMQQueue
+	}
+
 	_, err = channel.QueueDeclare(
-		"austro.events",
+		queueName,
 		true,
 		false,
 		false,
@@ -43,7 +48,7 @@ func Initialize(cfg *config.Config) {
 		os.Exit(1)
 	}
 
-	logger.NewEntry("rabbitmq-connection-established").Log()
+	logger.NewEntry("rabbitmq-connection-established").With("queue", queueName).Log()
 }
 
 func GetChannel() *amqp.Channel {
@@ -62,7 +67,7 @@ func PublishUniversalEvent(env event.UniversalEnvelope) error {
 
 	err = channel.Publish(
 		"",
-		"austro.events",
+		queueName,
 		false,
 		false,
 		amqp.Publishing{
@@ -71,9 +76,9 @@ func PublishUniversalEvent(env event.UniversalEnvelope) error {
 			Body:         body,
 			MessageId:    env.EventID.String(),
 			Headers: amqp.Table{
-				"event_type":         string(env.EventType),
+				"event_type":               string(env.EventType),
 				"constitutional_principle": env.ConstitutionalPrinciple,
-				"workspace_id":       env.WorkspaceID,
+				"workspace_id":             env.WorkspaceID,
 			},
 		},
 	)
