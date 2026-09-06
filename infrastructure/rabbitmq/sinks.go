@@ -20,8 +20,10 @@ import (
 // trace/span correlation ids in both the envelope and the message headers so
 // the worker consumer can propagate end-to-end observability (P13).
 type Sink struct {
-	channel *amqp.Channel
-	queue   string
+	channel  *amqp.Channel
+	queue    string
+	provider func() (*amqp.Channel, error)
+	reconn   *reconnector
 }
 
 // NewSink returns a Sink publishing to queue on an existing channel (the
@@ -33,22 +35,74 @@ func NewSink(channel *amqp.Channel, queue string) *Sink {
 	return &Sink{channel: channel, queue: queue}
 }
 
+// NewReconnectingSink returns a Sink that supervises its own AMQP connection
+// and redials automatically when the broker closes it. Prefer this in long-lived
+// runtime entrypoints: a connection that dies once must never silently break
+// publishing for the life of the process (see the worker cascade contract).
+func NewReconnectingSink(url, queue string) (*Sink, error) {
+	rc, err := newReconnector(url, queue)
+	if err != nil {
+		return nil, err
+	}
+	return &Sink{
+		queue:    queue,
+		provider: rc.channel,
+		reconn:   rc,
+	}, nil
+}
+
+// BreakConnection force-closes the underlying connection so the sink redials.
+// It exists as an operational/test hook and returns an error for sinks that do
+// not supervise their own connection.
+func (s *Sink) BreakConnection() error {
+	if s.reconn == nil {
+		return fmt.Errorf("rabbitmq: static sink has no supervised connection")
+	}
+	return s.reconn.breakConnection()
+}
+
+// Close releases supervised resources owned by the sink.
+func (s *Sink) Close() error {
+	if s.reconn == nil {
+		return nil
+	}
+	return s.reconn.close()
+}
+
 // deliver marshals an envelope and publishes it durably with correlation headers.
 func (s *Sink) deliver(env event.UniversalEnvelope, headers amqp.Table) error {
-	if s.channel == nil {
-		return fmt.Errorf("rabbitmq: sink has no channel")
+	ch, vended, err := s.publishChannel()
+	if err != nil {
+		return err
+	}
+	if vended {
+		defer ch.Close()
 	}
 	body, err := env.MarshalJSON()
 	if err != nil {
 		return fmt.Errorf("rabbitmq: marshal event: %w", err)
 	}
-	return s.channel.Publish("", s.queue, false, false, amqp.Publishing{
+	return ch.Publish("", s.queue, false, false, amqp.Publishing{
 		ContentType:  "application/json",
 		DeliveryMode: amqp.Persistent,
 		Body:         body,
 		MessageId:    env.EventID.String(),
 		Headers:      headers,
 	})
+}
+
+// publishChannel returns the channel used for a single publish plus whether the
+// caller owns it (provider-vended channels are single-use and closed after the
+// publish; static channels are caller-owned and must be left open).
+func (s *Sink) publishChannel() (*amqp.Channel, bool, error) {
+	if s.provider != nil {
+		ch, err := s.provider()
+		return ch, true, err
+	}
+	if s.channel == nil {
+		return nil, false, fmt.Errorf("rabbitmq: sink has no channel")
+	}
+	return s.channel, false, nil
 }
 
 // baseEnvelope builds the envelope shared by the domain event sinks. The domain

@@ -33,14 +33,16 @@ func main() {
 	redisClient := redis.Initialize(cfg)
 	defer redisClient.Close()
 
-	rabbitmq.Initialize(cfg)
-	defer rabbitmq.GetConnection().Close()
+	sink, err := rabbitmq.NewReconnectingSink(cfg.RabbitMQURL, queueFor(cfg))
+	if err != nil {
+		logger.NewEntry("event-sink-failed").SetLevel("error").WithError(err).Log()
+		os.Exit(1)
+	}
+	defer sink.Close()
 
 	_ = auth.Initialize(cfg)
 
 	authzService := authz.NewAuthorizer()
-
-	sink := rabbitmq.NewSink(rabbitmq.GetChannel(), queueFor(cfg))
 
 	// The API composes the full runtime with the production adapters: PostgreSQL
 	// stores, Redis memory, RabbitMQ event/audit sinks. This proves the wiring

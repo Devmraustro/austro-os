@@ -13,8 +13,6 @@ import (
 	"austro-os/internal/config"
 	logger "austro-os/internal/log"
 	"austro-os/internal/worker"
-
-	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 func main() {
@@ -27,28 +25,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	// The worker owns its RabbitMQ channel and queue so the configured queue
-	// name is honoured end-to-end.
-	conn, err := amqp.Dial(cfg.RabbitMQURL)
+	// The worker publishes its cascade events through a self-supervised sink:
+	// when the broker force-closes the connection, the sink redials instead of
+	// silently dropping pipeline-advance events.
+	sink, err := rabbitmq.NewReconnectingSink(cfg.RabbitMQURL, cfg.RabbitMQQueue)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to connect to RabbitMQ: %v\n", err)
 		os.Exit(1)
 	}
-	defer conn.Close()
-	ch, err := conn.Channel()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to open RabbitMQ channel: %v\n", err)
-		os.Exit(1)
-	}
-	if _, err := ch.QueueDeclare(cfg.RabbitMQQueue, true, false, false, false, nil); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to declare queue %q: %v\n", cfg.RabbitMQQueue, err)
-		os.Exit(1)
-	}
+	defer sink.Close()
 
 	db := database.Initialize(cfg)
 	defer db.Close()
-
-	sink := rabbitmq.NewSink(ch, cfg.RabbitMQQueue)
 
 	rt, err := composition.Compose(cfg, composition.Stores{
 		Publications: postgres.NewPublicationStore(db),

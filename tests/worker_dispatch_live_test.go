@@ -76,9 +76,14 @@ func TestWorkerAdvancesPipelineFromEventToComplete(t *testing.T) {
 	}))
 
 	var stage, status string
+	// The cascade itself completes in well under two seconds on a healthy store
+	// (research -> script -> review -> publish -> complete). The window is kept
+	// generous because the first advance can block for tens of seconds behind a
+	// slow PostgreSQL fsync on an overloaded host; the test is asserting the
+	// end-to-end message loop, not disk latency.
 	require.Eventually(t, func() bool {
 		err := db.QueryRow(`SELECT stage, status FROM pipelines WHERE id=$1`, pipeID).Scan(&stage, &status)
 		return err == nil && stage == "complete" && status == "done"
-	}, 20*time.Second, 500*time.Millisecond,
+	}, 90*time.Second, 1*time.Second,
 		"worker must advance the seeded pipeline through the message loop to complete")
 }
