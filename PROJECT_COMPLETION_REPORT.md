@@ -116,3 +116,80 @@ discipline are intact and verified end-to-end. The external-service integration
 boundaries are closed and hardened for genuine deployment.
 
 **`PROJECT STATUS: COMPLETE`** — else `NOT COMPLETE` would be reported.
+
+## 7. Runtime-reliability stage (final — Commits A–H)
+
+**Baseline**: integration-boundary stage above (HEAD `f1d18a1`, 200 test functions).
+**This stage**: release hardening of the composed runtime — reconciling fixes,
+event-driven worker over RabbitMQ, publish retry/idempotency, resilient
+reconnecting event sink, live smoke, documentation (`adr-014`,
+`PRODUCTION_READINESS_REPORT.md`, `FOUNDER_OPERATIONS_CHECKLIST.md`), and a
+final full-audit pass.
+
+### 7.1 Events and defects found by experiment
+
+The live smoke experiment (commit F) reproduced and fixed the **real product
+defect** the earlier dispatch failures and 270 leftover test queues pointed at:
+
+- The worker published downstream `pipeline.*` events on a **start-up-only AMQP
+  channel** that never reconnected (`cmd/worker`; `_ =` swallowed the publish
+  error in the orchestration advance path). When the broker force-closed that
+  connection (missed heartbeat — reproduced on this host), every publish failed
+  silently while the consumer (its own reconnectable connection) kept running.
+  The cascade stalled mid-flight with **no** audit line — an unrecoverable silent
+  failure, verifiable via the broker management API (worker host held only 1 AMQP
+  connection at the time).
+- Also hardened: consumer-side reconnect supervision (Commit C), stale
+  start-up channels replaced by a concurrency-safe per-publish channel model
+  (Commit F), and 5xx/transient retry + `X-Idempotency` for generic HTTP
+  delivery (Commit D).
+
+### 7.2 Live verification (full suite at HEAD `adb7c5d`)
+
+```
+docker-compose build api worker        -> BUILD_OK (exit 0)
+full suite  go test ./tests/ -count=1 -timeout 300s
+        -> ok austro-os/tests 88.843s (exit 0, zero failures)
+  TestWorkerAdvancesPipelineFromEventToComplete   PASS  4.42s
+  TestWorkerReconnectsAfterConnectionLoss         PASS  2.88s
+  TestEventSinkReconnectsAfterConnectionLoss      PASS  8.26s
+go build ./... / go vet ./... / gofmt -l (touched)  -> clean
+```
+
+- Running worker (release binary in the composed stack) advanced seeded
+  pipelines `research -> script -> review -> publish -> complete`, including the
+  former silent-stall point, with `pipeline-audit outcome:success` lines at each
+  stage and `/health/live` → ok, `/health/ready` → ready.
+- The broker now holds the `austro.events` queue with 1 consumer and **zero**
+  stale `austro.events.test.*` queues (296 purged via the management API this
+  stage).
+
+### 7.3 Accounting at HEAD (measured per commit)
+
+```
+HEAD adb7c5d   201 = 84 tests/  + 117 internal/
+stage deltas:  A +5, B +6, C +8 internal / +2 tests, D +7 internal, F +1 tests
+```
+
+(Measured by `git grep -c "func Test"` per revision. Earlier docs used different
+splits — e.g. 170 = 61+81+28 — this table is the authoritative HEAD count.)
+
+### 7.4 Environment observations (host, not product)
+
+PostgreSQL crash-recovery windows (unclean shutdown → slow fsync; `database
+system is in recovery mode`), one transient RabbitMQ memory alarm, and
+module-proxy TLS timeouts were all reproduced, bounded, documented in
+`FINAL_RELEASE_AUDIT.md`/`PRODUCTION_READINESS_REPORT.md`, and mitigated
+(retryable builds; the dispatch smoke test asserts the message loop, not disk
+latency). None were code defects.
+
+### 7.5 Final status
+
+- Working tree clean; nothing pushed; no history rewritten; Phase 1 gate
+  untouched (immutable since `8c42c4e`); no `SET row_security=off`; no committed
+  credentials; `internal/*` never imports `austro-os/infrastructure`.
+- Deliverables: `decisions/adr-014-*`, `PRODUCTION_READINESS_REPORT.md`,
+  `FOUNDER_OPERATIONS_CHECKLIST.md`.
+
+**`PROJECT STATUS: COMPLETE`** — all layers verified at HEAD with reproducible
+evidence.
