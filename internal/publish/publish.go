@@ -67,13 +67,17 @@ type Publication struct {
 	Platform    string     `json:"platform"`
 	Status      Status     `json:"status"`
 	ContentHash string     `json:"content_hash"`
-	ApprovedBy  *string    `json:"approved_by,omitempty"`
-	ApprovedAt  *time.Time `json:"approved_at,omitempty"`
-	RejectedBy  *string    `json:"rejected_by,omitempty"`
-	RejectedAt  *time.Time `json:"rejected_at,omitempty"`
-	PublishedAt *time.Time `json:"published_at,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	// IdempotencyKey is an optional stable delivery key for the external
+	// endpoint. When empty, a deterministic key derived from workspace|id|hash
+	// is used so retries of the same publication collide.
+	IdempotencyKey string     `json:"idempotency_key,omitempty"`
+	ApprovedBy     *string    `json:"approved_by,omitempty"`
+	ApprovedAt     *time.Time `json:"approved_at,omitempty"`
+	RejectedBy     *string    `json:"rejected_by,omitempty"`
+	RejectedAt     *time.Time `json:"rejected_at,omitempty"`
+	PublishedAt    *time.Time `json:"published_at,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
 }
 
 // New validates inputs and returns a queued publication as a value aggregate

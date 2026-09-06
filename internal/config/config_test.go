@@ -2,6 +2,7 @@ package config
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -187,6 +188,10 @@ func fullRuntimeEnv(t *testing.T) {
 	t.Setenv("AUSTRO_PUBLISH_BACKEND", PublishBackendGenericHTTP)
 	t.Setenv("AUSTRO_PUBLISH_WEBHOOK_URL", "https://hook.austro.internal/deliver")
 	t.Setenv("AUSTRO_PUBLISH_TOKEN", "tok-prod-1a2b3c4d5e6f")
+	t.Setenv("AUSTRO_PUBLISH_IDEMPOTENCY_FIELD", "Idempotency-Key")
+	t.Setenv("AUSTRO_PUBLISH_MAX_ATTEMPTS", "5")
+	t.Setenv("AUSTRO_PUBLISH_RETRY_BACKOFF_BASE", "500ms")
+	t.Setenv("AUSTRO_PUBLISH_RETRY_BACKOFF_MAX", "30s")
 }
 
 // TestLoadStrictSingleCanonicalEnvironment proves both runtime entrypoints
@@ -206,7 +211,27 @@ func TestLoadStrictSingleCanonicalEnvironment(t *testing.T) {
 	require.Equal(t, PublishBackendGenericHTTP, cfg.PublishBackend)
 	require.Equal(t, "https://hook.austro.internal/deliver", cfg.PublishWebhookURL)
 	require.Equal(t, "tok-prod-1a2b3c4d5e6f", cfg.PublishToken)
+	require.Equal(t, "Idempotency-Key", cfg.PublishIdempotencyField)
+	require.Equal(t, 5, cfg.PublishMaxAttempts)
+	require.Equal(t, 500*time.Millisecond, cfg.PublishRetryBackoffBase)
+	require.Equal(t, 30*time.Second, cfg.PublishRetryBackoffMax)
 	require.Equal(t, "austro.events.production", cfg.RabbitMQQueue)
+}
+
+// TestValidateRejectsNegativeRetrySettings verifies the panic-prone negative
+// attempt/backoff bounds are rejected by strict validation (fail-fast).
+func TestValidateRejectsNegativeRetrySettings(t *testing.T) {
+	cfg := secureCore()
+	cfg.PublishMaxAttempts = -1
+	err := cfg.Validate()
+	require.ErrorIs(t, err, ErrConfigInvalid)
+	require.Contains(t, err.Error(), "AUSTRO_PUBLISH_MAX_ATTEMPTS")
+
+	bad := secureCore()
+	bad.PublishRetryBackoffBase = -time.Second
+	err = bad.Validate()
+	require.ErrorIs(t, err, ErrConfigInvalid)
+	require.Contains(t, err.Error(), "AUSTRO_PUBLISH_RETRY_BACKOFF")
 }
 
 // TestLoadStrictFailsClosedOnMissingRealBackendConfig proves the worker and API

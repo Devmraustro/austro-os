@@ -158,3 +158,204 @@ func TestGenericHTTPPublisherOversizedResponseRejected(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, strings.ToLower(err.Error()), "too large")
 }
+
+// TestGenericHTTPPublisherRetriesTransient5xx verifies a transient 5xx is
+// retried (bounded) and eventually succeeds; 4xx is never retried.
+func TestGenericHTTPPublisherRetriesTransient5xx(t *testing.T) {
+	var mu sync.Mutex
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		c := calls
+		mu.Unlock()
+		if c < 3 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"external_id":"vid-retry"}`))
+	}))
+	defer srv.Close()
+
+	httpPub, err := NewGenericHTTPPublisher(PublisherConfig{
+		Backend:     BackendGenericHTTP,
+		WebhookURL:  srv.URL,
+		Token:       "tok-prod-1a2b3c4d5e6f",
+		HTTPClient:  srv.Client(),
+		MaxAttempts: 4,
+		BackoffBase: 5 * time.Millisecond,
+		BackoffMax:  20 * time.Millisecond,
+	})
+	require.NoError(t, err)
+
+	ref, err := httpPub.Publish(context.Background(), approvedPublication(t))
+	require.NoError(t, err)
+	require.Equal(t, "vid-retry", ref)
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, 3, calls)
+}
+
+// TestGenericHTTPPublisherNeverRetries4xx verifies a client-side rejection
+// returns immediately without further attempts.
+func TestGenericHTTPPublisherNeverRetries4xx(t *testing.T) {
+	var mu sync.Mutex
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		w.WriteHeader(http.StatusUnprocessableEntity)
+	}))
+	defer srv.Close()
+
+	httpPub, err := NewGenericHTTPPublisher(PublisherConfig{
+		Backend:     BackendGenericHTTP,
+		WebhookURL:  srv.URL,
+		Token:       "tok-prod-1a2b3c4d5e6f",
+		HTTPClient:  srv.Client(),
+		MaxAttempts: 5,
+		BackoffBase: time.Millisecond,
+	})
+	require.NoError(t, err)
+
+	_, err = httpPub.Publish(context.Background(), approvedPublication(t))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "422")
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, 1, calls)
+}
+
+// TestGenericHTTPPublisherExhaustsRetriesSurfacesLastError verifies a
+// persistently failing endpoint yields the final attempt's error and no
+// more than MaxAttempts calls.
+func TestGenericHTTPPublisherExhaustsRetriesSurfacesLastError(t *testing.T) {
+	var mu sync.Mutex
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer srv.Close()
+
+	httpPub, err := NewGenericHTTPPublisher(PublisherConfig{
+		Backend:     BackendGenericHTTP,
+		WebhookURL:  srv.URL,
+		Token:       "tok-prod-1a2b3c4d5e6f",
+		HTTPClient:  srv.Client(),
+		MaxAttempts: 3,
+		BackoffBase: 2 * time.Millisecond,
+		BackoffMax:  10 * time.Millisecond,
+	})
+	require.NoError(t, err)
+
+	_, err = httpPub.Publish(context.Background(), approvedPublication(t))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "502")
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, 3, calls)
+}
+
+// TestGenericHTTPPublisherIdempotencyKey verifies a stable, deterministic key
+// is attached across repeated attempts so the endpoint can deduplicate them.
+func TestGenericHTTPPublisherIdempotencyKey(t *testing.T) {
+	var mu sync.Mutex
+	keys := map[string]int{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		keys[r.Header.Get("Idempotency-Key")]++
+		mu.Unlock()
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	httpPub, err := NewGenericHTTPPublisher(PublisherConfig{
+		Backend:             BackendGenericHTTP,
+		WebhookURL:          srv.URL,
+		Token:               "tok-prod-1a2b3c4d5e6f",
+		HTTPClient:          srv.Client(),
+		IdempotencyKeyField: "Idempotency-Key",
+		MaxAttempts:         3,
+		BackoffBase:         2 * time.Millisecond,
+		BackoffMax:          10 * time.Millisecond,
+	})
+	require.NoError(t, err)
+
+	pub := approvedPublication(t)
+	_, err = httpPub.Publish(context.Background(), pub)
+	require.Error(t, err) // all attempts 503
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, keys, 1, "all attempts must carry the identical idempotency key")
+	for k, n := range keys {
+		require.Equal(t, 3, n, "key %q seen every attempt", k)
+		require.Equal(t, idempotencyKey(pub), k)
+	}
+}
+
+// TestGenericHTTPPublisherHonorsExplicitIdempotencyKey verifies a caller-set
+// IdempotencyKey on the publication is delivered verbatim.
+func TestGenericHTTPPublisherHonorsExplicitIdempotencyKey(t *testing.T) {
+	var mu sync.Mutex
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		got = r.Header.Get("X-Idem")
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	httpPub, err := NewGenericHTTPPublisher(PublisherConfig{
+		Backend:             BackendGenericHTTP,
+		WebhookURL:          srv.URL,
+		Token:               "tok-prod-1a2b3c4d5e6f",
+		HTTPClient:          srv.Client(),
+		IdempotencyKeyField: "X-Idem",
+	})
+	require.NoError(t, err)
+
+	pub := approvedPublication(t)
+	pub.IdempotencyKey = "caller-supplied-99"
+	_, err = httpPub.Publish(context.Background(), pub)
+	require.NoError(t, err)
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, "caller-supplied-99", got)
+}
+
+// TestGenericHTTPPublisherNoIdempotencyFieldWithoutConfig verifies no
+// idempotency header is sent when the field is not configured.
+func TestGenericHTTPPublisherNoIdempotencyFieldWithoutConfig(t *testing.T) {
+	var mu sync.Mutex
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		got = r.Header.Get("Idempotency-Key")
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	httpPub, err := NewGenericHTTPPublisher(PublisherConfig{
+		Backend:    BackendGenericHTTP,
+		WebhookURL: srv.URL,
+		Token:      "tok-prod-1a2b3c4d5e6f",
+		HTTPClient: srv.Client(),
+	})
+	require.NoError(t, err)
+
+	_, err = httpPub.Publish(context.Background(), approvedPublication(t))
+	require.NoError(t, err)
+	mu.Lock()
+	defer mu.Unlock()
+	require.Empty(t, got)
+}

@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	logger "austro-os/internal/log"
 )
@@ -64,6 +65,18 @@ type Config struct {
 	// PublishToken is the bearer credential for the delivery endpoint
 	// (non-stub only). It is never logged.
 	PublishToken string
+	// PublishIdempotencyField names the provider-specific header/query field
+	// used for delivery idempotency (non-stub only). Optional: when empty, the
+	// generic HTTP adapter derives a deterministic key but does not attach a
+	// provider-specific field.
+	PublishIdempotencyField string
+	// PublishMaxAttempts bounds total delivery attempts (>= 1; non-stub only).
+	// Zero uses the adapter's single-attempt default (no retry).
+	PublishMaxAttempts int
+	// PublishRetryBackoffBase/PublishRetryBackoffMax bound the retry backoff
+	// pacing (non-stub only). Zero uses the adapter defaults.
+	PublishRetryBackoffBase time.Duration
+	PublishRetryBackoffMax  time.Duration
 }
 
 var globalConfig *Config
@@ -98,9 +111,13 @@ func defaults() *Config {
 		AIUsageLimitPerWorkspace: usageLimit,
 		usageLimitRaw:            usageLimitRaw,
 
-		PublishBackend:    getEnv("AUSTRO_PUBLISH_BACKEND", PublishBackendStub),
-		PublishWebhookURL: os.Getenv("AUSTRO_PUBLISH_WEBHOOK_URL"),
-		PublishToken:      os.Getenv("AUSTRO_PUBLISH_TOKEN"),
+		PublishBackend:          getEnv("AUSTRO_PUBLISH_BACKEND", PublishBackendStub),
+		PublishWebhookURL:       os.Getenv("AUSTRO_PUBLISH_WEBHOOK_URL"),
+		PublishToken:            os.Getenv("AUSTRO_PUBLISH_TOKEN"),
+		PublishIdempotencyField: os.Getenv("AUSTRO_PUBLISH_IDEMPOTENCY_FIELD"),
+		PublishMaxAttempts:      envInt("AUSTRO_PUBLISH_MAX_ATTEMPTS", 0),
+		PublishRetryBackoffBase: envDuration("AUSTRO_PUBLISH_RETRY_BACKOFF_BASE", 0),
+		PublishRetryBackoffMax:  envDuration("AUSTRO_PUBLISH_RETRY_BACKOFF_MAX", 0),
 	}
 }
 
@@ -149,6 +166,13 @@ func (c *Config) Validate() error {
 		if _, err := strconv.ParseUint(c.usageLimitRaw, 10, 64); err != nil {
 			missing = append(missing, "AUSTRO_AI_USAGE_LIMIT_PER_WORKSPACE")
 		}
+	}
+
+	if c.PublishMaxAttempts < 0 {
+		missing = append(missing, "AUSTRO_PUBLISH_MAX_ATTEMPTS")
+	}
+	if c.PublishRetryBackoffBase < 0 || c.PublishRetryBackoffMax < 0 {
+		missing = append(missing, "AUSTRO_PUBLISH_RETRY_BACKOFF")
 	}
 
 	if len(missing) > 0 {
@@ -248,4 +272,32 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+// envInt reads an integer environment value, returning fallback for an empty
+// or non-integer value. Validation (Validate) rejects a negative attempt count.
+func envInt(key string, fallback int) int {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	return v
+}
+
+// envDuration reads a Go duration string (e.g. "500ms", "30s") returning
+// fallback for an empty or unparseable value.
+func envDuration(key string, fallback time.Duration) time.Duration {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback
+	}
+	v, err := time.ParseDuration(raw)
+	if err != nil {
+		return fallback
+	}
+	return v
 }

@@ -26,6 +26,21 @@ type PublisherConfig struct {
 	// Token is the bearer credential for the delivery endpoint (non-stub only).
 	// It is held in memory and never logged.
 	Token string
+	// IdempotencyKeyField is the provider-specific header/query field the
+	// endpoint uses to deduplicate deliveries of the same publication. When set,
+	// the caller-supplied IdempotencyKey of a Publication is attached under that
+	// name; the deterministic key is derived from workspace|id|content. Empty
+	// disables idempotency-key attachment.
+	IdempotencyKeyField string
+	// MaxAttempts bounds total delivery attempts (>= 1). Transient failures and
+	// 5xx responses are retried with bounded exponential backoff up to this
+	// ceiling; 4xx responses and context cancellation are never retried.
+	MaxAttempts int
+	// BackoffBase is the initial retry backoff; each retry doubles it up to
+	// BackoffMax. Zero uses the package defaults.
+	BackoffBase time.Duration
+	// BackoffMax caps the per-retry backoff. Zero uses the package defaults.
+	BackoffMax time.Duration
 	// HTTPClient is injected by tests (httptest.Server); nil uses a default
 	// client with Timeout.
 	HTTPClient *http.Client

@@ -114,10 +114,14 @@ func Compose(cfg *config.Config, stores Stores, sinks Sinks) (*Runtime, error) {
 
 	// Publishing service: publisher selected by PublishBackend.
 	publisher, err := publish.NewPublisher(publish.PublisherConfig{
-		Backend:    cfg.PublishBackend,
-		WebhookURL: cfg.PublishWebhookURL,
-		Token:      cfg.PublishToken,
-		Timeout:    30 * time.Second,
+		Backend:             cfg.PublishBackend,
+		WebhookURL:          cfg.PublishWebhookURL,
+		Token:               cfg.PublishToken,
+		IdempotencyKeyField: cfg.PublishIdempotencyField,
+		MaxAttempts:         cfg.PublishMaxAttempts,
+		BackoffBase:         cfg.PublishRetryBackoffBase,
+		BackoffMax:          cfg.PublishRetryBackoffMax,
+		Timeout:             30 * time.Second,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("composition: publisher: %w", err)
