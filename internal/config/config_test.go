@@ -89,6 +89,52 @@ func TestValidateOpenAICompatibleRejectsInsecureEndpoint(t *testing.T) {
 	require.Contains(t, err.Error(), "AUSTRO_AI_BASE_URL")
 }
 
+// TestValidateLocalBackendAllowsNoAPIKey verifies the free-first "local"
+// backend validates with Model and BaseURL while an API key stays optional: a
+// local or in-house model endpoint often needs no credential, so the system
+// must not require one to be runnable.
+func TestValidateLocalBackendAllowsNoAPIKey(t *testing.T) {
+	cfg := secureCore()
+	cfg.AIBackend = AIBackendLocal
+	cfg.AIModel = "local-model"
+	cfg.AIBaseURL = "http://localhost:11434/v1"
+	require.NoError(t, cfg.Validate())
+
+	// A present, secure key is also accepted and preserves the credential.
+	withKey := secureCore()
+	withKey.AIBackend = AIBackendLocal
+	withKey.AIModel = "local-model"
+	withKey.AIBaseURL = "http://localhost:11434/v1"
+	withKey.AIAPIKey = "local-token-1a2b3c4d5e6f"
+	require.NoError(t, withKey.Validate())
+}
+
+// TestValidateLocalBackendRequiresModelAndBaseURL verifies the local backend
+// still fails fast (CONFIGURATION_REQUIRED) when its endpoint identity is
+// missing, naming both settings without leaking values.
+func TestValidateLocalBackendRequiresModelAndBaseURL(t *testing.T) {
+	cfg := secureCore()
+	cfg.AIBackend = AIBackendLocal
+	err := cfg.Validate()
+	require.ErrorIs(t, err, ErrConfigInvalid)
+	require.Contains(t, err.Error(), "AUSTRO_AI_MODEL")
+	require.Contains(t, err.Error(), "AUSTRO_AI_BASE_URL")
+}
+
+// TestValidateLocalBackendRejectsInsecureAPIKey verifies a placeholder key is
+// rejected even though the key itself is optional for the local backend.
+func TestValidateLocalBackendRejectsInsecureAPIKey(t *testing.T) {
+	cfg := secureCore()
+	cfg.AIBackend = AIBackendLocal
+	cfg.AIModel = "local-model"
+	cfg.AIBaseURL = "http://localhost:11434/v1"
+	cfg.AIAPIKey = "sk-change-me-0000"
+	err := cfg.Validate()
+	require.ErrorIs(t, err, ErrConfigInvalid)
+	require.Contains(t, err.Error(), "AUSTRO_AI_API_KEY")
+	require.NotContains(t, err.Error(), "change-me")
+}
+
 // TestValidateGenericHTTPRequiresCredentials verifies a real publish backend is
 // CONFIGURATION_REQUIRED and its token is validated without leaking the value.
 func TestValidateGenericHTTPRequiresCredentials(t *testing.T) {

@@ -37,6 +37,29 @@ func TestNewProviderSelectsOpenAICompatible(t *testing.T) {
 	require.True(t, ok, "expected *OpenAICompatibleProvider")
 }
 
+// TestNewProviderSelectsLocal verifies the free-first "local" backend builds an
+// OpenAI-compatible provider without requiring an API key.
+func TestNewProviderSelectsLocal(t *testing.T) {
+	p, err := NewProvider(ProviderConfig{
+		Backend: BackendLocal,
+		Model:   "local-classifier",
+		BaseURL: "http://localhost:11434/v1",
+	})
+	require.NoError(t, err)
+	prov, ok := p.(*OpenAICompatibleProvider)
+	require.True(t, ok, "expected *OpenAICompatibleProvider")
+	require.Empty(t, prov.apiKey, "local backend must not need an API key")
+}
+
+// TestNewProviderLocalRejectsMissingEndpointIdentity verifies the local backend
+// fails fast if the model or base URL is absent (CONFIGURATION_REQUIRED).
+func TestNewProviderLocalRejectsMissingEndpointIdentity(t *testing.T) {
+	_, err := NewProvider(ProviderConfig{Backend: BackendLocal, BaseURL: "http://localhost:11434/v1"})
+	require.ErrorIs(t, err, ErrProviderConfig)
+	_, err = NewProvider(ProviderConfig{Backend: BackendLocal, Model: "local-classifier"})
+	require.ErrorIs(t, err, ErrProviderConfig)
+}
+
 // TestNewProviderRejectsMissingCredential verifies the real adapter fails fast
 // on absent credentials rather than constructing a provider that fails mid-call.
 func TestNewProviderRejectsMissingCredential(t *testing.T) {

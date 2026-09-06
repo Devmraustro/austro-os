@@ -9,17 +9,21 @@ import (
 
 // Backend selectors understood by the AI composition boundary. These are stable
 // contract values shared with the strict configuration layer (internal/config):
-// "stub" selects the offline deterministic adapter; any other value selects a
-// real HTTP backend that is CONFIGURATION_REQUIRED.
+// "stub" selects the offline deterministic adapter; "local" selects a keyless
+// OpenAI-compatible endpoint for a local/free model server; any other value
+// selects a real HTTP backend that is CONFIGURATION_REQUIRED.
 const (
 	BackendStub             = "stub"
+	BackendLocal            = "local"
 	BackendOpenAICompatible = "openai-compatible"
 )
 
 // ProviderConfig selects and configures the Provider adapter at the
 // composition boundary. It mirrors the strict configuration model: selecting a
 // non-stub backend requires Model, BaseURL and APIKey to be present and secure,
-// or the factory fails fast (never silently degrades).
+// or the factory fails fast (never silently degrades). The one exception is the
+// "local" backend, whose APIKey is optional because a local model server often
+// needs no credential.
 type ProviderConfig struct {
 	Backend string
 	Model   string
@@ -41,6 +45,8 @@ func NewProvider(cfg ProviderConfig) (Provider, error) {
 	switch cfg.Backend {
 	case "", BackendStub:
 		return StubProvider{}, nil
+	case BackendLocal:
+		return NewLocalProvider(cfg)
 	case BackendOpenAICompatible:
 		return NewOpenAICompatibleProvider(cfg)
 	default:

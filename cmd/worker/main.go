@@ -28,7 +28,8 @@ func main() {
 	// The worker publishes its cascade events through a self-supervised sink:
 	// when the broker force-closes the connection, the sink redials instead of
 	// silently dropping pipeline-advance events.
-	sink, err := rabbitmq.NewReconnectingSink(cfg.RabbitMQURL, cfg.RabbitMQQueue)
+	queueName := queueFor(cfg)
+	sink, err := rabbitmq.NewReconnectingSink(cfg.RabbitMQURL, queueName)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to connect to RabbitMQ: %v\n", err)
 		os.Exit(1)
@@ -63,7 +64,7 @@ func main() {
 
 	wConfig := worker.WorkerConfig{
 		URL:       cfg.RabbitMQURL,
-		QueueName: cfg.RabbitMQQueue,
+		QueueName: queueName,
 	}
 
 	wp := worker.NewWorker(wConfig, handler)
@@ -84,4 +85,15 @@ func main() {
 	}()
 
 	select {}
+}
+
+// queueFor mirrors rabbitmq.Initialize and the API entrypoint: the configured
+// queue name, or the default austro.events when unset. The worker must resolve
+// the name exactly as the API does so both publish to and consume from the same
+// queue even when AUSTRO_RABBITMQ_QUEUE is not set.
+func queueFor(cfg *config.Config) string {
+	if cfg.RabbitMQQueue != "" {
+		return cfg.RabbitMQQueue
+	}
+	return "austro.events"
 }

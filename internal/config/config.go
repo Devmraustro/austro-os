@@ -18,7 +18,16 @@ import (
 const (
 	// AIBackendStub is the deterministic, offline AI adapter (default).
 	AIBackendStub = "stub"
+	// AIBackendLocal selects a LOCAL/free OpenAI-compatible endpoint (for
+	// example a locally hosted model server or an in-house inference box).
+	// Unlike openai-compatible, it does not require an API key: local
+	// endpoints often need no credentials. Model and BaseURL are still
+	// CONFIGURATION_REQUIRED. No block: the project must run without any paid
+	// provider, and with no key where the operator's endpoint needs none.
+	AIBackendLocal = "local"
 	// AIBackendOpenAICompatible is a real OpenAI-compatible HTTP endpoint.
+	// An API key is CONFIGURATION_REQUIRED; providers offering a free tier are
+	// configured here later by the operator (never hardcoded).
 	AIBackendOpenAICompatible = "openai-compatible"
 	// PublishBackendStub is the deterministic, offline publishing adapter (default).
 	PublishBackendStub = "stub"
@@ -201,6 +210,22 @@ func (c *Config) validateBackends() []string {
 			if value != "" {
 				missing = append(missing, name)
 			}
+		}
+	case AIBackendLocal:
+		// Local/free keyless OpenAI-compatible endpoint. Model and BaseURL are
+		// CONFIGURATION_REQUIRED; the API key is optional (local endpoints often
+		// need no credential). A supplied key must still be secure, and a
+		// placeholder is rejected the same way it is for openai-compatible.
+		for name, value := range map[string]string{
+			"AUSTRO_AI_MODEL":    c.AIModel,
+			"AUSTRO_AI_BASE_URL": c.AIBaseURL,
+		} {
+			if isInsecure(value) {
+				missing = append(missing, name)
+			}
+		}
+		if c.AIAPIKey != "" && isInsecure(c.AIAPIKey) {
+			missing = append(missing, "AUSTRO_AI_API_KEY")
 		}
 	case AIBackendOpenAICompatible:
 		for name, value := range map[string]string{

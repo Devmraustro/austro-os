@@ -132,6 +132,75 @@ func TestOpenAICompatibleClassify(t *testing.T) {
 	require.Equal(t, "scratch", res.Category)
 }
 
+// TestLocalProviderSendsNoAuthorizationHeader verifies a provider built through
+// the keyless local path performs a call without attaching any Authorization
+// header, so a local endpoint that needs no credential still works.
+func TestLocalProviderSendsNoAuthorizationHeader(t *testing.T) {
+	var gotHeader string
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gotHeader = r.Header.Get("Authorization")
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"local-result"}}]}`))
+	}))
+	defer srv.Close()
+
+	p, err := NewLocalProvider(ProviderConfig{
+		Backend:    BackendLocal,
+		Model:      "local-classifier",
+		BaseURL:    srv.URL,
+		HTTPClient: srv.Client(),
+	})
+	require.NoError(t, err)
+
+	res, err := p.Complete(context.Background(), CompletionRequest{
+		Scope:       mustScope("ws-a"),
+		Instruction: "write a script",
+	})
+	require.NoError(t, err)
+	require.Equal(t, "local-result", res.Text)
+
+	mu.Lock()
+	require.Empty(t, gotHeader, "no Authorization header must be sent when no key is configured")
+	mu.Unlock()
+}
+
+// TestLocalProviderHonorsOptionalKey verifies the local path still attaches the
+// Authorization header when an operator-supplied key is present.
+func TestLocalProviderHonorsOptionalKey(t *testing.T) {
+	var gotHeader string
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gotHeader = r.Header.Get("Authorization")
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer srv.Close()
+
+	p, err := NewLocalProvider(ProviderConfig{
+		Backend:    BackendLocal,
+		Model:      "local-classifier",
+		BaseURL:    srv.URL,
+		APIKey:     "local-token-1a2b3c4d5e6f",
+		HTTPClient: srv.Client(),
+	})
+	require.NoError(t, err)
+
+	_, err = p.Complete(context.Background(), CompletionRequest{
+		Scope:       mustScope("ws-a"),
+		Instruction: "x",
+	})
+	require.NoError(t, err)
+
+	mu.Lock()
+	require.Equal(t, "Bearer local-token-1a2b3c4d5e6f", gotHeader)
+	mu.Unlock()
+}
+
 // TestOpenAICompatibleErrorNeverLeaksKey verifies a provider error status is
 // surfaced without echoing the API key.
 func TestOpenAICompatibleErrorNeverLeaksKey(t *testing.T) {

@@ -34,7 +34,9 @@ type OpenAICompatibleProvider struct {
 
 // NewOpenAICompatibleProvider validates the CONFIGURATION_REQUIRED settings and
 // returns the HTTP-backed provider. It fails fast on any missing setting rather
-// than producing a provider that would fail mid-call.
+// than producing a provider that would fail mid-call. An API key remains
+// mandatory for a real provider here; see NewLocalProvider for the keyless
+// local endpoint path.
 func NewOpenAICompatibleProvider(cfg ProviderConfig) (*OpenAICompatibleProvider, error) {
 	if strings.TrimSpace(cfg.Model) == "" {
 		return nil, fmt.Errorf("%w: model is required", ErrProviderConfig)
@@ -45,6 +47,28 @@ func NewOpenAICompatibleProvider(cfg ProviderConfig) (*OpenAICompatibleProvider,
 	if strings.TrimSpace(cfg.APIKey) == "" {
 		return nil, fmt.Errorf("%w: api key is required", ErrProviderConfig)
 	}
+	return buildHTTPProvider(cfg), nil
+}
+
+// NewLocalProvider builds a provider for a LOCAL/free OpenAI-compatible
+// endpoint. Model and BaseURL are required, but unlike openai-compatible an API
+// key is optional: a local or in-house model server often needs no credential.
+// When no key is configured, no Authorization header is attached to outbound
+// requests. This is the free-cloud-free option that keeps the whole system
+// runnable without any paid account.
+func NewLocalProvider(cfg ProviderConfig) (*OpenAICompatibleProvider, error) {
+	if strings.TrimSpace(cfg.Model) == "" {
+		return nil, fmt.Errorf("%w: model is required", ErrProviderConfig)
+	}
+	if strings.TrimSpace(cfg.BaseURL) == "" {
+		return nil, fmt.Errorf("%w: base url is required", ErrProviderConfig)
+	}
+	return buildHTTPProvider(cfg), nil
+}
+
+// buildHTTPProvider constructs the provider after validation, wiring either the
+// injected test client or a default client with the configured timeout.
+func buildHTTPProvider(cfg ProviderConfig) *OpenAICompatibleProvider {
 	client := cfg.HTTPClient
 	if client == nil {
 		timeout := cfg.Timeout
@@ -58,7 +82,7 @@ func NewOpenAICompatibleProvider(cfg ProviderConfig) (*OpenAICompatibleProvider,
 		model:   cfg.Model,
 		apiKey:  cfg.APIKey,
 		client:  client,
-	}, nil
+	}
 }
 
 // Complete calls POST {base}/chat/completions and returns the first choice text.
@@ -181,7 +205,9 @@ func (p *OpenAICompatibleProvider) post(ctx context.Context, path string, payloa
 		return fmt.Errorf("ai: build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	if p.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	}
 
 	resp, err := p.client.Do(req)
 	if err != nil {
