@@ -1,7 +1,7 @@
 # Founder Operations Checklist — AUSTRO OS
 
 Operational runbook for taking the release (`PRODUCTION_READINESS_REPORT.md`,
-HEAD `adb7c5d`) into service. Each item is either required before first live
+current HEAD) into service. Each item is either required before first live
 traffic or the standing operational practice afterwards.
 
 ## 1. Pre-launch configuration
@@ -16,12 +16,16 @@ traffic or the standing operational practice afterwards.
       message/policy mirroring for resilience.
 - [ ] Set `AUSTRO_JWT_SECRET` and `AUSTRO_JWT_REFRESH_SECRET` to strong random
       values (`openssl rand -hex 32`). Startup fails fast on the dev placeholders.
-- [ ] Decide live AI/delivery activation. To activate delivery set
+- [ ] Decide live AI/delivery activation (all config-only, no code change; the
+      offline stub defaults work with no account). To activate delivery set
       `AUSTRO_PUBLISH_BACKEND=generic-http`, `AUSTRO_PUBLISH_WEBHOOK_URL`,
       `AUSTRO_PUBLISH_TOKEN`; to activate AI set
       `AUSTRO_AI_BACKEND=openai-compatible`, `AUSTRO_AI_MODEL`,
-      `AUSTRO_AI_BASE_URL`, `AUSTRO_AI_API_KEY`. Otherwise the offline stub
-      defaults are used and no live external call is possible.
+      `AUSTRO_AI_BASE_URL`, `AUSTRO_AI_API_KEY`. For a free/zero-cost local
+      model server instead, set `AUSTRO_AI_BACKEND=local`, `AUSTRO_AI_MODEL`,
+      `AUSTRO_AI_BASE_URL` (API key omitted — keyless endpoint, ADR-015).
+      Otherwise the offline stub defaults are used and no live external call is
+      possible.
 - [ ] Optional delivery reliability: `AUSTRO_PUBLISH_MAX_ATTEMPTS`,
       `AUSTRO_PUBLISH_RETRY_BACKOFF_BASE`, `AUSTRO_PUBLISH_RETRY_BACKOFF_MAX`
       (defaults: no retry, 500ms base, 30s cap). Set `MAX_ATTEMPTS >= 3` if the

@@ -123,8 +123,11 @@ D +7 internal, F +1 test (the previous audit baseline: 83 + 91).
   `AUSTRO_PUBLISH_WEBHOOK_URL`, `AUSTRO_PUBLISH_TOKEN`, and optionally
   `AUSTRO_PUBLISH_MAX_ATTEMPTS` / `AUSTRO_PUBLISH_RETRY_BACKOFF_*`. To activate a
   real AI backend (optional): `AUSTRO_AI_BACKEND`, `AUSTRO_AI_MODEL`,
-  `AUSTRO_AI_BASE_URL`, `AUSTRO_AI_API_KEY`. Undelivered/absent values keep the
-  offline stub default (no live external calls).
+  `AUSTRO_AI_BASE_URL`, and `AUSTRO_AI_API_KEY` when the endpoint needs one.
+  `AUSTRO_AI_BACKEND=local` uses a keyless OpenAI-compatible endpoint (free/
+  local model server): only machine + base URL required, no credential (see
+  ADR-015). Undelivered/absent values keep the offline stub default (no live
+  external calls, no paid account required anywhere).
 
 ## Host-Environmental Observations (not release blockers)
 
