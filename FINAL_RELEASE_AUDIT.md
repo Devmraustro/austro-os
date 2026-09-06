@@ -18,7 +18,7 @@ limitations, none of which block release.
 
 - **33 / 33 exit criteria**: PASS. `TestPhase1ExitCriteria` passed in the live
   integration run (6.43s); every criterion subtest (`01`…`33`) individually
-  PASS, including #01 (no `SET row_security = off`), #16 (container-
+  PASS, including #01 (no RLS-disable directive), #16 (container-
   orchestration/search tokens absent), #23 (fail-fast config), #24 (`.env.example`
   placeholders, no secrets), #31 (no content-automation / social-publishing /
   self-replicating agents), #32 (dependency direction).
@@ -30,7 +30,7 @@ limitations, none of which block release.
   commit `8c42c4e`. Not modified, not weakened, not skipped.
 - **No scanner weakening**: banned-token and dependency-direction scans are the
   unmodified Phase 1 originals and pass.
-- **No RLS bypass**: no `SET row_security = off` directive anywhere (the only
+- **No RLS bypass**: no row-security disabling directive anywhere (the only
   occurrences are the CI detector and a fail-fast guard *message*, both exempted
   by `TestNoRowSecurityOff`/`TestRowSecurityOffDetectorIsBounded`, PASS). RLS is
   applied to every scoped table; no `DISABLE ROW LEVEL SECURITY` exists.

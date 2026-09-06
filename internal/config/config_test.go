@@ -168,3 +168,95 @@ func TestLoadStrictRespectsBackendEnv(t *testing.T) {
 	require.ErrorIs(t, err, ErrConfigInvalid)
 	require.Contains(t, err.Error(), "AUSTRO_AI_API_KEY")
 }
+
+// Set the full environment consumed by the composed runtime (the exact same
+// variable names the API entrypoint and the worker entrypoint both read).
+func fullRuntimeEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("AUSTRO_POSTGRES_DSN", "postgres://austro:austro@db:5432/austro?sslmode=disable")
+	t.Setenv("AUSTRO_REDIS_ADDR", "redis:6379")
+	t.Setenv("AUSTRO_RABBITMQ_URL", "amqp://austro:austro@rabbitmq:5672")
+	t.Setenv("AUSTRO_RABBITMQ_QUEUE", "austro.events.production")
+	t.Setenv("AUSTRO_JWT_SECRET", "prod-access-secret-1234567890-abcdef")
+	t.Setenv("AUSTRO_JWT_REFRESH_SECRET", "prod-refresh-secret-1234567890-abcdef")
+	t.Setenv("AUSTRO_AI_BACKEND", AIBackendOpenAICompatible)
+	t.Setenv("AUSTRO_AI_MODEL", "austro-classifier")
+	t.Setenv("AUSTRO_AI_BASE_URL", "https://ai.austro.internal/v1")
+	t.Setenv("AUSTRO_AI_API_KEY", "sk-prod-9f8e7d6c5b4a")
+	t.Setenv("AUSTRO_AI_USAGE_LIMIT_PER_WORKSPACE", "10")
+	t.Setenv("AUSTRO_PUBLISH_BACKEND", PublishBackendGenericHTTP)
+	t.Setenv("AUSTRO_PUBLISH_WEBHOOK_URL", "https://hook.austro.internal/deliver")
+	t.Setenv("AUSTRO_PUBLISH_TOKEN", "tok-prod-1a2b3c4d5e6f")
+}
+
+// TestLoadStrictSingleCanonicalEnvironment proves both runtime entrypoints
+// (API and worker) share one configuration model: every value the composed
+// runtime consumes is parsed from the same variable names, and none is lost.
+func TestLoadStrictSingleCanonicalEnvironment(t *testing.T) {
+	fullRuntimeEnv(t)
+
+	cfg, err := LoadStrict()
+	require.NoError(t, err)
+
+	require.Equal(t, AIBackendOpenAICompatible, cfg.AIBackend)
+	require.Equal(t, "austro-classifier", cfg.AIModel)
+	require.Equal(t, "https://ai.austro.internal/v1", cfg.AIBaseURL)
+	require.Equal(t, "sk-prod-9f8e7d6c5b4a", cfg.AIAPIKey)
+	require.Equal(t, uint64(10), cfg.AIUsageLimitPerWorkspace)
+	require.Equal(t, PublishBackendGenericHTTP, cfg.PublishBackend)
+	require.Equal(t, "https://hook.austro.internal/deliver", cfg.PublishWebhookURL)
+	require.Equal(t, "tok-prod-1a2b3c4d5e6f", cfg.PublishToken)
+	require.Equal(t, "austro.events.production", cfg.RabbitMQQueue)
+}
+
+// TestLoadStrictFailsClosedOnMissingRealBackendConfig proves the worker and API
+// fail closed when a real backend is selected without its required secrets.
+func TestLoadStrictFailsClosedOnMissingRealBackendConfig(t *testing.T) {
+	t.Setenv("AUSTRO_POSTGRES_DSN", "postgres://austro:austro@db:5432/austro?sslmode=disable")
+	t.Setenv("AUSTRO_REDIS_ADDR", "redis:6379")
+	t.Setenv("AUSTRO_RABBITMQ_URL", "amqp://austro:austro@rabbitmq:5672")
+	t.Setenv("AUSTRO_JWT_SECRET", "prod-access-secret-1234567890-abcdef")
+	t.Setenv("AUSTRO_JWT_REFRESH_SECRET", "prod-refresh-secret-1234567890-abcdef")
+
+	// AI backend real but API key absent.
+	t.Setenv("AUSTRO_AI_BACKEND", AIBackendOpenAICompatible)
+	t.Setenv("AUSTRO_AI_MODEL", "austro-classifier")
+	t.Setenv("AUSTRO_AI_BASE_URL", "https://ai.austro.internal/v1")
+	_, err := LoadStrict()
+	require.ErrorIs(t, err, ErrConfigInvalid)
+	require.Contains(t, err.Error(), "AUSTRO_AI_API_KEY")
+
+	// Publishing backend real but token absent.
+	t.Setenv("AUSTRO_AI_BACKEND", AIBackendStub)
+	t.Setenv("AUSTRO_PUBLISH_BACKEND", PublishBackendGenericHTTP)
+	t.Setenv("AUSTRO_PUBLISH_WEBHOOK_URL", "https://hook.austro.internal/deliver")
+	_, err = LoadStrict()
+	require.ErrorIs(t, err, ErrConfigInvalid)
+	require.Contains(t, err.Error(), "AUSTRO_PUBLISH_TOKEN")
+}
+
+// TestLoadStubModeSafeAndDeterministic proves the default stub mode needs no
+// external configuration, honours a configured usage limit, and never carries a
+// credential that could trigger an external call.
+func TestLoadStubModeSafeAndDeterministic(t *testing.T) {
+	t.Setenv("AUSTRO_POSTGRES_DSN", "postgres://austro:austro@db:5432/austro?sslmode=disable")
+	t.Setenv("AUSTRO_REDIS_ADDR", "redis:6379")
+	t.Setenv("AUSTRO_RABBITMQ_URL", "amqp://austro:austro@rabbitmq:5672")
+	t.Setenv("AUSTRO_JWT_SECRET", "prod-access-secret-1234567890-abcdef")
+	t.Setenv("AUSTRO_JWT_REFRESH_SECRET", "prod-refresh-secret-1234567890-abcdef")
+	t.Setenv("AUSTRO_AI_USAGE_LIMIT_PER_WORKSPACE", "10")
+
+	cfg, err := LoadStrict()
+	require.NoError(t, err)
+	require.Equal(t, AIBackendStub, cfg.AIBackend)
+	require.Equal(t, PublishBackendStub, cfg.PublishBackend)
+	require.Equal(t, uint64(10), cfg.AIUsageLimitPerWorkspace)
+	require.Empty(t, cfg.AIAPIKey)
+	require.Empty(t, cfg.AIBaseURL)
+	require.Empty(t, cfg.PublishToken)
+
+	// Re-load gives the exact same configuration (deterministic model).
+	cfg2, err := LoadStrict()
+	require.NoError(t, err)
+	require.Equal(t, cfg, cfg2)
+}

@@ -7,15 +7,15 @@ ENV GOFLAGS=-mod=mod
 
 WORKDIR /app
 
-COPY go.mod ./
+COPY go.mod go.sum ./
 COPY *.go ./
 COPY internal ./internal
 COPY infrastructure ./infrastructure
 COPY cmd ./cmd
 
-RUN go mod tidy && go mod download
+RUN go mod download
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o main .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o worker ./cmd/worker/main.go
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o worker ./cmd/worker
 
 FROM alpine:3.19
 

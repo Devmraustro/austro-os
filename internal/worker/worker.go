@@ -5,6 +5,7 @@ import (
 	logger "austro-os/internal/log"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,51 +17,123 @@ type WorkerConfig struct {
 	QueueName string
 }
 
-type Worker struct {
-	config     WorkerConfig
-	connection *amqp.Connection
-	channel    *amqp.Channel
-	handler    func(*event.UniversalEnvelope) error
-	stopCh     chan struct{}
+type WorkerOption func(*Worker)
+
+// WithReconnectDelay overrides the delay before a reconnection attempt after a
+// lost connection (default 5s). Used by tests and tunable by operators.
+func WithReconnectDelay(d time.Duration) WorkerOption {
+	return func(w *Worker) { w.reconnectDelay = d }
 }
 
-func NewWorker(config WorkerConfig, handler func(*event.UniversalEnvelope) error) *Worker {
-	return &Worker{
-		config:  config,
-		handler: handler,
-		stopCh:  make(chan struct{}),
+const maxReconnectDelay = 30 * time.Second
+
+type Worker struct {
+	config         WorkerConfig
+	handler        func(*event.UniversalEnvelope) error
+	reconnectDelay time.Duration
+
+	mu          sync.Mutex
+	connection  *amqp.Connection
+	channel     *amqp.Channel
+	consumeDone <-chan struct{}
+
+	stopOnce sync.Once
+	stopCh   chan struct{}
+	stopped  chan struct{}
+}
+
+func NewWorker(config WorkerConfig, handler func(*event.UniversalEnvelope) error, opts ...WorkerOption) *Worker {
+	w := &Worker{
+		config:         config,
+		handler:        handler,
+		reconnectDelay: 5 * time.Second,
+		stopCh:         make(chan struct{}),
+		stopped:        make(chan struct{}),
+	}
+	for _, o := range opts {
+		o(w)
+	}
+	return w
+}
+
+// Start connects to the broker and begins consuming. It fails fast only if the
+// initial connection is impossible; after the consumer is live, the supervisor
+// goroutine reconnects automatically if the connection is ever lost.
+func (w *Worker) Start() error {
+	if err := w.dial(); err != nil {
+		return err
+	}
+	logger.NewEntry("worker-started").With("queue", w.config.QueueName).Log()
+	go w.supervise()
+	return nil
+}
+
+func (w *Worker) Stop() {
+	w.stopOnce.Do(func() {
+		close(w.stopCh)
+	})
+	w.dropConnection()
+	select {
+	case <-w.stopped:
+	case <-time.After(2 * time.Second):
+	}
+	logger.NewEntry("worker-stopped").Log()
+}
+
+// CloseBrokerConnection force-closes the current broker connection so the
+// supervisor immediately reconnects and re-registers the consumer. Exposed for
+// operational reconnection and for tests that exercise the recovery path.
+func (w *Worker) CloseBrokerConnection() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.connection != nil {
+		w.connection.Close()
 	}
 }
 
-func (w *Worker) Start() error {
+func (w *Worker) dial() error {
 	conn, err := amqp.Dial(w.config.URL)
 	if err != nil {
 		return fmt.Errorf("failed to connect to RabbitMQ: %w", err)
 	}
-	w.connection = conn
 
 	ch, err := conn.Channel()
 	if err != nil {
+		conn.Close()
 		return fmt.Errorf("failed to open channel: %w", err)
 	}
-	w.channel = ch
 
-	_, err = ch.QueueDeclare(w.config.QueueName, true, false, false, false, nil)
-	if err != nil {
+	if _, err := ch.QueueDeclare(w.config.QueueName, true, false, false, false, nil); err != nil {
+		conn.Close()
 		return fmt.Errorf("failed to declare queue: %w", err)
 	}
 
-	err = ch.Qos(1, 0, false)
-	if err != nil {
+	if err := ch.Qos(1, 0, false); err != nil {
+		conn.Close()
 		return fmt.Errorf("failed to set QoS: %w", err)
 	}
 
 	msgs, err := ch.Consume(w.config.QueueName, "", false, false, false, false, nil)
 	if err != nil {
+		conn.Close()
 		return fmt.Errorf("failed to register consumer: %w", err)
 	}
 
+	done := w.spawnConsumer(msgs)
+
+	w.mu.Lock()
+	w.connection = conn
+	w.channel = ch
+	w.consumeDone = done
+	w.mu.Unlock()
+
+	return nil
+}
+
+func (w *Worker) spawnConsumer(msgs <-chan amqp.Delivery) <-chan struct{} {
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		for {
 			select {
 			case <-w.stopCh:
@@ -73,20 +146,76 @@ func (w *Worker) Start() error {
 			}
 		}
 	}()
-
-	logger.NewEntry("worker-started").With("queue", w.config.QueueName).Log()
-	return nil
+	return done
 }
 
-func (w *Worker) Stop() {
-	close(w.stopCh)
+// supervise keeps the consumer running across broker reconnects: it waits for
+// the connection or the deliveries channel to close, then reconnects with
+// bounded exponential backoff until it either succeeds or the worker stops.
+func (w *Worker) supervise() {
+	defer close(w.stopped)
+	for {
+		w.mu.Lock()
+		conn := w.connection
+		w.mu.Unlock()
+		if conn == nil {
+			return
+		}
+
+		connClosed := make(chan *amqp.Error, 1)
+		conn.NotifyClose(connClosed)
+
+		w.mu.Lock()
+		consumeDone := w.consumeDone
+		w.mu.Unlock()
+
+		select {
+		case <-w.stopCh:
+			return
+		case <-connClosed:
+		case <-consumeDone:
+		}
+
+		w.dropConnection()
+		if !w.reconnectLoop() {
+			return
+		}
+	}
+}
+
+func (w *Worker) reconnectLoop() bool {
+	delay := w.reconnectDelay
+	for {
+		select {
+		case <-w.stopCh:
+			return false
+		case <-time.After(delay):
+		}
+		if err := w.dial(); err == nil {
+			logger.NewEntry("worker-reconnected").With("queue", w.config.QueueName).Log()
+			return true
+		} else {
+			logger.NewEntry("worker-reconnect-failed").With("queue", w.config.QueueName).WithError(err).Log()
+		}
+		delay *= 2
+		if delay > maxReconnectDelay {
+			delay = maxReconnectDelay
+		}
+	}
+}
+
+func (w *Worker) dropConnection() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if w.channel != nil {
 		w.channel.Close()
 	}
 	if w.connection != nil {
 		w.connection.Close()
 	}
-	logger.NewEntry("worker-stopped").Log()
+	w.channel = nil
+	w.connection = nil
+	w.consumeDone = nil
 }
 
 func (w *Worker) processMessage(msg amqp.Delivery) {

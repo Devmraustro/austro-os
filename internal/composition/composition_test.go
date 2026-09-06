@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"austro-os/internal/ai"
@@ -329,6 +330,76 @@ func TestAIReviewerEnforcementThroughGateway(t *testing.T) {
 	// Budget exhausted: the review fails closed with the usage-limit error.
 	if _, err := rt.Orchestration.Advance(ctx, ws, pB.ID, orchestration.StageScript, orchestration.StageReview); !errors.Is(err, ai.ErrUsageLimitExceeded) {
 		t.Fatalf("expected usage limit error, got %v", err)
+	}
+}
+
+// TestComposedRuntimeEnforcesBudgetConcurrently proves the composed runtime
+// (real gateway over an OpenAI-compatible HTTP endpoint) enforces the
+// configured per-workspace budget under a concurrent burst, and that the
+// provider is contacted exactly once per accepted request and never for a
+// rejected one.
+func TestComposedRuntimeEnforcesBudgetConcurrently(t *testing.T) {
+	var httpCalls atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"compliant"}}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := stubCfg()
+	cfg.AIBackend = config.AIBackendOpenAICompatible
+	cfg.AIModel = "austro-classifier"
+	cfg.AIBaseURL = srv.URL
+	cfg.AIAPIKey = "sk-test-1a2b3c4d5e6f"
+	cfg.AIUsageLimitPerWorkspace = 5
+
+	rt, err := composition.Compose(cfg, composition.Stores{
+		Publications: newMemPublications(),
+		Pipelines:    newMemPipelines(),
+	}, composition.Sinks{})
+	if err != nil {
+		t.Fatalf("Compose: %v", err)
+	}
+
+	const workers = 64
+	release := make(chan struct{})
+	var wg sync.WaitGroup
+	var accepted, exceeded, other atomic.Int64
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			<-release
+			_, err := rt.AI.Classify(context.Background(), ai.ClassificationRequest{
+				Scope:      ai.Scope{WorkspaceID: "ws-composed-concurrent"},
+				Categories: []string{"compliant", "needs_review"},
+				Input:      "deterministic input",
+			})
+			switch {
+			case err == nil:
+				accepted.Add(1)
+			case errors.Is(err, ai.ErrUsageLimitExceeded):
+				exceeded.Add(1)
+			default:
+				other.Add(1)
+			}
+		}()
+	}
+	close(release)
+	wg.Wait()
+
+	if got := accepted.Load(); got != 5 {
+		t.Fatalf("accepted = %d, want 5", got)
+	}
+	if got := exceeded.Load(); got != workers-5 {
+		t.Fatalf("exceeded = %d, want %d", got, workers-5)
+	}
+	if other.Load() != 0 {
+		t.Fatalf("unexpected other errors: %d", other.Load())
+	}
+	if got := httpCalls.Load(); got != 5 {
+		t.Fatalf("provider HTTP calls = %d, want exactly the 5 accepted requests", got)
 	}
 }
 
