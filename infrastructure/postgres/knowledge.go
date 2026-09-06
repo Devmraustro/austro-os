@@ -27,6 +27,16 @@ func NewKnowledgeStore(db *sql.DB) *KnowledgeStore {
 	return &KnowledgeStore{db: db}
 }
 
+// vectorLiteral encodes a float32 embedding as the PGVector literal format
+// '[1,2,3]' used in the ::vector column casts.
+func vectorLiteral(embedding []float32) string {
+	parts := make([]string, 0, len(embedding))
+	for _, v := range embedding {
+		parts = append(parts, fmt.Sprintf("%g", v))
+	}
+	return "[" + strings.Join(parts, ",") + "]"
+}
+
 // beginTx opens an exclusive transaction and binds the workspace context on it
 // so RLS resolves correctly for the whole operation.
 func (s *KnowledgeStore) beginTx(ctx context.Context, workspaceID uuid.UUID) (*sql.Tx, error) {

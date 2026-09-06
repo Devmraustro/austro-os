@@ -1,0 +1,49 @@
+# VCS
+.git
+.gitignore
+
+# Secrets — never send credentials into the build context
+.env
+.env.*
+*.pem
+*.key
+*.crt
+*.cer
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.secret
+*.token
+credentials
+creds.json
+service-account*.json
+
+# Local databases and artifacts
+*.db
+*.sqlite
+*.sqlite3
+*.log
+*.tmp
+*.bak
+/bin/
+*.exe
+*.test
+*.out
+
+# IDE / editor state
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Runtime reports / verification scratch
+.verify_reports/
+
+# Docker compose override and local env overlays
+docker-compose.override.yml
+
+# Do not copy the integration test tree into runtime images (tests run from a
+# separate golang test container with a bind mount, not from these images).
+tests/
