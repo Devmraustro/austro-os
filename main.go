@@ -17,6 +17,7 @@ import (
 	logger "austro-os/internal/log"
 	"austro-os/internal/memory"
 	"austro-os/internal/middleware"
+	"austro-os/internal/rbac"
 
 	"github.com/google/uuid"
 )
@@ -98,7 +99,10 @@ func main() {
 
 	// Deny-by-default: every protected route must carry an explicit allow rule.
 	// Any request without an explicit permission for its action/resource is DENIED.
-	authzService.AddRule("GET", "/api/me")
+	// The RBAC contract is documented in internal/rbac; only the rules for
+	// routes actually registered by this server are seeded — a route declared
+	// in the contract but not registered stays denied.
+	authzService.AddRules(rbac.ImplementedRules())
 	protected := authHandler.RequireAuth(authzMiddleware(authzService, mux))
 
 	logger.NewEntry("austro-os-serving").With("address", cfg.ServerAddress).Log()

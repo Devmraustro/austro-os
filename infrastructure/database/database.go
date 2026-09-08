@@ -25,6 +25,7 @@ func Initialize(cfg *config.Config) *sql.DB {
 
 	createExtensions(db)
 	createTables(db)
+	migrateUsers(db)
 	enableRLS(db)
 	setupRLSPolicies(db)
 
@@ -215,6 +216,46 @@ func createTables(db *sql.DB) {
 	_, err := db.Exec(schema)
 	if err != nil {
 		logger.NewEntry("database-create-tables-failed").SetLevel("error").WithError(err).Log()
+		os.Exit(1)
+	}
+}
+
+// migrateUsers upgrades the users table to the workspace-scoped RBAC model:
+// a role column (founder | workspace_admin | workspace_member), a founder
+// backfill, and CHECK constraints enforcing the invariant that a founder has
+// no workspace and any non-founder always does. The constraints are the same
+// guarantees the authorization layer assumes, so the database enforces them
+// even if an insert bypasses the service.
+func migrateUsers(db *sql.DB) {
+	migration := `
+	ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'workspace_member';
+	UPDATE users SET role = 'founder' WHERE is_founder = TRUE AND role = 'workspace_member';
+
+	DO $$
+	BEGIN
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'users_role_valid') THEN
+			ALTER TABLE users ADD CONSTRAINT users_role_valid
+				CHECK (role IN ('founder', 'workspace_admin', 'workspace_member'));
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'users_founder_role_matches') THEN
+			ALTER TABLE users ADD CONSTRAINT users_founder_role_matches
+				CHECK (is_founder = (role = 'founder'));
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'users_founder_no_workspace') THEN
+			ALTER TABLE users ADD CONSTRAINT users_founder_no_workspace
+				CHECK (NOT is_founder OR workspace_id IS NULL);
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'users_nonfounder_workspace_required') THEN
+			ALTER TABLE users ADD CONSTRAINT users_nonfounder_workspace_required
+				CHECK (is_founder OR workspace_id IS NOT NULL);
+		END IF;
+	END$$;
+	`
+	_, err := db.Exec(migration)
+	if err != nil {
+		// A constraint add can only fail if pre-existing rows violate the new
+		// invariant; surface it loudly rather than silently weakening the model.
+		logger.NewEntry("database-migrate-users-failed").SetLevel("error").WithError(err).Log()
 		os.Exit(1)
 	}
 }

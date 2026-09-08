@@ -7,6 +7,7 @@ import (
 	"austro-os/internal/auth"
 	"austro-os/internal/authfoundation"
 	"austro-os/internal/config"
+	"austro-os/internal/rbac"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/require"
@@ -54,26 +55,53 @@ func TestNewUserAndLogin(t *testing.T) {
 func TestAccessTokenLifecycle(t *testing.T) {
 	svc := testJWTService()
 
-	tok, err := svc.GenerateAccessToken("user-1", workspaceA)
+	tok, err := svc.GenerateAccessToken("user-1", workspaceA, rbac.RoleWorkspaceMember)
 	require.NoError(t, err)
 
 	claims, err := svc.VerifyAccessToken(tok)
 	require.NoError(t, err)
 	require.Equal(t, "user-1", claims.ID)
 	require.Equal(t, workspaceA, claims.WorkspaceID)
+	require.Equal(t, rbac.RoleWorkspaceMember, claims.Role)
 	require.Equal(t, auth.TokenIssuer, claims.Issuer)
 	require.Contains(t, claims.Audience, auth.TokenAudience)
 }
 
 func TestAccessTokenRejectsWrongSecret(t *testing.T) {
 	svc := testJWTService()
-	tok, err := svc.GenerateAccessToken("user-1", workspaceA)
+	tok, err := svc.GenerateAccessToken("user-1", workspaceA, rbac.RoleWorkspaceMember)
 	require.NoError(t, err)
 
 	// A service with a different secret must reject the token.
 	other := auth.Initialize(&config.Config{JWTSecret: "totally-different-secret!!!!!!1", JWTRefreshSecret: "x"})
 	_, err = other.VerifyAccessToken(tok)
 	require.Error(t, err, "token signed with another secret must be rejected")
+}
+
+func TestAccessTokenRejectsUnsupportedRole(t *testing.T) {
+	svc := testJWTService()
+	// A token with a valid signature but a fabricated role must be rejected as
+	// forged: the system can never mint a role that is not supported.
+	tok, err := svc.GenerateAccessToken("user-x", workspaceA, rbac.Role("superuser"))
+	require.NoError(t, err)
+	_, err = svc.VerifyAccessToken(tok)
+	require.Error(t, err, "a token with an unsupported role must be rejected")
+}
+
+func TestAccessTokenRejectsInconsistentClaims(t *testing.T) {
+	svc := testJWTService()
+
+	// A member/admin role with no workspace is an inconsistent identity.
+	tokNoWs, err := svc.GenerateAccessToken("user-x", "", rbac.RoleWorkspaceAdmin)
+	require.NoError(t, err)
+	_, err = svc.VerifyAccessToken(tokNoWs)
+	require.Error(t, err, "a non-founder without a workspace must be rejected")
+
+	// A founder bound to a workspace is also inconsistent.
+	tokFounderWs, err := svc.GenerateAccessToken("user-x", workspaceA, rbac.RoleFounder)
+	require.NoError(t, err)
+	_, err = svc.VerifyAccessToken(tokFounderWs)
+	require.Error(t, err, "a founder with a workspace must be rejected")
 }
 
 func TestAccessTokenRejectsWrongIssuer(t *testing.T) {
@@ -88,7 +116,9 @@ func TestAccessTokenRejectsWrongIssuer(t *testing.T) {
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(15 * time.Minute)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 		},
-		ID: "user-1",
+		ID:          "user-1",
+		Role:        rbac.RoleWorkspaceMember,
+		WorkspaceID: workspaceA,
 	}
 	tok, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte("test-access-secret-at-least-32-chars-long!!"))
 	require.NoError(t, err)
@@ -106,7 +136,9 @@ func TestAccessTokenRejectsExpired(t *testing.T) {
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(-1 * time.Hour)), // expired
 			IssuedAt:  jwt.NewNumericDate(time.Now().Add(-2 * time.Hour)),
 		},
-		ID: "user-1",
+		ID:          "user-1",
+		Role:        rbac.RoleWorkspaceMember,
+		WorkspaceID: workspaceA,
 	}
 	tok, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte("test-access-secret-at-least-32-chars-long!!"))
 	require.NoError(t, err)

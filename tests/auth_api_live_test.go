@@ -24,6 +24,7 @@ type authMeResponse struct {
 	Username    string `json:"username"`
 	DisplayName string `json:"display_name"`
 	Email       string `json:"email"`
+	Role        string `json:"role"`
 	IsFounder   bool   `json:"is_founder"`
 	WorkspaceID string `json:"workspace_id"`
 }
@@ -94,6 +95,8 @@ func TestAuthLiveEndToEnd(t *testing.T) {
 	require.NoError(t, json.Unmarshal(body, &me))
 	require.Equal(t, founderUsername, me.Username)
 	require.True(t, me.IsFounder)
+	require.Equal(t, "founder", me.Role, "/api/me must report the founder role")
+	require.Equal(t, "", me.WorkspaceID, "the founder is organization-level, not workspace-scoped")
 
 	// Refresh rotation: old refresh token is invalidated, new one issued.
 	status, body = authJSON(t, http.MethodPost, "/api/auth/refresh",

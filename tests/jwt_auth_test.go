@@ -5,6 +5,7 @@ import (
 
 	"austro-os/internal/auth"
 	"austro-os/internal/config"
+	"austro-os/internal/rbac"
 
 	"github.com/stretchr/testify/require"
 )
@@ -21,12 +22,13 @@ func TestJWTAuthenticationRoundTrip(t *testing.T) {
 	svc := auth.InitializeWithStore(cfg, store)
 
 	// Access token: mint then verify and recover claims.
-	access, err := svc.GenerateAccessToken("user-42", workspaceB)
+	access, err := svc.GenerateAccessToken("user-42", workspaceB, rbac.RoleWorkspaceAdmin)
 	require.NoError(t, err)
 	claims, err := svc.VerifyAccessToken(access)
 	require.NoError(t, err, "a freshly-minted access token must verify")
 	require.Equal(t, "user-42", claims.ID)
 	require.Equal(t, workspaceB, claims.WorkspaceID)
+	require.Equal(t, rbac.RoleWorkspaceAdmin, claims.Role, "the minted token must carry the identity's role")
 
 	// Refresh token lifecycle: issue -> rotate -> old invalidated, new valid.
 	refresh, err := svc.IssueRefreshToken("user-42")

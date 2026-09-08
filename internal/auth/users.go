@@ -6,6 +6,8 @@ import (
 	"sync"
 	"time"
 
+	"austro-os/internal/rbac"
+
 	"github.com/google/uuid"
 )
 
@@ -16,15 +18,36 @@ var ErrUserNotFound = errors.New("user not found")
 // already exists or a founder already exists (the system allows at most one).
 var ErrUserExists = errors.New("user already exists")
 
+// RoleFor returns the authorization role for an identity. A founder is always
+// the founder role (its home workspace is empty); any other identity uses its
+// persisted role, defaulting to a workspace member for a record that predates
+// role assignment.
+func RoleFor(u *UserRecord) rbac.Role {
+	if u == nil {
+		return ""
+	}
+	if u.IsFounder {
+		return rbac.RoleFounder
+	}
+	if u.Role == "" || !rbac.ValidRole(u.Role) {
+		return rbac.RoleWorkspaceMember
+	}
+	return u.Role
+}
+
 // UserRecord is the persisted identity a token is minted for. PasswordHash is
 // only ever read for credential verification; it is never serialized into
-// token claims or API responses.
+// token claims or API responses. Role is the authorization role (see
+// internal/rbac) and WorkspaceID is the identity's home workspace (empty for
+// the founder); the role/workspace pairing is enforced by database constraints
+// on insert.
 type UserRecord struct {
 	ID           string
 	Username     string
 	DisplayName  string
 	Email        string
 	IsFounder    bool
+	Role         rbac.Role
 	WorkspaceID  string // empty for an organization-level founder identity
 	PasswordHash string
 	CreatedAt    time.Time
@@ -99,6 +122,12 @@ func (m *memoryUserStore) Create(_ context.Context, u *UserRecord) (*UserRecord,
 	c := cloneUser(u)
 	if c.ID == "" {
 		c.ID = uuid.NewString()
+	}
+	if c.IsFounder {
+		c.Role = rbac.RoleFounder
+		c.WorkspaceID = ""
+	} else if c.Role == "" {
+		c.Role = rbac.RoleWorkspaceMember
 	}
 	m.byUsername[c.Username] = c
 	m.byID[c.ID] = c

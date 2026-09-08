@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"austro-os/internal/config"
+	"austro-os/internal/rbac"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
@@ -26,9 +27,15 @@ const (
 
 var ErrInvalidToken = errors.New("invalid token")
 
+// Claims are the verified identity claims carried by an access token. They are
+// minted from the persisted identity at login/refresh time: Role and
+// WorkspaceID always come from the database-backed UserRecord, never from the
+// client. No sensitive material (password hashes, refresh-token secrets) is
+// ever placed in claims.
 type Claims struct {
 	jwt.RegisteredClaims
 	ID          string              `json:"id"`
+	Role        rbac.Role           `json:"role"`
 	WorkspaceID string              `json:"workspace_id,omitempty"`
 	Permissions map[string][]string `json:"permissions,omitempty"`
 }
@@ -105,16 +112,20 @@ func InitializeWithStore(cfg *config.Config, store RefreshTokenStore) *JWTServic
 	return s
 }
 
-func (s *JWTService) GenerateAccessToken(userID string, workspaceID string) (string, error) {
-	return s.GenerateAccessTokenWithPermissions(userID, workspaceID, nil)
+// GenerateAccessToken mints an access token for an identity with its role and
+// workspace but no permissions (an authorization-less token that will be denied
+// by every rule).
+func (s *JWTService) GenerateAccessToken(userID string, workspaceID string, role rbac.Role) (string, error) {
+	return s.GenerateAccessTokenWithPermissions(userID, workspaceID, role, nil)
 }
 
 // GenerateAccessTokenWithPermissions mints an access token carrying the
-// explicit authorization permissions for the identity (action -> resources).
-// The authorization layer grants a request only when an explicit rule exists
-// AND the claims carry the permission; nil permissions therefore produce a
-// token that can authorize nothing.
-func (s *JWTService) GenerateAccessTokenWithPermissions(userID string, workspaceID string, permissions map[string][]string) (string, error) {
+// explicit authorization permissions for the identity (action -> resources),
+// plus the identity's role. The authorization layer grants a request only when
+// an explicit rule exists AND the claims carry the permission AND the role is
+// in the rule's allowed set; nil permissions therefore produce a token that
+// can authorize nothing.
+func (s *JWTService) GenerateAccessTokenWithPermissions(userID string, workspaceID string, role rbac.Role, permissions map[string][]string) (string, error) {
 	now := time.Now().UTC()
 	claims := &Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -126,6 +137,7 @@ func (s *JWTService) GenerateAccessTokenWithPermissions(userID string, workspace
 			ID:        uuid.NewString(),
 		},
 		ID:          userID,
+		Role:        role,
 		WorkspaceID: workspaceID,
 		Permissions: permissions,
 	}
@@ -259,6 +271,12 @@ func (s *JWTService) RevokeRefreshToken(refreshToken string) error {
 	return s.refreshStore.Revoke(hashToken(refreshToken))
 }
 
+// VerifyAccessToken parses and verifies an access token signature, issuer and
+// audience, then validates the identity claims. A token whose role is missing,
+// unsupported, or inconsistent with its workspace (a non-founder bound to no
+// workspace, or a founder bound to one) is rejected: such a claim set can only
+// come from a forged or corrupt token, never from the identity the system
+// created.
 func (s *JWTService) VerifyAccessToken(tokenString string) (*Claims, error) {
 	claims := &Claims{}
 	token, err := jwt.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (interface{}, error) {
@@ -273,7 +291,34 @@ func (s *JWTService) VerifyAccessToken(tokenString string) (*Claims, error) {
 	if !token.Valid {
 		return nil, ErrInvalidToken
 	}
+	if err := validateClaimsShape(claims); err != nil {
+		return nil, err
+	}
 	return claims, nil
+}
+
+// validateClaimsShape rejects a claim set that could not have been minted for
+// a real identity: an unsupported role, or a role/workspace pairing the
+// database constraints forbid (founder has no workspace; member/admin always
+// do).
+func validateClaimsShape(claims *Claims) error {
+	if claims == nil || claims.ID == "" {
+		return ErrInvalidToken
+	}
+	if !rbac.ValidRole(claims.Role) {
+		return ErrInvalidToken
+	}
+	switch claims.Role {
+	case rbac.RoleFounder:
+		if claims.WorkspaceID != "" {
+			return ErrInvalidToken
+		}
+	case rbac.RoleWorkspaceAdmin, rbac.RoleWorkspaceMember:
+		if claims.WorkspaceID == "" {
+			return ErrInvalidToken
+		}
+	}
+	return nil
 }
 
 // HashRefreshToken exposes the deterministic digest for tests that must

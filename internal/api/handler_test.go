@@ -10,6 +10,7 @@ import (
 	"austro-os/internal/auth"
 	"austro-os/internal/authz"
 	"austro-os/internal/config"
+	"austro-os/internal/rbac"
 
 	"github.com/stretchr/testify/require"
 )
@@ -103,9 +104,16 @@ func TestLoginFlowAndProfile(t *testing.T) {
 	require.Equal(t, "bearer", got.TokenType)
 	require.Equal(t, accessTokenTTLSeconds, got.ExpiresIn)
 
+	// Access token claims must carry the founder role and no workspace.
+	claims, err := h.jwt.VerifyAccessToken(got.AccessToken)
+	require.NoError(t, err)
+	require.Equal(t, rbac.RoleFounder, claims.Role)
+	require.Equal(t, "", claims.WorkspaceID)
+
 	me := builtinMe(t, h, got.AccessToken, http.StatusOK)
 	require.Equal(t, "founder", me.Username)
 	require.True(t, me.IsFounder)
+	require.Equal(t, string(rbac.RoleFounder), me.Role)
 	require.Equal(t, "", me.WorkspaceID)
 }
 
@@ -199,19 +207,20 @@ func TestRequireAuthRejectsInvalidBearer(t *testing.T) {
 
 func TestPermissionsGateProfile(t *testing.T) {
 	// The deny-by-default authorization contract for /api/me: an explicit rule
-	// exists, so only tokens carrying the GET /api/me permission pass.
+	// exists, so only tokens carrying the GET /api/me permission and a role in
+	// the rule pass.
 	h := testHandler(true)
 	doRequest(t, h, http.MethodPost, "/api/auth/bootstrap", `{}`, "")
 
 	az := authz.NewAuthorizer()
-	az.AddRule("GET", "/api/me")
+	az.AddRules(rbac.ImplementedRules())
 
 	foundToken := login(t, h, "founder", "test-founder-password")
 	allowedClaims, err := h.jwt.VerifyAccessToken(foundToken.AccessToken)
 	require.NoError(t, err)
 	require.NoError(t, az.AuthorizeClaims(allowedClaims, "GET", "/api/me"))
 
-	noPerms := &auth.Claims{ID: "someone", Permissions: nil}
+	noPerms := &auth.Claims{ID: "someone", Role: rbac.RoleWorkspaceMember, WorkspaceID: "ws", Permissions: nil}
 	require.Error(t, az.AuthorizeClaims(noPerms, "GET", "/api/me"))
 
 	// A route with no rule is denied even for a founder (no permissive fallback).

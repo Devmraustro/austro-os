@@ -204,7 +204,11 @@ paths:
   /api/me:
     get:
       summary: Current user profile
-      description: Returns the authenticated caller's profile.
+      description: |
+        Returns the authenticated caller's safe profile, including the identity's
+        authorization role (founder | workspace_admin | workspace_member). The
+        role is read from the persisted identity at token-issuance time; it is
+        never accepted from the client.
       operationId: getMe
       security:
         - bearerAuth: []
@@ -642,6 +646,10 @@ components:
           description: Rotation-enabled refresh token
     MeResponse:
       type: object
+      description: |
+        The authenticated caller's safe profile. Only profile fields and the
+        identity's authorization role are returned; password hashes,
+        refresh-token material and internal database fields are never exposed.
       properties:
         id:
           type: string
@@ -652,6 +660,9 @@ components:
           type: string
         email:
           type: string
+        role:
+          type: string
+          enum: ["founder", "workspace_admin", "workspace_member"]
         is_founder:
           type: boolean
         workspace_id:

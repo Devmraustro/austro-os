@@ -10,6 +10,7 @@ import (
 	"austro-os/internal/auth"
 	"austro-os/internal/config"
 	logger "austro-os/internal/log"
+	"austro-os/internal/rbac"
 )
 
 const (
@@ -61,6 +62,7 @@ type meResponse struct {
 	Username    string `json:"username"`
 	DisplayName string `json:"display_name"`
 	Email       string `json:"email"`
+	Role        string `json:"role"`
 	IsFounder   bool   `json:"is_founder"`
 	WorkspaceID string `json:"workspace_id,omitempty"`
 }
@@ -89,6 +91,7 @@ func (h *AuthHandler) Bootstrap(w http.ResponseWriter, r *http.Request) {
 		Username:     h.cfg.FounderUsername,
 		DisplayName:  h.cfg.FounderUsername,
 		IsFounder:    true,
+		Role:         rbac.RoleFounder,
 		PasswordHash: hash,
 	}
 	_, err = h.users.Create(r.Context(), u)
@@ -182,7 +185,7 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusUnauthorized, "invalid token")
 		return
 	}
-	access, err := h.jwt.GenerateAccessTokenWithPermissions(u.ID, u.WorkspaceID, permissionsFor(u))
+	access, err := h.jwt.GenerateAccessTokenWithPermissions(u.ID, u.WorkspaceID, auth.RoleFor(u), rbac.PermissionsForRole(auth.RoleFor(u)))
 	if err != nil {
 		h.serverError(w, "refresh", err)
 		return
@@ -220,9 +223,12 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// Me returns the authenticated caller's profile. The route is registered under
-// an explicit authorization rule (GET /api/me), so reaching this handler means
-// the verified claims already carry the permission.
+// Me returns the authenticated caller's profile: only safe profile fields. No
+// password hash, no refresh-token material, and no internal database fields
+// are ever exposed. The role is the identity's persisted role from the
+// database (via token claims). The route is registered under an explicit
+// authorization rule (GET /api/me), so reaching this handler means the
+// verified claims already carry the permission.
 func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	claims, ok := auth.FromRequest(r)
 	if !ok {
@@ -238,20 +244,24 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 		h.serverError(w, "me", err)
 		return
 	}
+	role := auth.RoleFor(u)
 	writeJSON(w, http.StatusOK, &meResponse{
 		ID:          u.ID,
 		Username:    u.Username,
 		DisplayName: u.DisplayName,
 		Email:       u.Email,
+		Role:        string(role),
 		IsFounder:   u.IsFounder,
 		WorkspaceID: u.WorkspaceID,
 	})
 }
 
-// issueTokens mints an access token with the identity's permissions and a new
-// refresh token backed by the refresh store.
+// issueTokens mints an access token carrying the identity's role and the
+// explicit role-based permissions, plus a new refresh token backed by the
+// refresh store.
 func (h *AuthHandler) issueTokens(ctx context.Context, u *auth.UserRecord) (*tokenResponse, error) {
-	access, err := h.jwt.GenerateAccessTokenWithPermissions(u.ID, u.WorkspaceID, permissionsFor(u))
+	role := auth.RoleFor(u)
+	access, err := h.jwt.GenerateAccessTokenWithPermissions(u.ID, u.WorkspaceID, role, rbac.PermissionsForRole(role))
 	if err != nil {
 		return nil, err
 	}
@@ -265,16 +275,6 @@ func (h *AuthHandler) issueTokens(ctx context.Context, u *auth.UserRecord) (*tok
 		ExpiresIn:    accessTokenTTLSeconds,
 		RefreshToken: refresh,
 	}, nil
-}
-
-// permissionsFor maps an identity to the explicit authorization permissions
-// carried by its access token. Founder tokens may reach their own profile;
-// everything else remains deny-by-default.
-func permissionsFor(u *auth.UserRecord) map[string][]string {
-	if u == nil || !u.IsFounder {
-		return nil
-	}
-	return map[string][]string{"GET": {"/api/me"}}
 }
 
 func rateKey(route string, r *http.Request) string {
