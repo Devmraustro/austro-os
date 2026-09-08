@@ -63,6 +63,8 @@ services:
       - AUSTRO_RABBITMQ_QUEUE=${AUSTRO_RABBITMQ_QUEUE:-austro.events}
       - AUSTRO_JWT_SECRET=${AUSTRO_JWT_SECRET:-austro-dev-jwt-secret-key-min-32-chars}
       - AUSTRO_JWT_REFRESH_SECRET=${AUSTRO_JWT_REFRESH_SECRET:-austro-dev-jwt-refresh-secret-min-32-chars}
+      - AUSTRO_FOUNDER_USERNAME=${AUSTRO_FOUNDER_USERNAME:-founder}
+      - AUSTRO_FOUNDER_PASSWORD=${AUSTRO_FOUNDER_PASSWORD:-founder-dev-password-min-16-chars}
       - AUSTRO_AI_BACKEND=${AUSTRO_AI_BACKEND:-stub}
       - AUSTRO_AI_MODEL=${AUSTRO_AI_MODEL:-}
       - AUSTRO_AI_BASE_URL=${AUSTRO_AI_BASE_URL:-}
@@ -101,6 +103,8 @@ services:
       - AUSTRO_RABBITMQ_QUEUE=${AUSTRO_RABBITMQ_QUEUE:-austro.events}
       - AUSTRO_JWT_SECRET=${AUSTRO_JWT_SECRET:-austro-dev-jwt-secret-key-min-32-chars}
       - AUSTRO_JWT_REFRESH_SECRET=${AUSTRO_JWT_REFRESH_SECRET:-austro-dev-jwt-refresh-secret-min-32-chars}
+      - AUSTRO_FOUNDER_USERNAME=${AUSTRO_FOUNDER_USERNAME:-founder}
+      - AUSTRO_FOUNDER_PASSWORD=${AUSTRO_FOUNDER_PASSWORD:-founder-dev-password-min-16-chars}
       - AUSTRO_AI_BACKEND=${AUSTRO_AI_BACKEND:-stub}
       - AUSTRO_AI_MODEL=${AUSTRO_AI_MODEL:-}
       - AUSTRO_AI_BASE_URL=${AUSTRO_AI_BASE_URL:-}
@@ -138,6 +142,8 @@ services:
       - AUSTRO_RABBITMQ_QUEUE=${AUSTRO_RABBITMQ_QUEUE:-austro.events}
       - AUSTRO_JWT_SECRET=${AUSTRO_JWT_SECRET:-austro-dev-jwt-secret-key-min-32-chars}
       - AUSTRO_JWT_REFRESH_SECRET=${AUSTRO_JWT_REFRESH_SECRET:-austro-dev-jwt-refresh-secret-min-32-chars}
+      - AUSTRO_FOUNDER_USERNAME=${AUSTRO_FOUNDER_USERNAME:-founder}
+      - AUSTRO_FOUNDER_PASSWORD=${AUSTRO_FOUNDER_PASSWORD:-founder-dev-password-min-16-chars}
       - AUSTRO_API_URL=http://api:8080
     volumes:
       - .:/app

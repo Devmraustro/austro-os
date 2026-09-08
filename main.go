@@ -9,6 +9,7 @@ import (
 	"austro-os/infrastructure/postgres"
 	"austro-os/infrastructure/rabbitmq"
 	"austro-os/infrastructure/redis"
+	"austro-os/internal/api"
 	"austro-os/internal/auth"
 	"austro-os/internal/authz"
 	"austro-os/internal/composition"
@@ -40,9 +41,11 @@ func main() {
 	}
 	defer sink.Close()
 
-	_ = auth.Initialize(cfg)
+	jwtSvc := auth.Initialize(cfg)
 
 	authzService := authz.NewAuthorizer()
+
+	authHandler := api.NewAuthHandler(cfg, jwtSvc, postgres.NewUserStore(db))
 
 	// The API composes the full runtime with the production adapters: PostgreSQL
 	// stores, Redis memory, RabbitMQ event/audit sinks. This proves the wiring
@@ -84,9 +87,19 @@ func main() {
 		w.Write([]byte(`{"ready":true}`))
 	})
 
+	// Authentication endpoints. Login/refresh/logout/bootstrap are explicit
+	// public exemptions (unauthenticated by design); every other route requires
+	// an explicit authorization rule.
+	mux.HandleFunc("POST /api/auth/bootstrap", authHandler.Bootstrap)
+	mux.HandleFunc("POST /api/auth/login", authHandler.Login)
+	mux.HandleFunc("POST /api/auth/refresh", authHandler.Refresh)
+	mux.HandleFunc("POST /api/auth/logout", authHandler.Logout)
+	mux.HandleFunc("GET /api/me", authHandler.Me)
+
 	// Deny-by-default: every protected route must carry an explicit allow rule.
 	// Any request without an explicit permission for its action/resource is DENIED.
-	protected := authzMiddleware(authzService, mux)
+	authzService.AddRule("GET", "/api/me")
+	protected := authHandler.RequireAuth(authzMiddleware(authzService, mux))
 
 	logger.NewEntry("austro-os-serving").With("address", cfg.ServerAddress).Log()
 	if err := http.ListenAndServe(cfg.ServerAddress, middleware.Middleware(protected)); err != nil {
@@ -104,15 +117,37 @@ func queueFor(cfg *config.Config) string {
 	return "austro.events"
 }
 
+// isPublicEndpoint enumerates the explicit public exemptions. They are the
+// health probes and the unauthenticated authentication entry points. Everything
+// else must satisfy an explicit authorization rule.
+func isPublicEndpoint(method, path string) bool {
+	switch {
+	case (method == http.MethodGet || method == http.MethodHead) &&
+		(path == "/health/live" || path == "/health/ready"):
+		return true
+	case method == http.MethodPost &&
+		(path == "/api/auth/login" ||
+			path == "/api/auth/refresh" ||
+			path == "/api/auth/logout" ||
+			path == "/api/auth/bootstrap"):
+		return true
+	}
+	return false
+}
+
 // authzMiddleware wraps the mux with the deny-by-default authorization
-// enforcement point. Rules are explicit; there is no permissive fallback.
+// enforcement point. Rules are explicit; there is no permissive fallback. The
+// auth handler's RequireAuth middleware runs first (it activates before this
+// layer) so verified claims are present on the request context when an action
+// is authorized.
 func authzMiddleware(a *authz.Authorizer, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		action := r.Method
 		resource := r.URL.Path
 
-		// Health/liveness probes are public per OpenAPI contracts.
-		if r.URL.Path == "/health/live" || r.URL.Path == "/health/ready" {
+		// Explicit public endpoints (health probes and unauthenticated auth
+		// entry points) are exempt from the authorization layer by contract.
+		if isPublicEndpoint(action, resource) {
 			next.ServeHTTP(w, r)
 			return
 		}

@@ -28,9 +28,9 @@ var ErrInvalidToken = errors.New("invalid token")
 
 type Claims struct {
 	jwt.RegisteredClaims
-	ID           string            `json:"id"`
-	WorkspaceID  string            `json:"workspace_id,omitempty"`
-	Permissions  map[string][]string `json:"permissions,omitempty"`
+	ID          string              `json:"id"`
+	WorkspaceID string              `json:"workspace_id,omitempty"`
+	Permissions map[string][]string `json:"permissions,omitempty"`
 }
 
 // StoredRefreshToken is the persisted representation of a refresh token,
@@ -106,6 +106,15 @@ func InitializeWithStore(cfg *config.Config, store RefreshTokenStore) *JWTServic
 }
 
 func (s *JWTService) GenerateAccessToken(userID string, workspaceID string) (string, error) {
+	return s.GenerateAccessTokenWithPermissions(userID, workspaceID, nil)
+}
+
+// GenerateAccessTokenWithPermissions mints an access token carrying the
+// explicit authorization permissions for the identity (action -> resources).
+// The authorization layer grants a request only when an explicit rule exists
+// AND the claims carry the permission; nil permissions therefore produce a
+// token that can authorize nothing.
+func (s *JWTService) GenerateAccessTokenWithPermissions(userID string, workspaceID string, permissions map[string][]string) (string, error) {
 	now := time.Now().UTC()
 	claims := &Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -118,6 +127,7 @@ func (s *JWTService) GenerateAccessToken(userID string, workspaceID string) (str
 		},
 		ID:          userID,
 		WorkspaceID: workspaceID,
+		Permissions: permissions,
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
@@ -219,6 +229,29 @@ func (s *JWTService) VerifyRefreshToken(refreshToken string) bool {
 		return false
 	}
 	return !rt.Revoked && !rt.Used && time.Now().Before(rt.ExpiresAt)
+}
+
+// SubjectFromRefreshToken parses a signed refresh token and returns the user
+// identity it was issued to, without consuming (rotating) it. It is used on the
+// refresh path to re-mint an access token for the same identity.
+func (s *JWTService) SubjectFromRefreshToken(refreshToken string) (string, error) {
+	claims := &Claims{}
+	token, err := jwt.ParseWithClaims(refreshToken, claims, func(t *jwt.Token) (interface{}, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", t.Method)
+		}
+		return s.refreshSecret, nil
+	}, jwt.WithIssuer(TokenIssuer), jwt.WithAudience(TokenAudience))
+	if err != nil {
+		return "", err
+	}
+	if !token.Valid {
+		return "", ErrInvalidToken
+	}
+	if claims.Subject == "" {
+		return "", ErrInvalidToken
+	}
+	return claims.Subject, nil
 }
 
 // RevokeRefreshToken revokes a refresh token (logout / session termination).

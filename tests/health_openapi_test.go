@@ -15,18 +15,18 @@ import (
 
 // openAPISummary holds the structural facts we assert about the spec.
 type openAPISummary struct {
-	openapi    string
-	title      string
-	totalOps   int
-	ops        []openAPIOpSummary // path, method, operationId, principles, security
+	openapi  string
+	title    string
+	totalOps int
+	ops      []openAPIOpSummary // path, method, operationId, principles, security
 }
 
 type openAPIOpSummary struct {
-	path       string
-	method     string
+	path        string
+	method      string
 	operationID string
-	principles []string
-	hasAuth    bool
+	principles  []string
+	hasAuth     bool
 }
 
 // loadOpenAPISummary parses the spec with yaml.Node so that path items appearing
@@ -127,7 +127,7 @@ func TestOpenAPIPrincipleReferences(t *testing.T) {
 	require.Equal(t, "AUSTRO OS API", spec.title)
 
 	require.GreaterOrEqual(t, spec.totalOps, 10, "expected a richly-specified API surface")
-	require.Equal(t, 13, spec.totalOps, "spec should define 13 operations")
+	require.Equal(t, 18, spec.totalOps, "spec should define 18 operations")
 
 	for _, op := range spec.ops {
 		// Public, read-only surface: health probes and the constitutional
@@ -147,12 +147,13 @@ func TestOpenAPIPrincipleReferences(t *testing.T) {
 	}
 }
 
-// isPublicReadOnlyPath reports whether an endpoint is public read-only
-// (infrastructure probes and the constitutional registry).
+// isPublicReadOnlyPath reports whether an endpoint is public and unauthenticated
+// (infrastructure probes, the constitutional registry, and auth token endpoints).
 func isPublicReadOnlyPath(p string) bool {
 	switch p {
 	case "/health/live", "/health/ready",
-		"/constitutional/principles", "/constitutional/principles/{name}":
+		"/constitutional/principles", "/constitutional/principles/{name}",
+		"/api/auth/bootstrap", "/api/auth/login", "/api/auth/refresh", "/api/auth/logout":
 		return true
 	}
 	return false

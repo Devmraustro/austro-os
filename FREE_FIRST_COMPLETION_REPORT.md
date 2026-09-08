@@ -13,7 +13,7 @@ the approved Phase 1/2 scope or deferred Phase 3+ scope:
 
 - The **Phase 1 gate** (`tests/phase1_exit_criteria_test.go`,
   `.github/workflows/phase1-exit-criteria.yml`) is unchanged and immutable.
-- **RLS** is never disabled (`SET row_security = off` never appears).
+- **RLS** is never disabled; row-level security is enforced through policies only, per ADR-007.
 - No new secrets, endpoints, or external call sites; no paid credential is ever
   fetched, fabricated, or hardcoded.
 - The default backends remain **offline `stub`** for both the AI and the

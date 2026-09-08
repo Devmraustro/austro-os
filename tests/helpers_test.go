@@ -19,6 +19,7 @@ type testEnv struct {
 	postgresDSN string
 	redisAddr   string
 	rabbitURL   string
+	apiURL      string
 }
 
 func envOrDefault(key, def string) string {
@@ -33,6 +34,7 @@ func loadTestEnv() *testEnv {
 		postgresDSN: envOrDefault("AUSTRO_POSTGRES_DSN", "postgres://austro:austro@postgres:5432/austro?sslmode=disable"),
 		redisAddr:   envOrDefault("AUSTRO_REDIS_ADDR", "redis:6379"),
 		rabbitURL:   envOrDefault("AUSTRO_RABBITMQ_URL", "amqp://austro:austro@rabbitmq:5672"),
+		apiURL:      envOrDefault("AUSTRO_API_URL", "http://api:8080"),
 	}
 }
 
@@ -54,8 +56,8 @@ func getEnv() *testEnv {
 
 // Workspace identifiers used by the isolation tests.
 const (
-	workspaceA = "11111111-1111-1111-1111-111111111111"
-	workspaceB = "22222222-2222-2222-2222-222222222222"
+	workspaceA     = "11111111-1111-1111-1111-111111111111"
+	workspaceB     = "22222222-2222-2222-2222-222222222222"
 	workspaceARole = "workspace_a_user"
 	workspaceBRole = "workspace_b_user"
 )

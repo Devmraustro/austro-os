@@ -40,6 +40,196 @@ paths:
                 properties:
                   ready:
                     type: boolean
+  /api/auth/bootstrap:
+    post:
+      summary: Initialize the founder identity
+      description: |
+        Creates the single founder identity from the deployment configuration
+        (AUSTRO_FOUNDER_USERNAME / AUSTRO_FOUNDER_PASSWORD). Succeeds exactly
+        once; returns 409 once a founder exists or when bootstrap is not
+        configured. There is no arbitrary self-registration.
+      operationId: authBootstrap
+      responses:
+        '201':
+          description: Founder initialized
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: ["initialized"]
+        '409':
+          description: Already initialized or not configured
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 9 — Security by Design
+        - Principle 12 — Human Oversight
+  /api/auth/login:
+    post:
+      summary: Authenticate with username and password
+      description: |
+        Issues an access token (15 minutes) and a refresh token (30 days,
+        rotation enabled). Failures are uniform: they never reveal whether the
+        username or the password was wrong.
+      operationId: authLogin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                password:
+                  type: string
+                  format: password
+      responses:
+        '200':
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400':
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 9 — Security by Design
+        - Principle 10 — Privacy by Design
+  /api/auth/refresh:
+    post:
+      summary: Rotate a refresh token
+      description: |
+        Validates the presented refresh token, rejects reused or revoked
+        tokens, rotates it, and re-issues an access token for the same identity.
+      operationId: authRefresh
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token:
+                  type: string
+      responses:
+        '200':
+          description: Rotated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400':
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Invalid, reused or revoked token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 9 — Security by Design
+  /api/auth/logout:
+    post:
+      summary: Revoke a refresh token
+      description: Terminates the session held by the presented refresh token. Idempotent.
+      operationId: authLogout
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token:
+                  type: string
+      responses:
+        '204':
+          description: Session terminated
+        '400':
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 9 — Security by Design
+        - Principle 10 — Privacy by Design
+  /api/me:
+    get:
+      summary: Current user profile
+      description: Returns the authenticated caller's profile.
+      operationId: getMe
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Current user profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 9 — Security by Design
+        - Principle 10 — Privacy by Design
   /workspaces:
     get:
       summary: List workspaces
@@ -435,6 +625,38 @@ components:
         code:
           type: integer
           description: Error code
+    TokenResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+          description: Bearer access token (15 minute lifetime)
+        token_type:
+          type: string
+          enum: ["bearer"]
+        expires_in:
+          type: integer
+          description: Access token lifetime in seconds
+        refresh_token:
+          type: string
+          description: Rotation-enabled refresh token
+    MeResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        username:
+          type: string
+        display_name:
+          type: string
+        email:
+          type: string
+        is_founder:
+          type: boolean
+        workspace_id:
+          type: string
+          format: uuid
   securitySchemes:
     bearerAuth:
       type: http
@@ -443,6 +665,8 @@ components:
 tags:
   - name: Health
     description: Health check endpoints
+  - name: Auth
+    description: Authentication and session management
   - name: Workspaces
     description: Workspace management operations
   - name: Departments

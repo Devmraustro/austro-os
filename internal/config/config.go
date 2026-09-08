@@ -46,6 +46,14 @@ type Config struct {
 	Environment      string
 	WorkspaceID      string
 
+	// FounderUsername/FounderPassword configure the single founder identity
+	// (AUSTRO_FOUNDER_USERNAME / AUSTRO_FOUNDER_PASSWORD). Both must be set
+	// together; until then the bootstrap endpoint is disabled (409). The values
+	// are deployment configuration, never hardcoded, and the password is never
+	// logged or echoed.
+	FounderUsername string
+	FounderPassword string
+
 	// AIBackend selects the AI Provider adapter (AIBackendStub by default).
 	// A non-stub backend is CONFIGURATION_REQUIRED: AIModel, AIBaseURL and
 	// AIAPIKey must be present and secure, or validation fails fast.
@@ -112,6 +120,9 @@ func defaults() *Config {
 		JWTRefreshSecret: getEnv("AUSTRO_JWT_REFRESH_SECRET", "change-me-in-production"),
 		Environment:      getEnv("AUSTRO_ENV", "development"),
 		WorkspaceID:      getEnv("AUSTRO_WORKSPACE_ID", "default"),
+
+		FounderUsername: os.Getenv("AUSTRO_FOUNDER_USERNAME"),
+		FounderPassword: os.Getenv("AUSTRO_FOUNDER_PASSWORD"),
 
 		AIBackend:                getEnv("AUSTRO_AI_BACKEND", AIBackendStub),
 		AIModel:                  os.Getenv("AUSTRO_AI_MODEL"),
@@ -182,6 +193,16 @@ func (c *Config) Validate() error {
 	}
 	if c.PublishRetryBackoffBase < 0 || c.PublishRetryBackoffMax < 0 {
 		missing = append(missing, "AUSTRO_PUBLISH_RETRY_BACKOFF")
+	}
+
+	// Founder bootstrap is optional, but both settings must be supplied
+	// together (a half-configured bootstrap would fail at runtime), and a
+	// configured password must never be a placeholder.
+	if (c.FounderUsername == "") != (c.FounderPassword == "") {
+		missing = append(missing, "AUSTRO_FOUNDER_USERNAME/AUSTRO_FOUNDER_PASSWORD")
+	}
+	if c.FounderPassword != "" && isInsecure(c.FounderPassword) {
+		missing = append(missing, "AUSTRO_FOUNDER_PASSWORD")
 	}
 
 	if len(missing) > 0 {

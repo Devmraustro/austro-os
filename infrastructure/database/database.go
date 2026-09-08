@@ -194,6 +194,23 @@ func createTables(db *sql.DB) {
 
 	CREATE INDEX IF NOT EXISTS idx_pipelines_workspace ON pipelines(workspace_id);
 	CREATE INDEX IF NOT EXISTS idx_pipelines_status ON pipelines(workspace_id, status);
+
+	CREATE TABLE IF NOT EXISTS users (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		username TEXT NOT NULL,
+		password_hash TEXT NOT NULL,
+		display_name TEXT NOT NULL DEFAULT '',
+		email TEXT NOT NULL DEFAULT '',
+		is_founder BOOLEAN NOT NULL DEFAULT FALSE,
+		workspace_id UUID REFERENCES workspaces(id) ON DELETE SET NULL,
+		created_at TIMESTAMP DEFAULT NOW(),
+		updated_at TIMESTAMP DEFAULT NOW(),
+		CONSTRAINT users_username_unique UNIQUE (username)
+	);
+
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_users_single_founder
+		ON users ((TRUE)) WHERE is_founder = TRUE;
+	CREATE INDEX IF NOT EXISTS idx_users_workspace ON users(workspace_id);
 `
 	_, err := db.Exec(schema)
 	if err != nil {
@@ -203,7 +220,7 @@ func createTables(db *sql.DB) {
 }
 
 func enableRLS(db *sql.DB) {
-	tables := []string{"workspaces", "departments", "teams", "ai_employees", "ceos", "tasks", "knowledge_documents", "publications", "pipelines"}
+	tables := []string{"workspaces", "departments", "teams", "ai_employees", "ceos", "tasks", "knowledge_documents", "publications", "pipelines", "users"}
 	for _, table := range tables {
 		_, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ENABLE ROW LEVEL SECURITY", table))
 		if err != nil {
@@ -274,6 +291,18 @@ func setupRLSPolicies(db *sql.DB) {
 		IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'workspace_isolation_policy' AND polrelid = 'pipelines'::regclass) THEN
 			EXECUTE 'CREATE POLICY workspace_isolation_policy ON pipelines
 				USING (workspace_id = current_setting(''app.current_workspace'', true)::UUID)';
+		END IF;
+
+		-- Users: founder identity is organization-level (visible without a
+		-- workspace context so login/bootstrap can resolve it); non-founder
+		-- identities are workspace-scoped. When a workspace context is set on
+		-- the connection, a restricted role sees only its own workspace's users
+		-- plus the founder.
+		IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'user_scope_policy' AND polrelid = 'users'::regclass) THEN
+			EXECUTE 'CREATE POLICY user_scope_policy ON users
+				USING (current_setting(''app.current_workspace'', true) = ''''
+				       OR is_founder
+				       OR workspace_id = current_setting(''app.current_workspace'', true)::UUID)';
 		END IF;
 	END$$;
 	`
