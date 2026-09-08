@@ -157,6 +157,12 @@ func TestRBACAuthorizationDecisions(t *testing.T) {
 		Permissions: rbac.PermissionsForRole(rbac.RoleFounder)}
 	require.NoError(t, az.AuthorizeClaims(founder, "GET", "/workspaces/"+workspaceB))
 
+	// Founder may create workspaces (explicit org-level POST rule); admins and
+	// members may not.
+	require.NoError(t, az.AuthorizeClaims(founder, "POST", "/workspaces"))
+	require.ErrorIs(t, az.AuthorizeClaims(adminAClaims, "POST", "/workspaces"), authz.ErrDenied)
+	require.ErrorIs(t, az.AuthorizeClaims(memberAClaims, "POST", "/workspaces"), authz.ErrDenied)
+
 	// Unknown route always denied, even for admin/founder (no default allow).
 	require.ErrorIs(t, az.AuthorizeClaims(adminAClaims, "GET", "/api/unknown"), authz.ErrDenied)
 	require.ErrorIs(t, az.AuthorizeClaims(founder, "GET", "/api/unknown"), authz.ErrDenied)
@@ -258,12 +264,27 @@ func TestRBACLiveRoleAndDenials(t *testing.T) {
 	require.Equal(t, "workspace_member", meMember.Role)
 	require.Equal(t, workspaceA, meMember.WorkspaceID)
 
-	// Deny-by-default: a workspace-shaped route and an unknown route are
-	// refused even with a valid admin token (403), and never expose data.
-	status, _ = authJSON(t, http.MethodGet, "/workspaces/"+workspaceA, nil, adminLogin.AccessToken)
-	require.Equal(t, http.StatusForbidden, status, "workspace route must be denied until its endpoint exists")
+	// The workspace administration surface is live (Phase 3 Step 3): an admin
+	// reads only its own workspace, cannot enumerate or create organization-wide,
+	// and unknown routes stay refused.
+	status, body = authJSON(t, http.MethodGet, "/workspaces/"+workspaceA, nil, adminLogin.AccessToken)
+	require.Equal(t, http.StatusOK, status, "admin must read its own workspace: %s", body)
+	status, _ = authJSON(t, http.MethodGet, "/workspaces/"+workspaceB, nil, adminLogin.AccessToken)
+	require.Equal(t, http.StatusForbidden, status, "admin must be denied another workspace")
+	status, _ = authJSON(t, http.MethodGet, "/workspaces", nil, adminLogin.AccessToken)
+	require.Equal(t, http.StatusForbidden, status, "admin must never enumerate workspaces")
+	status, _ = authJSON(t, http.MethodPost, "/workspaces",
+		map[string]string{"name": "rbac-forbidden-workspace"}, adminLogin.AccessToken)
+	require.Equal(t, http.StatusForbidden, status, "admin must not create workspaces")
 	status, _ = authJSON(t, http.MethodGet, "/api/does-not-exist", nil, adminLogin.AccessToken)
 	require.Equal(t, http.StatusForbidden, status)
+
+	// A member is denied the workspace administration surface entirely.
+	status, _ = authJSON(t, http.MethodGet, "/workspaces/"+workspaceA, nil, memberLogin.AccessToken)
+	require.Equal(t, http.StatusForbidden, status, "member must be denied workspace administration")
+	status, _ = authJSON(t, http.MethodPost, "/workspaces",
+		map[string]string{"name": "rbac-member-workspace"}, memberLogin.AccessToken)
+	require.Equal(t, http.StatusForbidden, status, "member must not create workspaces")
 
 	// Unauthenticated and invalid-token denials remain as specified.
 	status, _ = authJSON(t, http.MethodGet, "/api/me", nil, "")

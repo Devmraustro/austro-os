@@ -13,7 +13,7 @@ COPY internal ./internal
 COPY infrastructure ./infrastructure
 COPY cmd ./cmd
 
-RUN go mod download
+RUN for i in $(seq 1 10); do go mod download && exit 0 || sleep 2; done; exit 1
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o main .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o worker ./cmd/worker
 

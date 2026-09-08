@@ -82,14 +82,52 @@ func TestWorkspaceCrossWorkspaceDenied(t *testing.T) {
 	require.ErrorIs(t, az.AuthorizeClaims(admin, "GET", "/workspaces/"+workspaceB), ErrDenied)
 }
 
-func TestLiveSurfaceWorkspaceRouteDenied(t *testing.T) {
+func TestLiveSurfaceWorkspaceRoutes(t *testing.T) {
 	// The live authorizer seeds only the rules for routes actually registered
-	// (ImplementedRules); the workspace administration surface is still only
-	// declared (Rules), so even an admin carrying the grant is denied because
-	// no rule is registered for it.
+	// (ImplementedRules). As of Phase 3 Step 3 the workspace administration
+	// surface is registered: a founder may list/create/read, a workspace admin
+	// may read only its own workspace, and a member is denied everywhere.
 	az := seeded(t, rbac.ImplementedRules())
+
 	admin := claims(rbac.RoleWorkspaceAdmin, workspaceA, rbac.PermissionsForRole(rbac.RoleWorkspaceAdmin))
-	require.ErrorIs(t, az.AuthorizeClaims(admin, "GET", "/workspaces/"+workspaceA), ErrDenied)
+	require.NoError(t, az.AuthorizeClaims(admin, "GET", "/workspaces/"+workspaceA),
+		"an admin may read its own workspace on the live surface")
+	require.ErrorIs(t, az.AuthorizeClaims(admin, "GET", "/workspaces/"+workspaceB), ErrDenied,
+		"an admin must never read another workspace")
+	require.ErrorIs(t, az.AuthorizeClaims(admin, "GET", "/workspaces"), ErrDenied,
+		"an admin must never enumerate workspaces organization-wide")
+	require.ErrorIs(t, az.AuthorizeClaims(admin, "POST", "/workspaces"), ErrDenied,
+		"an admin must never create workspaces")
+
+	member := claims(rbac.RoleWorkspaceMember, workspaceA, rbac.PermissionsForRole(rbac.RoleWorkspaceMember))
+	require.ErrorIs(t, az.AuthorizeClaims(member, "GET", "/workspaces/"+workspaceA), ErrDenied)
+	require.ErrorIs(t, az.AuthorizeClaims(member, "GET", "/workspaces"), ErrDenied)
+
+	founder := claims(rbac.RoleFounder, "", rbac.PermissionsForRole(rbac.RoleFounder))
+	require.NoError(t, az.AuthorizeClaims(founder, "GET", "/workspaces"))
+	require.NoError(t, az.AuthorizeClaims(founder, "POST", "/workspaces"))
+	require.NoError(t, az.AuthorizeClaims(founder, "GET", "/workspaces/"+workspaceA))
+
+	// No undeclared method on a registered resource is ever allowed.
+	require.ErrorIs(t, az.AuthorizeClaims(founder, "DELETE", "/workspaces/"+workspaceA), ErrDenied)
+}
+
+func TestFounderCreateWorkspaceRuleExplicit(t *testing.T) {
+	// POST /workspaces is an explicit founder-only organization-level rule in
+	// the declared contract; no other role ever carries it.
+	az := seeded(t, rbac.Rules())
+	founder := claims(rbac.RoleFounder, "", rbac.PermissionsForRole(rbac.RoleFounder))
+	require.NoError(t, az.AuthorizeClaims(founder, "POST", "/workspaces"))
+
+	admin := claims(rbac.RoleWorkspaceAdmin, workspaceA, rbac.PermissionsForRole(rbac.RoleWorkspaceAdmin))
+	require.ErrorIs(t, az.AuthorizeClaims(admin, "POST", "/workspaces"), ErrDenied)
+
+	member := claims(rbac.RoleWorkspaceMember, workspaceA, rbac.PermissionsForRole(rbac.RoleWorkspaceMember))
+	require.ErrorIs(t, az.AuthorizeClaims(member, "POST", "/workspaces"), ErrDenied)
+
+	// A founder token without the permission grant cannot create either.
+	noPerm := claims(rbac.RoleFounder, "", nil)
+	require.ErrorIs(t, az.AuthorizeClaims(noPerm, "POST", "/workspaces"), ErrDenied)
 }
 
 func TestWorkspaceMemberRoleDenied(t *testing.T) {

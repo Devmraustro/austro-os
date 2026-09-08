@@ -237,7 +237,12 @@ paths:
   /workspaces:
     get:
       summary: List workspaces
-      description: List all workspaces accessible to the current user
+      description: |
+        Organization-level workspace listing. Explicitly founder-only: a founder
+        may enumerate every workspace in the organization; a workspace_admin may
+        not (it reaches only its own workspace through GET /workspaces/{id})
+        and a workspace_member is denied. There is no client-supplied workspace
+        context for this operation.
       operationId: listWorkspaces
       security:
         - bearerAuth: []
@@ -250,13 +255,31 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/Workspace'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
       principles:
         - Principle 1 — Vision First
         - Principle 9 — Security by Design
   /workspaces:
     post:
       summary: Create workspace
-      description: Create a new workspace
+      description: |
+        Create a new workspace. Explicitly founder-only and organization-level:
+        only the founder carries the permission, so workspace_admin and
+        workspace_member identities are denied. The name is required, trimmed
+        and bounded to 100 characters; unknown request fields (including any
+        client-supplied workspace_id) are rejected. A duplicate name returns a
+        deterministic 409 conflict.
       operationId: createWorkspace
       security:
         - bearerAuth: []
@@ -266,9 +289,12 @@ paths:
           application/json:
             schema:
               type: object
+              required:
+                - name
               properties:
                 name:
                   type: string
+                  description: Workspace name
       responses:
         '201':
           description: Workspace created
@@ -276,13 +302,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Workspace'
+        '400':
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Workspace name already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
       principles:
         - Principle 1 — Vision First
         - Principle 5 — Modular Design
   /workspaces/{id}:
     get:
       summary: Get workspace
-      description: Get workspace by ID
+      description: |
+        Read a workspace by id. A workspace_admin may read only its own
+        workspace: the workspace in the path must equal the admin's verified
+        token workspace and never comes from a client-controlled source. A
+        workspace_member is denied. A founder's organization-level read is
+        explicit.
       operationId: getWorkspace
       security:
         - bearerAuth: []
@@ -300,6 +355,30 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Workspace'
+        '400':
+          description: Invalid workspace id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Workspace not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
       principles:
         - Principle 9 — Security by Design
         - Principle 10 — Privacy by Design

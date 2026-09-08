@@ -118,14 +118,24 @@ func Rules() []Rule {
 			Scope:           ScopeNone,
 			Principle:       "Principle 9 - Security by Design",
 		},
-		// /workspaces: founder organization-level authority (org listing).
-		// Declared for the workspace administration step; not yet registered.
+		// /workspaces: founder organization-level authority (org listing and
+		// workspace creation). A workspace is not tenant data contained inside
+		// another workspace, so creating one is an organization-level operation
+		// only the founder may perform; a workspace admin must never enumerate
+		// or create workspaces organization-wide.
 		{
 			Action:          "GET",
 			ResourcePattern: "/workspaces",
 			Roles:           []Role{RoleFounder},
 			Scope:           ScopeNone,
 			Principle:       "Principle 9 - Security by Design",
+		},
+		{
+			Action:          "POST",
+			ResourcePattern: "/workspaces",
+			Roles:           []Role{RoleFounder},
+			Scope:           ScopeNone,
+			Principle:       "Principle 5 - Modular Design",
 		},
 		// /workspaces/{id}: workspace-scoped administration read. A workspace
 		// admin may read only its own workspace; the founder's org-level
@@ -149,7 +159,9 @@ func Rules() []Rule {
 
 // ImplementedRules returns the rules for routes actually registered by the
 // HTTP server. It is the only rule set seeded into the runtime authorizer;
-// anything else is denied because it has no rule and no route.
+// anything else is denied because it has no rule and no route. The workspace
+// administration surface (GET/POST /workspaces, GET /workspaces/{id}) is
+// registered by the server, so its rules are seeded here.
 func ImplementedRules() []Rule {
 	return []Rule{
 		{
@@ -158,6 +170,34 @@ func ImplementedRules() []Rule {
 			Roles:           []Role{RoleFounder, RoleWorkspaceAdmin, RoleWorkspaceMember},
 			Scope:           ScopeNone,
 			Principle:       "Principle 9 - Security by Design",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/workspaces",
+			Roles:           []Role{RoleFounder},
+			Scope:           ScopeNone,
+			Principle:       "Principle 9 - Security by Design",
+		},
+		{
+			Action:          "POST",
+			ResourcePattern: "/workspaces",
+			Roles:           []Role{RoleFounder},
+			Scope:           ScopeNone,
+			Principle:       "Principle 5 - Modular Design",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/workspaces/{id}",
+			Roles:           []Role{RoleFounder},
+			Scope:           ScopeNone,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/workspaces/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin},
+			Scope:           ScopePath,
+			Principle:       "Principle 10 - Privacy by Design",
 		},
 	}
 }
@@ -171,7 +211,8 @@ func PermissionsForRole(r Role) map[string][]string {
 	switch r {
 	case RoleFounder:
 		return map[string][]string{
-			"GET": {"/api/me", "/workspaces", "/workspaces/{id}"},
+			"GET":  {"/api/me", "/workspaces", "/workspaces/{id}"},
+			"POST": {"/workspaces"},
 		}
 	case RoleWorkspaceAdmin:
 		return map[string][]string{

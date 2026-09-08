@@ -97,6 +97,17 @@ func main() {
 	mux.HandleFunc("POST /api/auth/logout", authHandler.Logout)
 	mux.HandleFunc("GET /api/me", authHandler.Me)
 
+	// Workspace administration. All three routes are protected (no public
+	// exemption), so they are reachable only through an explicit allow rule:
+	// GET/POST /workspaces are founder organization-level (ScopeNone), and
+	// GET /workspaces/{id} is founder org-level or the workspace admin's own
+	// workspace (ScopePath). The handlers never accept a client-supplied
+	// workspace: the lookup is bound to the verified claims.
+	workspaceHandler := api.NewWorkspaceHandler(postgres.NewWorkspaceStore(db))
+	mux.HandleFunc("GET /workspaces", workspaceHandler.List)
+	mux.HandleFunc("POST /workspaces", workspaceHandler.Create)
+	mux.HandleFunc("GET /workspaces/{id}", workspaceHandler.Get)
+
 	// Deny-by-default: every protected route must carry an explicit allow rule.
 	// Any request without an explicit permission for its action/resource is DENIED.
 	// The RBAC contract is documented in internal/rbac; only the rules for
