@@ -1,7 +1,6 @@
 package austro_os_test
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
