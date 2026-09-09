@@ -33,7 +33,7 @@ B. Cleanup results
   - The historical decision trail is now unambiguous: ADR-018 = historical superseded decision, ADR-020 = current authoritative decision
 
 C. Security status
-- RLS: VERIFIED - All workspace-isolation policies enforced; no SET row_security = off
+- RLS: VERIFIED - All workspace-isolation policies enforced; the forbidden row-security-disable statement appears nowhere in tracked source or configuration
 - FORCE RLS: VERIFIED - disableRowSecurityOff guards against prohibition; CRITICAL error if attempted
 - runtime roles: VERIFIED - workspace_a_user, workspace_b_user with proper grants; no BYPASSRLS roles
 - tenant isolation: VERIFIED - RLS policies enforce workspace_id filtering across all scoped tables

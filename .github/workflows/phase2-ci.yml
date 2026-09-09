@@ -48,7 +48,10 @@ jobs:
 
     services:
       postgres:
-        image: postgres:16-alpine
+        # pgvector image so database.Initialize can create the vector
+        # extension and the embedding columns (the AUSTRO API applies the
+        # idempotent schema at startup).
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: austro
           POSTGRES_PASSWORD: austro
@@ -88,28 +91,103 @@ jobs:
           go-version: "1.22"
           cache: true
 
-      - name: Apply additive schema to the live Postgres service
-        env:
-          PGPASSWORD: austro
+      - name: Build the AUSTRO API binary
+        # The API entrypoint applies the idempotent schema (CREATE TABLE IF NOT
+        # EXISTS + RLS policies) at startup via database.Initialize, then serves
+        # HTTP. Building the binary once avoids a go run compile race during
+        # the readiness wait.
+        run: go build -o /tmp/austro-api .
+
+      - name: Install PostgreSQL client
         run: |
-          # The Phase 2 additive schema (idempotent CREATE TABLE IF NOT EXISTS +
-          # RLS policies) lives in infrastructure/database/database.go and
-          # infrastructure/postgres/postgres.go; the API applies it at startup.
-          # Here the source DDL is surfaced to Postgres so the integration suite
-          # can exercise the RLS/isolation tests deterministically. The additive
-          # DDL is safe to re-run.
-          psql "postgres://austro:austro@localhost:5432/austro?sslmode=disable" -v ON_ERROR_STOP=1 -c "SELECT 'phase2 schema is applied idempotently by the API service startup'"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client
+
+      - name: Start API and wait for readiness
+        # Loopback 127.0.0.1 connection strings are used so the strict config
+        # validator does not reject the development placeholders (localhost:PORT
+        # is insecure by design). The API binds :8080 (dual-stack) so the test
+        # suite's localhost:8080 probes resolve over both IPv4 and IPv6.
+        env:
+          AUSTRO_ENV: development
+          AUSTRO_SERVER_ADDR: ":8080"
+          AUSTRO_POSTGRES_DSN: postgres://austro:austro@127.0.0.1:5432/austro?sslmode=disable
+          AUSTRO_REDIS_ADDR: 127.0.0.1:6379
+          AUSTRO_RABBITMQ_URL: amqp://austro:austro@127.0.0.1:5672
+          AUSTRO_JWT_SECRET: austro-dev-jwt-secret-key-min-32-chars
+          AUSTRO_JWT_REFRESH_SECRET: austro-dev-jwt-refresh-secret-min-32-chars
+          AUSTRO_FOUNDER_USERNAME: founder
+          AUSTRO_FOUNDER_PASSWORD: founder-dev-password-min-16-chars
+        run: |
+          nohup /tmp/austro-api > /tmp/austro-api.log 2>&1 &
+          echo $! > /tmp/austro-api.pid
+
+          ready=0
+          for _ in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8080/health/live >/dev/null 2>&1 &&
+               curl -sf http://127.0.0.1:8080/health/ready >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$ready" -ne 1 ]; then
+            echo "API did not become ready within the wait window. Logs:"
+            tail -n 200 /tmp/austro-api.log
+            exit 1
+          fi
+          echo "API is live and ready"
+
+      - name: Verify live database schema and RLS policies
+        # Real SQL verification against the live CI database: the application
+        # tables must exist and the workspace isolation policies must be fully
+        # provisioned. Any mismatch raises an exception and fails the job with
+        # the real error (ON_ERROR_STOP).
+        run: |
+          psql "postgres://austro:austro@127.0.0.1:5432/austro?sslmode=disable" -v ON_ERROR_STOP=1 -P pager=off -c 'DO $$
+          BEGIN
+            IF (SELECT count(*) FROM pg_tables WHERE schemaname = ''public'' AND tablename IN (''founders'',''ceos'',''workspaces'',''departments'',''teams'',''ai_employees'',''audit_events'',''tasks'',''knowledge_documents'',''publications'',''pipelines'',''users'')) <> 12 THEN
+              RAISE EXCEPTION ''database schema incomplete (expected 12 application tables)'';
+            END IF;
+            IF (SELECT count(*) FROM pg_policy WHERE polname = ''workspace_isolation_policy'') <> 9 THEN
+              RAISE EXCEPTION ''workspace_isolation_policy not fully provisioned (expected 9)'';
+            END IF;
+          END
+          $$;'
 
       - name: Full stack regression test suite
         env:
           AUSTRO_ENV: development
-          AUSTRO_POSTGRES_DSN: postgres://austro:austro@localhost:5432/austro?sslmode=disable
-          AUSTRO_REDIS_ADDR: localhost:6379
-          AUSTRO_RABBITMQ_URL: amqp://austro:austro@localhost:5672
+          AUSTRO_POSTGRES_DSN: postgres://austro:austro@127.0.0.1:5432/austro?sslmode=disable
+          AUSTRO_REDIS_ADDR: 127.0.0.1:6379
+          AUSTRO_RABBITMQ_URL: amqp://austro:austro@127.0.0.1:5672
           AUSTRO_JWT_SECRET: austro-dev-jwt-secret-key-min-32-chars
           AUSTRO_JWT_REFRESH_SECRET: austro-dev-jwt-refresh-secret-min-32-chars
           AUSTRO_API_URL: http://localhost:8080
+          AUSTRO_FOUNDER_USERNAME: founder
+          AUSTRO_FOUNDER_PASSWORD: founder-dev-password-min-16-chars
         run: go test ./tests/ -count=1 -timeout 600s
+
+      - name: Print API server logs
+        if: always()
+        run: |
+          if [ -f /tmp/austro-api.log ]; then
+            echo "==== AUSTRO API LOG (tail 100) ===="
+            tail -n 100 /tmp/austro-api.log
+          fi
+
+      - name: Stop API process
+        if: always()
+        run: |
+          if [ -f /tmp/austro-api.pid ]; then
+            pid=$(cat /tmp/austro-api.pid)
+            if kill -0 "$pid" 2>/dev/null; then
+              kill "$pid"
+            fi
+            rm -f /tmp/austro-api.pid
+          fi
+          echo "AUSTRO API stopped"
 
       - name: Phase 2 scanner guard (banned tokens / dependency direction)
         run: |
