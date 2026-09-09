@@ -37,9 +37,8 @@ jobs:
 
       - name: Verify RLS policies exist
         run: |
-        echo "=== Checking for proper RLS policies ==="
+          echo "=== Checking for proper RLS policies ==="
           grep -r "CREATE POLICY" --include="*.py" --include="*.go" . || echo "Note: No RLS policies found in source"
-        
       - name: Verify audit hash chain genesis handling
         run: |
           echo "=== Checking audit hash chain genesis ==="
@@ -143,4 +142,3 @@ jobs:
           echo "  - No advanced AI agents/content automation/social publishing"
           echo "  - Dependency direction enforcement"
           echo "  - All principles have enforcement mechanisms documented"
-</

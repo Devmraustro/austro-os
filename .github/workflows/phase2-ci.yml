@@ -98,9 +98,7 @@ jobs:
           # Here the source DDL is surfaced to Postgres so the integration suite
           # can exercise the RLS/isolation tests deterministically. The additive
           # DDL is safe to re-run.
-          psql "postgres://austro:austro@localhost:5432/austro?sslmode=disable" -v ON_ERROR_STOP=1 <<'SQL'
-            SELECT 'phase2 schema is applied idempotently by the API service startup; additive DDL is echoed inline for the CI integration surface';
-SQL
+          psql "postgres://austro:austro@localhost:5432/austro?sslmode=disable" -v ON_ERROR_STOP=1 -c "SELECT 'phase2 schema is applied idempotently by the API service startup'"
 
       - name: Full stack regression test suite
         env:
