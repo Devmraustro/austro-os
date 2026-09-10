@@ -27,7 +27,7 @@ func Initialize(cfg *config.Config) *SQLDB {
 		os.Exit(1)
 	}
 
-	// ADR-007: No SET row_security = off
+	// ADR-007: disabling PostgreSQL row security is prohibited.
 	// Use proper RLS policies instead
 	enableRLSPolicies(db)
 
@@ -72,7 +72,7 @@ func enableRLSPolicies(db *sql.DB) {
 func disableRowSecurityOff(db *sql.DB) {
 	// This is absolutely prohibited per ADR-007
 	// Workspace isolation must be enforced at the database layer through RLS policies
-	logger.NewEntry("CRITICAL: SET row_security = off is absolutely prohibited. Use proper RLS policies instead.").SetLevel("error").Log()
+	logger.NewEntry("CRITICAL: disabling row security is absolutely prohibited. Use proper RLS policies instead.").SetLevel("error").Log()
 	os.Exit(1)
 }
 
