@@ -51,18 +51,18 @@ func createTables(db *sql.DB) {
 		created_at TIMESTAMP DEFAULT NOW()
 	);
 
-	CREATE TABLE IF NOT EXISTS ceos (
-		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-		name TEXT NOT NULL,
-		workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-		created_at TIMESTAMP DEFAULT NOW()
-	);
-
 	CREATE TABLE IF NOT EXISTS workspaces (
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		name TEXT NOT NULL,
 		created_at TIMESTAMP DEFAULT NOW(),
 		updated_at TIMESTAMP DEFAULT NOW()
+	);
+
+	CREATE TABLE IF NOT EXISTS ceos (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		name TEXT NOT NULL,
+		workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+		created_at TIMESTAMP DEFAULT NOW()
 	);
 
 	CREATE TABLE IF NOT EXISTS departments (
