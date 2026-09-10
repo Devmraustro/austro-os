@@ -141,20 +141,33 @@ jobs:
 
       - name: Verify live database schema and RLS policies
         # Real SQL verification against the live CI database: the application
-        # tables must exist and the workspace isolation policies must be fully
-        # provisioned. Any mismatch raises an exception and fails the job with
-        # the real error (ON_ERROR_STOP).
+        # tables must exist, row level security must be enabled where expected,
+        # and the workspace isolation policies must be fully provisioned. Any
+        # mismatch raises an exception and fails the job with the real error
+        # (ON_ERROR_STOP). A quoted heredoc is used so the PL/pgSQL body keeps
+        # its single-quoted string literals intact.
         run: |
-          psql "postgres://austro:austro@127.0.0.1:5432/austro?sslmode=disable" -v ON_ERROR_STOP=1 -P pager=off -c 'DO $$
+          psql "postgres://austro:austro@127.0.0.1:5432/austro?sslmode=disable" -v ON_ERROR_STOP=1 -P pager=off <<'SQL'
+          DO $$
           BEGIN
-            IF (SELECT count(*) FROM pg_tables WHERE schemaname = ''public'' AND tablename IN (''founders'',''ceos'',''workspaces'',''departments'',''teams'',''ai_employees'',''audit_events'',''tasks'',''knowledge_documents'',''publications'',''pipelines'',''users'')) <> 12 THEN
-              RAISE EXCEPTION ''database schema incomplete (expected 12 application tables)'';
+            IF (SELECT count(*) FROM pg_tables
+                WHERE schemaname = 'public'
+                  AND tablename IN ('founders','ceos','workspaces','departments','teams','ai_employees','audit_events','tasks','knowledge_documents','publications','pipelines','users')) <> 12 THEN
+              RAISE EXCEPTION 'database schema incomplete (expected 12 application tables)';
             END IF;
-            IF (SELECT count(*) FROM pg_policy WHERE polname = ''workspace_isolation_policy'') <> 9 THEN
-              RAISE EXCEPTION ''workspace_isolation_policy not fully provisioned (expected 9)'';
+            IF (SELECT count(*) FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public'
+                  AND c.relname IN ('workspaces','departments','teams','ai_employees','ceos','tasks','knowledge_documents','publications','pipelines','users')
+                  AND c.relrowsecurity) <> 10 THEN
+              RAISE EXCEPTION 'row level security not enabled on all expected tables';
             END IF;
-          END
-          $$;'
+            IF (SELECT count(*) FROM pg_policy WHERE polname = 'workspace_isolation_policy') <> 9 THEN
+              RAISE EXCEPTION 'workspace_isolation_policy not fully provisioned (expected 9)';
+            END IF;
+          END;
+          $$;
+          SQL
 
       - name: Full stack regression test suite
         env:
