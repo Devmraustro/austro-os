@@ -3,6 +3,7 @@ package austro_os_test
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -101,10 +102,28 @@ func TestInfrastructurePostgresIsClean(t *testing.T) {
 	}
 }
 
-// TestPhase1CoverageRemainsWired verifies the existing Phase-1 security
-// coverage is intact: the frozen gate still invokes the scanner, and the CI
-// workflow still greps for the directive while excluding only the frozen gate
-// file whose test description legitimately names it.
+// workflowExcludedFiles returns the unique --exclude targets referenced anywhere
+// in the given workflow content, in first-seen order. Values are extracted
+// regardless of whether the workflow quotes them (as the Phase-1 gate does).
+func workflowExcludedFiles(workflow string) []string {
+	re := regexp.MustCompile(`--exclude=("?)([^"\s]+)`)
+	var out []string
+	seen := map[string]bool{}
+	for _, m := range re.FindAllStringSubmatch(workflow, -1) {
+		name := m[2]
+		if !seen[name] {
+			seen[name] = true
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// TestPhase1CoverageRemainsWired verifies the security property of the Phase-1
+// workflow: it scans raw *.go/*.py text, exempts exactly ONE source file (the
+// frozen Phase-1 gate), and never broadens that exemption to directories or
+// other files. Multiple scan invocations may legitimately reference the same
+// single exclusion.
 func TestPhase1CoverageRemainsWired(t *testing.T) {
 	root := repoRoot(t)
 
@@ -125,10 +144,42 @@ func TestPhase1CoverageRemainsWired(t *testing.T) {
 		t.Fatalf("read Phase-1 workflow: %v", err)
 	}
 	workflow := string(wf)
-	if !strings.Contains(workflow, "--exclude=phase1_exit_criteria_test.go") {
-		t.Fatalf("Phase-1 workflow no longer excludes only the frozen gate file")
+
+	// 1. The Phase-1 detector scans raw *.go and *.py text.
+	for _, marker := range []string{`--include="*.go"`, `--include="*.py"`, "grep -r"} {
+		if !strings.Contains(workflow, marker) {
+			t.Fatalf("Phase-1 workflow no longer scans with %s", marker)
+		}
 	}
-	if !strings.Contains(workflow, "grep -r") {
-		t.Fatalf("Phase-1 workflow no longer runs the security grep")
+
+	// 5. The scan covers the whole tree (infrastructure and tests included):
+	// file-level exemptions are allowed, directory-wide ones never are.
+	if strings.Contains(workflow, "--exclude-dir") {
+		t.Fatalf("Phase-1 workflow contains a directory-wide exclusion")
+	}
+
+	// 2. The ONLY exempt source file is the frozen Phase-1 gate.
+	excluded := workflowExcludedFiles(workflow)
+	if len(excluded) != 1 {
+		t.Fatalf("Phase-1 workflow exempts %d unique files; want exactly the frozen gate: %v", len(excluded), excluded)
+	}
+	if excluded[0] != "phase1_exit_criteria_test.go" {
+		t.Fatalf("Phase-1 workflow exempts %q; want exactly phase1_exit_criteria_test.go", excluded[0])
+	}
+
+	// 3. Every prohibited-SQL grep run carries that same single exclusion, so
+	// structurally the same file is exempted from each scan pass.
+	keyword := "SET " + "row_security"
+	runs := 0
+	for _, line := range strings.Split(workflow, "\n") {
+		if strings.Contains(line, "grep") && strings.Contains(line, keyword) {
+			runs++
+			if !strings.Contains(line, "--exclude=\""+excluded[0]+"\"") {
+				t.Fatalf("prohibited-SQL grep run lacks the frozen-gate exclusion: %s", strings.TrimSpace(line))
+			}
+		}
+	}
+	if runs == 0 {
+		t.Fatalf("Phase-1 workflow no longer runs the prohibited-SQL grep")
 	}
 }
