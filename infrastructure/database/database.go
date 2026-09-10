@@ -158,6 +158,17 @@ func createTables(db *sql.DB) {
 	CREATE INDEX IF NOT EXISTS idx_knowledge_workspace ON knowledge_documents(workspace_id);
 	CREATE INDEX IF NOT EXISTS idx_knowledge_kind ON knowledge_documents(workspace_id, kind);
 
+	CREATE TABLE IF NOT EXISTS memory_embeddings (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+		memory_id TEXT NOT NULL,
+		content TEXT NOT NULL,
+		embedding vector(10)
+	);
+
+	CREATE UNIQUE INDEX IF NOT EXISTS uq_memory_embeddings_memory_id ON memory_embeddings(memory_id);
+	CREATE INDEX IF NOT EXISTS idx_memory_embeddings_workspace ON memory_embeddings(workspace_id);
+
 	CREATE TABLE IF NOT EXISTS publications (
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 		workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -261,7 +272,7 @@ func migrateUsers(db *sql.DB) {
 }
 
 func enableRLS(db *sql.DB) {
-	tables := []string{"workspaces", "departments", "teams", "ai_employees", "ceos", "tasks", "knowledge_documents", "publications", "pipelines", "users"}
+	tables := []string{"workspaces", "departments", "teams", "ai_employees", "ceos", "tasks", "knowledge_documents", "memory_embeddings", "publications", "pipelines", "users"}
 	for _, table := range tables {
 		_, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ENABLE ROW LEVEL SECURITY", table))
 		if err != nil {
@@ -319,6 +330,12 @@ func setupRLSPolicies(db *sql.DB) {
 		-- Knowledge documents: direct match on workspace_id column
 		IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'workspace_isolation_policy' AND polrelid = 'knowledge_documents'::regclass) THEN
 			EXECUTE 'CREATE POLICY workspace_isolation_policy ON knowledge_documents
+				USING (workspace_id = current_setting(''app.current_workspace'', true)::UUID)';
+		END IF;
+
+		-- Memory embeddings: direct match on workspace_id column
+		IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'workspace_isolation_policy' AND polrelid = 'memory_embeddings'::regclass) THEN
+			EXECUTE 'CREATE POLICY workspace_isolation_policy ON memory_embeddings
 				USING (workspace_id = current_setting(''app.current_workspace'', true)::UUID)';
 		END IF;
 

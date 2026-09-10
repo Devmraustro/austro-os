@@ -152,22 +152,50 @@ jobs:
           BEGIN
             IF (SELECT count(*) FROM pg_tables
                 WHERE schemaname = 'public'
-                  AND tablename IN ('founders','ceos','workspaces','departments','teams','ai_employees','audit_events','tasks','knowledge_documents','publications','pipelines','users')) <> 12 THEN
-              RAISE EXCEPTION 'database schema incomplete (expected 12 application tables)';
+                  AND tablename IN ('founders','ceos','workspaces','departments','teams','ai_employees','audit_events','tasks','knowledge_documents','memory_embeddings','publications','pipelines','users')) <> 13 THEN
+              RAISE EXCEPTION 'database schema incomplete (expected 13 application tables)';
             END IF;
             IF (SELECT count(*) FROM pg_class c
                 JOIN pg_namespace n ON n.oid = c.relnamespace
                 WHERE n.nspname = 'public'
-                  AND c.relname IN ('workspaces','departments','teams','ai_employees','ceos','tasks','knowledge_documents','publications','pipelines','users')
-                  AND c.relrowsecurity) <> 10 THEN
+                  AND c.relname IN ('workspaces','departments','teams','ai_employees','ceos','tasks','knowledge_documents','memory_embeddings','publications','pipelines','users')
+                  AND c.relrowsecurity) <> 11 THEN
               RAISE EXCEPTION 'row level security not enabled on all expected tables';
             END IF;
-            IF (SELECT count(*) FROM pg_policy WHERE polname = 'workspace_isolation_policy') <> 9 THEN
-              RAISE EXCEPTION 'workspace_isolation_policy not fully provisioned (expected 9)';
+            IF (SELECT count(*) FROM pg_policy WHERE polname = 'workspace_isolation_policy') <> 10 THEN
+              RAISE EXCEPTION 'workspace_isolation_policy not fully provisioned (expected 10)';
             END IF;
           END;
           $$;
           SQL
+
+      - name: Build and start the AUSTRO worker
+        # TestWorkerAdvancesPipelineFromEventToComplete seeds a pipeline row and
+        # publishes an event expecting a live worker to consume it and advance
+        # research->script->review->publish->complete. The docker-compose runtime
+        # runs a worker container, but GitHub Actions services do not, so the CI
+        # runtime must start the worker itself before the regression suite runs.
+        env:
+          AUSTRO_ENV: development
+          AUSTRO_SERVER_ADDR: ":8080"
+          AUSTRO_POSTGRES_DSN: postgres://austro:austro@127.0.0.1:5432/austro?sslmode=disable
+          AUSTRO_REDIS_ADDR: 127.0.0.1:6379
+          AUSTRO_RABBITMQ_URL: amqp://austro:austro@127.0.0.1:5672
+          AUSTRO_JWT_SECRET: austro-dev-jwt-secret-key-min-32-chars
+          AUSTRO_JWT_REFRESH_SECRET: austro-dev-jwt-refresh-secret-min-32-chars
+          AUSTRO_FOUNDER_USERNAME: founder
+          AUSTRO_FOUNDER_PASSWORD: founder-dev-password-min-16-chars
+        run: |
+          go build -o /tmp/austro-worker ./cmd/worker
+          nohup /tmp/austro-worker > /tmp/austro-worker.log 2>&1 &
+          echo $! > /tmp/austro-worker.pid
+          sleep 2
+          if ! kill -0 "$(cat /tmp/austro-worker.pid)" 2>/dev/null; then
+            echo "Worker failed to start. Logs:"
+            tail -n 100 /tmp/austro-worker.log
+            exit 1
+          fi
+          echo "AUSTRO worker is running"
 
       - name: Full stack regression test suite
         env:
@@ -182,15 +210,19 @@ jobs:
           AUSTRO_FOUNDER_PASSWORD: founder-dev-password-min-16-chars
         run: go test ./tests/ -count=1 -timeout 600s
 
-      - name: Print API server logs
+      - name: Print API and worker logs
         if: always()
         run: |
           if [ -f /tmp/austro-api.log ]; then
             echo "==== AUSTRO API LOG (tail 100) ===="
             tail -n 100 /tmp/austro-api.log
           fi
+          if [ -f /tmp/austro-worker.log ]; then
+            echo "==== AUSTRO WORKER LOG (tail 100) ===="
+            tail -n 100 /tmp/austro-worker.log
+          fi
 
-      - name: Stop API process
+      - name: Stop API and worker processes
         if: always()
         run: |
           if [ -f /tmp/austro-api.pid ]; then
@@ -200,7 +232,14 @@ jobs:
             fi
             rm -f /tmp/austro-api.pid
           fi
-          echo "AUSTRO API stopped"
+          if [ -f /tmp/austro-worker.pid ]; then
+            pid=$(cat /tmp/austro-worker.pid)
+            if kill -0 "$pid" 2>/dev/null; then
+              kill "$pid"
+            fi
+            rm -f /tmp/austro-worker.pid
+          fi
+          echo "AUSTRO API and worker stopped"
 
       - name: Phase 2 scanner guard (banned tokens / dependency direction)
         run: |
