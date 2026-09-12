@@ -302,7 +302,7 @@ nothing) — the success path, not a mask.
 Verified: both workflows parse as valid YAML (Go `yaml.v3`); the new gate SQL
 and the schema SQL were **executed against the live database** —
 `tables=13 rls_enabled=12 rls_forced=12 workspace_isolation_policy=10`, gate
-`exit=0`. **CI itself was not triggered** — pushing is forbidden (§21).
+`exit=0`. **CI has since been triggered and is green** — see §23.
 
 ## 12. Docker / Compose
 
@@ -310,9 +310,11 @@ and the schema SQL were **executed against the live database** —
 `test`, with `AUSTRO_POSTGRES_RUNTIME_PASSWORD` **required** (`:?`) rather than
 defaulted. `.env.example` documents all four new settings.
 
-**Not executed** — no Docker in this sandbox. Static review plus a
-`gopkg.in/yaml.v3` parse only. `docker build` and `docker compose config` remain
-unverified.
+**Not executed in this sandbox** — no Docker daemon. It is executed by CI: the
+regression job's `Initialize containers` step brings up PostgreSQL with
+pgvector, Redis and RabbitMQ from this file, and the API, worker and full
+regression suite then run against those containers (§23). A standalone
+`docker build` of the API image is still not exercised by any workflow.
 
 ## 13. Database roles (live, direct SQL)
 
@@ -376,17 +378,17 @@ validation, Redis authentication, CA roots, CI fail-fast, event-bus race safety.
 
 ## 17. Remaining limitations
 
-1. **GitHub Actions never ran.** Pushing is forbidden, so every CI change lands
-   unexecuted. The new gate SQL was executed by hand against a live PostgreSQL;
-   that is not the same as a green workflow run.
-2. **Docker and Compose never ran.** No Docker daemon.
-3. **Full API/worker startup not completed.** With Redis now running the API
-   reaches `database-topology-ready` and `redis-connection-established` and
-   fails only at RabbitMQ; the worker fails at RabbitMQ before its database
-   stage. J and K are proven at the database layer
-   (`TestRuntimeTopologySatisfiesProductionStartup`) and for two of the API's
-   three external dependencies by the real binary — not end to end. **RabbitMQ
-   needs Erlang and cannot be built here.**
+1. ~~**GitHub Actions never ran.**~~ **Closed by §23.** Both workflows ran on
+   the pushed commit and completed `success`.
+2. ~~**Docker and Compose never ran.**~~ **Closed by §23.** The regression job's
+   `Initialize containers` step brings up PostgreSQL with pgvector, Redis and
+   RabbitMQ from `docker-compose.yml` and passed.
+3. ~~**Full API/worker startup not completed.**~~ **Closed by §23.** In CI the
+   API reaches readiness on the unprivileged runtime role, the worker starts and
+   advances a pipeline from `created` through `script`, `review`, `publish` to
+   `complete` over real RabbitMQ, and both stop cleanly. J and K are now proven
+   end to end. They remain unproven *in this sandbox*, where RabbitMQ needs
+   Erlang and cannot be built.
 4. **Publishing and orchestration audit cannot fail its operation.**
    `publish.AuditSink` and `orchestration.AuditSink` return nothing, so a
    persistence failure is logged, not propagated. Fixing it changes both
@@ -406,20 +408,39 @@ validation, Redis authentication, CA roots, CI fail-fast, event-bus race safety.
 10. **OpenAPI still declares 8 operations that are not registered**, pinned by
     `TestOpenAPIPrincipleReferences` asserting exactly 18.
 
-## 18. Commits (17 ahead of `af34792`, none pushed)
-
-Sixteen carry the work; the seventeenth is this report.
-
-This task's four:
+## 18. Commits (19 ahead of `af34792`, pushed to the session branch)
 
 ```
-75d9c46 Count concurrent audit appends as a delta
-e94ad4e Provision the runtime topology in CI, compose, and an ADR
-a0d8cab Write audit events to PostgreSQL and fail closed when they cannot be
-88ee44e Enforce workspace RLS on the application runtime role
+1e897e4 Serve workspace administration from the administrative handle
+81f3c97 Adopt the existing founder instead of inserting a second one
+4499d74 Treat an empty workspace binding as unset in every RLS policy
+5accaf7 Report the assertion text and service logs when the suite fails
+2731a3b Name the failing tests when the regression suite fails
+afa112d Stop a comment from tripping the ADR-007 scanner
+df09fa0 Report the U-1 and U-2 closure with runtime evidence
+b61c26f Record the runtime topology and persistent audit decision
+14461b4 Write audit events to PostgreSQL and fail closed when they cannot be
+d5524fc Serve traffic from a non-owner role and verify RLS at startup
+1f4b6fc Record the release-candidate hardening pass
+9ce62d2 Require secrets and stop exposing dependency ports publicly
+81b6ce6 Make CI report real failures and keep the Phase-1 gate byte-identical
+ee23b45 Fail closed when RLS cannot be established, and stop leaking cross-tenant keys
+76e6883 Ack permanently malformed worker messages instead of redelivering them forever
+34a2d73 Enforce server timeouts, request limits, and safe client addresses
+238ce29 Fail closed on weak secrets and reject invalid configuration
+44926e4 Bind audit records to outcome and principle so replays and swaps cannot collide
+067500a Revoke every token in a family when one refresh token is reused
 ```
 
-Preceded by the ten re-created hardening commits `1070682`…`fa9046b`.
+The sandbox was re-cloned at `af34792` before the push was authorised, which
+destroyed the earlier commit objects while leaving every file edit intact. The
+commits were re-created from the identical working tree and grouped the same
+way; a content fingerprint over all 223 tracked and untracked files
+(`a9e043f17de174d9527a910c8ae2967e4161f537581a12a10376332979657f7a`) is
+identical before and after committing, so no code changed in the process. The
+intermediate commit contents differ from the originals; the final tree does not.
+
+The last six commits are the fixes CI demanded, in §24.
 
 ## 19. Frozen gate
 
@@ -438,22 +459,191 @@ technology strings, all text files) and subtest 01 (forbidden SQL directive,
 ```
 git status --porcelain            -> empty (clean)
 git diff --check af34792..HEAD    -> exit 0 (no whitespace errors, no markers)
-gofmt -l .                        -> empty
+gofmt -l .                        -> empty (Go 1.22.12, rebuilt from source)
 ```
 
-## 21. PUSHED = **NO**
+## 21. PUSHED = **YES** (branch only, authorised)
 
-17 commits ahead of `origin/main` — sixteen of work plus this report.
-`git push` was never invoked.
+```
+refs/heads/arena/01a09186-austro-os  1e897e429d65e93a99afbe480a07cfb2d430c2ea
+refs/heads/main                      af347925216be7355ace0f1ebddf978dd30d68fa   (unchanged)
+```
 
-## 22. Verdict — READY FOR REVIEW
+Pushed with a plain `git push origin arena/01a09186-austro-os`. No `--force`,
+no `--force-with-lease`, no history rewrite, no merge, and `main` was never
+touched. Both pushes were fast-forwards onto a branch that did not previously
+exist on the remote.
 
-U-1 and U-2 are closed with real runtime evidence: a live PostgreSQL 16.2 with
-pgvector, real role topology, real persisted audit rows, real binaries, and
-negative controls that prove the guard fires.
+Pull request #1 was opened as the CI trigger, because both workflows fire only
+on a push to `main` or on a pull request targeting it — a bare branch push runs
+nothing. **The PR is not merged and must not be merged**; it exists so the
+workflows execute.
 
-It is **not** PRODUCTION READY, because three things were never executed:
-GitHub Actions (pushing is forbidden), Docker/Compose (no daemon), and the last
-external dependency, RabbitMQ, which needs Erlang and cannot be built in this
-sandbox. Those are exactly the gaps the CI changes in §11 are written to close,
-and they need one workflow run to close them.
+## 22. Verdict — PRODUCTION READY
+
+Both workflows completed `success` on the pushed commit, with every step green.
+That closes the three gaps the previous verdict was held on: GitHub Actions
+never ran, Docker/Compose never ran, and RabbitMQ was unavailable. All three
+are now exercised by real infrastructure in the authoritative environment.
+
+Two genuine application defects were found by that run and are fixed — see §24.
+Neither was reachable from the local sandbox, because both sit behind a fully
+started API, which needs RabbitMQ.
+
+## 23. Authoritative external verification (GitHub Actions)
+
+Commit under test: `1e897e429d65e93a99afbe480a07cfb2d430c2ea`.
+
+| Workflow | Run | Conclusion |
+| --- | --- | --- |
+| AUSTRO OS Phase 1 Exit Criteria | [34663908706](https://github.com/Devmraustro/austro-os/actions/runs/34663908706) | **success** |
+| AUSTRO OS Phase 2 CI | [34663908747](https://github.com/Devmraustro/austro-os/actions/runs/34663908747) | **success** |
+
+Jobs:
+
+| Job | Conclusion | Steps |
+| --- | --- | --- |
+| Phase 1 Core Foundation Exit Criteria | success | 18/18 |
+| Build, Vet, and Unit Tests | success | 11/11 |
+| Full Phase 1 + Phase 2 Regression | success | 21/21 |
+
+Regression job, every step:
+
+```
+success  Initialize containers                                  (PostgreSQL+pgvector, Redis, RabbitMQ)
+success  Build the AUSTRO API binary
+success  Start API and wait for readiness
+success  Verify live database schema and RLS policies            (13 tables, 12 RLS, 12 forced, 10 policies)
+success  Build and start the AUSTRO worker
+success  Full stack regression test suite
+success  Verify the frozen Phase-1 gate is byte-identical
+success  Assert the API started on the unprivileged runtime role
+success  Assert the runtime database role cannot bypass row level security
+success  Runtime RLS and persistent audit test suites
+```
+
+Build/Vet/Unit job, every step:
+
+```
+success  Verify Go formatting
+success  Build all packages
+success  Vet all packages
+success  Unit tests (infrastructure-free packages)
+success  Unit tests under the race detector
+```
+
+Evidence pulled from the CI API rather than the log archive, because
+`results-receiver.actions.githubusercontent.com` and
+`*.blob.core.windows.net` are outside this sandbox's network allowlist. That is
+why §24's commits `2731a3b` and `5accaf7` add check annotations carrying the
+failing test names, assertion text, and the API and worker log tails. Those
+steps report only; `pipefail` keeps `tee` from hiding a non-zero exit and the
+suite's own step still fails the job.
+
+## 24. Two genuine defects CI found, and their fixes
+
+Both are real application bugs, not environment problems, and neither was
+reachable locally: each sits behind a fully started API, and the API exits
+without RabbitMQ.
+
+### 24.1 Every login returned 500 (`4499d74`)
+
+Symptom, from the CI API log:
+
+```
+auth-handler-error  action=login  error="ERROR: invalid input syntax for type uuid: \"\" (SQLSTATE 22P02)"
+```
+
+`TestAuthLiveEndToEnd` expected 401 for a wrong password and got 500;
+`TestWorkspaceAdminLiveEndToEnd` and `TestRBACLiveRoleAndDenials` could not log
+in at all.
+
+Root cause, established by rebuilding Go 1.22.12 from source, standing up
+PostgreSQL 16.2, and reproducing it through the production code path:
+
+```
+CREATE  -> id=9e1f6a50-...  err=<nil>
+BYUSERNAME -> found=false err=ERROR: invalid input syntax for type uuid: "" (SQLSTATE 22P02)
+```
+
+PostgreSQL keeps a custom GUC placeholder *defined* once it has been assigned,
+and after the transaction that assigned it commits, the value resets to the
+empty string rather than to undefined. Measured directly:
+
+```
+current_setting('app.current_workspace', true) IS NULL  -> f
+quote_literal(current_setting(...))                     -> ''
+```
+
+So on any pooled connection that had already served one workspace-scoped
+operation — including the startup canary — every policy's
+`current_setting(...)::UUID` cast raised 22P02 and the query failed outright.
+
+Fix: `NULLIF(current_setting('app.current_workspace', true), '')::UUID` in all
+21 policy expressions (12 in `database.go`, 9 in `postgres.go`). Fail-closed,
+verified against live PostgreSQL in all six states:
+
+| state | workspaces visible |
+| --- | --- |
+| bound to A | 1 (A only) |
+| bound to B | 1 (B only) |
+| empty residue on the same connection | **0** |
+| administrative role | 2 (whole org) |
+| malformed value | still rejected with an error |
+
+Nothing is widened: an empty binding now behaves exactly like an unset one,
+which is the deny the policy already intended.
+
+### 24.2 Workspace administration saw no workspaces (`1e897e4`)
+
+Once login worked, the next layer appeared:
+
+```
+TestRBACLiveRoleAndDenials      expected 200, got 404  {"error":"workspace not found"}
+TestWorkspaceAdminLiveEndToEnd  expected "11111111-...", got ""   (founder listing empty)
+```
+
+`WorkspaceStore` ran on the runtime pool, where RLS is forced and an unbound
+session sees no workspace at all. Its own doc comment still said *"the API
+process itself runs as the table owner"* — the silent bypass U-1 exists to
+remove. Reproduced against live PostgreSQL with the real store:
+
+```
+admin list    -> n=2      admin get -> name="Workspace B"
+runtime list  -> n=0      runtime get -> err=workspace not found
+runtime role  -> bypassrls=false superuser=false      tables owned -> 0
+```
+
+Fix: the store now uses the administrative handle, whose reach over that one
+table is `org_admin_policy`. That role is not a superuser, has no BYPASSRLS,
+and every tenant-scoped table stays on the runtime handle.
+
+Also fixed: `TestFounderOrgLevelSemantics` inserted a second founder, which
+violates `idx_users_single_founder` on any database the API has already
+bootstrapped (`81f3c97`); and a comment in the new runtime-role test cited the
+forbidden row-security directive verbatim, tripping the Phase-1 scanner
+(`afa112d`). In both cases the assertion was left intact and the scanner was
+not weakened.
+
+## 25. Remaining limitations
+
+* Pull request #1 is open as the CI trigger and is **not merged**. Merging is
+  out of scope for this task.
+* `audit_events` still has no retention or archival policy.
+* The chain hash is unkeyed SHA-256; detectability rests on the HMAC keyed by
+  `config.Get().JWTSecret`, which falls back to an insecure default if
+  configuration is never loaded.
+* The advisory lock that serialises chain appends costs one extra round trip
+  per event.
+* The publish and orchestration `AuditSink.Record` adapters return nothing, so
+  those two paths cannot fail closed the way the HTTP handlers do.
+* `X-Trace-ID` / `X-Span-ID` are still echoed into responses unvalidated, though
+  they are validated before being written to an audit row.
+* `AUSTRO_POSTGRES_ADMIN_USER` has no dedicated password; it inherits the
+  runtime one.
+* The OpenAPI document still declares 8 operations with no route, pinned by
+  `totalOps == 18` in `tests/health_openapi_test.go`.
+* Local verification in this sandbox used a rebuilt Go 1.22.12, PostgreSQL
+  16.2 from a PyPI wheel, and no Redis or RabbitMQ. The 13 local `./tests/`
+  failures are exactly those needing Redis (2), RabbitMQ (6) or a live API
+  (5); all pass in CI.
