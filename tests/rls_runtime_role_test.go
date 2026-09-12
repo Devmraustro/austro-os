@@ -188,9 +188,9 @@ func TestRuntimeRoleCannotBypassRLS(t *testing.T) {
 	seedWorkspace(t, topo, rtWorkspaceB, "Runtime B")
 	rt := runtimeDB(t, topo)
 
-	// SET row_security = off must not widen the view. PostgreSQL raises a
-	// permission error for a non-owner that would otherwise see filtered rows;
-	// either way, B's rows must not appear.
+	// Turning the row_security GUC off must not widen the view. PostgreSQL
+	// raises a permission error for a non-owner that would otherwise see
+	// filtered rows; either way, B's rows must not appear.
 	t.Run("row_security_off_does_not_widen_view", func(t *testing.T) {
 		tx := bindWorkspace(t, rt, rtWorkspaceA)
 		_, _ = tx.Exec(`SET LOCAL row_security = off`)
