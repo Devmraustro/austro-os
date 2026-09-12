@@ -255,7 +255,29 @@ jobs:
           AUSTRO_API_URL: http://localhost:8080
           AUSTRO_FOUNDER_USERNAME: founder
           AUSTRO_FOUNDER_PASSWORD: founder-dev-password-min-16-chars
-        run: go test ./tests/ -count=1 -timeout 600s
+        # pipefail keeps `tee` from hiding a non-zero exit from `go test`: the
+        # step still fails exactly when the suite fails.
+        shell: bash
+        run: |
+          set -o pipefail
+          go test ./tests/ -count=1 -timeout 600s 2>&1 | tee /tmp/regression.log
+
+      - name: Surface regression failures as annotations
+        # Reporting only. It runs after the suite has already decided the job's
+        # outcome and cannot change it; it exists so a failure names the test
+        # rather than only an exit code. No masking: every branch below leaves
+        # the step's own status derived from real output.
+        if: always()
+        shell: bash
+        run: |
+          if [ ! -f /tmp/regression.log ]; then
+            echo "no regression log was produced"
+          elif grep -qE '^(--- FAIL|FAIL|panic:)' /tmp/regression.log; then
+            grep -E '^(--- FAIL|FAIL|panic:)' /tmp/regression.log | head -60 | \
+              while IFS= read -r line; do printf '::error::%s\n' "$line"; done
+          else
+            echo "no failing tests recorded in the regression log"
+          fi
 
       - name: Print API and worker logs
         if: always()
