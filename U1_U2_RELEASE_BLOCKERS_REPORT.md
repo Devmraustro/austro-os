@@ -408,7 +408,7 @@ validation, Redis authentication, CA roots, CI fail-fast, event-bus race safety.
 10. **OpenAPI still declares 8 operations that are not registered**, pinned by
     `TestOpenAPIPrincipleReferences` asserting exactly 18.
 
-## 18. Commits (19 ahead of `af34792`, pushed to the session branch)
+## 18. Commits (pushed to the session branch, ahead of `af34792`)
 
 ```
 1e897e4 Serve workspace administration from the administrative handle
@@ -440,7 +440,12 @@ way; a content fingerprint over all 223 tracked and untracked files
 identical before and after committing, so no code changed in the process. The
 intermediate commit contents differ from the originals; the final tree does not.
 
-The last six commits are the fixes CI demanded, in §24.
+`git rev-list --count af34792..HEAD` gives the exact number; it is not restated
+here because every documentation commit changes it.
+
+The last six commits above are the fixes CI demanded, in §24. The green run in
+§23 is at `c3ce034`; the only commit after it is the documentation commit
+carrying this note.
 
 ## 19. Frozen gate
 
