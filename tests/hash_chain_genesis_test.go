@@ -3,8 +3,8 @@ package austro_os_test
 import (
 	"crypto/hmac"
 	"crypto/sha256"
-	"fmt"
 	"testing"
+	"time"
 
 	"austro-os/internal/audit"
 	"austro-os/internal/config"
@@ -46,18 +46,18 @@ func verifyHashChain(t *testing.T, events []*audit.AuditEvent) {
 	require.NotEmpty(t, events)
 	require.True(t, events[0].Genesis, "first event must be genesis")
 
-	expectedGenesis := sha256.Sum256([]byte(audit.GENESIS_HASH + "." + events[0].Timestamp.Format("2006-01-02T15:04:05Z07:00")))
+	// Recomputed through the exported pre-image helpers so the verifier cannot
+	// drift from what AppendEvent actually hashed.
+	expectedGenesis := sha256.Sum256([]byte(audit.GenesisPreimage(events[0])))
 	require.True(t, hmac.Equal(events[0].HashValue, expectedGenesis[:]), "genesis hash mismatch")
 
 	for i := 1; i < len(events); i++ {
-		prev := events[i-1]
-		hashInput := fmt.Sprintf("%s|%s|%s|%v|%s|%v|%s|%s|%s",
-			prev.HashValue, prev.EventID, prev.Timestamp.Format("2006-01-02T15:04:05Z07:00"),
-			prev.Genesis, events[i].EventType, events[i].ActorType,
-			events[i].ActorID, events[i].TargetType, events[i].TargetID)
-		hashBytes := sha256.Sum256([]byte(hashInput))
+		hashBytes := sha256.Sum256([]byte(audit.ChainPreimage(events[i-1], events[i])))
 		require.True(t, hmac.Equal(events[i].HashValue, hashBytes[:]), "hash chain broken at index %d", i)
 	}
+
+	// The whole chain must verify through the production verifier too.
+	require.True(t, audit.VerifyHashChain(events), "untampered chain must verify")
 }
 
 // TestAuditChainTamperDetected verifies that any tampering with a payload, the
@@ -76,14 +76,61 @@ func TestAuditChainTamperDetected(t *testing.T) {
 	}
 
 	t.Run("tampered event payload", func(t *testing.T) {
-		// Tamper a field that IS covered by the hash input (event_type):
-		// integrity detection must trigger. NOTE: the current hash input covers
-		// event_type, actor/target ids, and timeline/genesis linkage — not
-		// outcome, constitutional_principle, or workspace_id. Those fields are a
-		// documented strength gap for the audit chain (see report).
 		evs := clone()
 		evs[2].EventType = "tampered-event-type"
 		require.False(t, audit.VerifyHashChain(evs), "payload tampering must be detected")
+	})
+
+	// These three were previously outside the hashed pre-image, so rewriting
+	// them left the chain verifying. They are bound now; each case is the
+	// regression test for that.
+	t.Run("tampered outcome", func(t *testing.T) {
+		evs := clone()
+		evs[2].Outcome = "success"
+		if evs[2].Outcome == "success" {
+			evs[2].Outcome = "failure"
+		}
+		require.False(t, audit.VerifyHashChain(evs), "rewriting an outcome must be detected")
+	})
+
+	t.Run("tampered constitutional principle", func(t *testing.T) {
+		evs := clone()
+		evs[2].ConstitutionalPrinciple = "Simplicity"
+		require.False(t, audit.VerifyHashChain(evs), "rewriting the principle must be detected")
+	})
+
+	t.Run("tampered timestamp", func(t *testing.T) {
+		evs := clone()
+		evs[2].Timestamp = evs[2].Timestamp.Add(time.Hour)
+		require.False(t, audit.VerifyHashChain(evs), "re-timing an event must be detected")
+	})
+
+	t.Run("tampered genesis principle", func(t *testing.T) {
+		evs := clone()
+		evs[0].ConstitutionalPrinciple = "Simplicity"
+		require.False(t, audit.VerifyHashChain(evs), "rewriting the genesis principle must be detected")
+	})
+
+	t.Run("re-signed with a different key", func(t *testing.T) {
+		// Recomputing the unkeyed chain hash is not enough to forge a chain:
+		// the keyed authenticity tag must still match.
+		evs := clone()
+		evs[2].Outcome = "failure"
+		forged := sha256.Sum256([]byte(audit.ChainPreimage(evs[1], evs[2])))
+		evs[2].HashValue = forged[:]
+		require.False(t, audit.VerifyHashChain(evs),
+			"a recomputed hash without the HMAC key must not authenticate")
+	})
+
+	t.Run("empty chain is rejected", func(t *testing.T) {
+		require.False(t, audit.VerifyHashChain(nil), "an empty chain carries no integrity guarantee")
+		require.False(t, audit.VerifyHashChain([]*audit.AuditEvent{}), "an empty chain must fail closed")
+	})
+
+	t.Run("chain without a genesis root is rejected", func(t *testing.T) {
+		evs := clone()
+		require.False(t, audit.VerifyHashChain(evs[1:]),
+			"a chain must start at its genesis root")
 	})
 
 	t.Run("tampered current hash", func(t *testing.T) {
