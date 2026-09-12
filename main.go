@@ -134,7 +134,16 @@ func main() {
 	// GET /workspaces/{id} is founder org-level or the workspace admin's own
 	// workspace (ScopePath). The handlers never accept a client-supplied
 	// workspace: the lookup is bound to the verified claims.
-	workspaceHandler := api.NewWorkspaceHandler(postgres.NewWorkspaceStore(db)).SetAuditSink(auditStore)
+	//
+	// Workspaces are organization-level records, so the store runs on the admin
+	// handle rather than the runtime one. The runtime role is deliberately not
+	// the table owner, and an unbound runtime session is visible to no
+	// workspace at all, so organization-level listing and creation have to go
+	// through the principal whose policy grants that reach. The admin role is
+	// not a superuser and has no BYPASSRLS: its reach over this table is
+	// exactly org_admin_policy, and every tenant-scoped table stays on the
+	// runtime handle.
+	workspaceHandler := api.NewWorkspaceHandler(postgres.NewWorkspaceStore(handles.Admin)).SetAuditSink(auditStore)
 	mux.HandleFunc("GET /workspaces", workspaceHandler.List)
 	mux.HandleFunc("POST /workspaces", workspaceHandler.Create)
 	mux.HandleFunc("GET /workspaces/{id}", workspaceHandler.Get)
