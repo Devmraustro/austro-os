@@ -8,8 +8,8 @@ import (
 	"austro-os/internal/event"
 	"austro-os/internal/worker"
 
-	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/google/uuid"
+	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/require"
 )
 

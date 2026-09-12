@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 
 	"austro-os/internal/composition"
 	"austro-os/internal/event"
 	logger "austro-os/internal/log"
 	"austro-os/internal/orchestration"
+	"austro-os/internal/worker"
 
 	"github.com/google/uuid"
 )
@@ -36,20 +36,24 @@ func newHandler(rt *composition.Runtime) func(*event.UniversalEnvelope) error {
 			return nil
 		}
 
+		// Everything below this point is a structural defect in the message
+		// itself. None of it can succeed on a retry, so each is reported as
+		// permanent: requeueing would redeliver it forever and, with the
+		// consumer's prefetch of 1, block every message behind it.
 		var d pipelineEventDetails
 		if err := json.Unmarshal(env.Details, &d); err != nil {
-			return fmt.Errorf("decode pipeline event details: %w", err)
+			return worker.PermanentErrorf("decode pipeline event details: %v", err)
 		}
 		stage := orchestration.Stage(d.Stage)
 		if !orchestration.ValidStage(stage) {
-			return fmt.Errorf("pipeline event carries unknown stage %q", d.Stage)
+			return worker.PermanentErrorf("pipeline event carries unknown stage %q", d.Stage)
 		}
 		workspaceID, err := uuid.Parse(env.WorkspaceID)
 		if err != nil {
-			return fmt.Errorf("pipeline event carries invalid workspace id: %w", err)
+			return worker.PermanentErrorf("pipeline event carries invalid workspace id: %v", err)
 		}
 		if env.TargetID == uuid.Nil {
-			return fmt.Errorf("pipeline event missing pipeline id")
+			return worker.PermanentErrorf("pipeline event missing pipeline id")
 		}
 
 		_, err = rt.Handler.AdvanceFromEvent(
@@ -66,7 +70,10 @@ func newHandler(rt *composition.Runtime) func(*event.UniversalEnvelope) error {
 			return nil
 		}
 		if err != nil {
+			// Advancement failed against a live dependency, so it may well
+			// succeed on redelivery; leave it retryable.
 			logger.NewEntry("worker-pipeline-advance-error").
+				SetLevel("error").
 				With("pipeline_id", env.TargetID).
 				With("stage", string(stage)).
 				WithError(err).

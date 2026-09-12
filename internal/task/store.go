@@ -62,4 +62,6 @@ type EventSink interface {
 type NullEventSink struct{}
 
 // Publish implements EventSink as a no-op.
-func (NullEventSink) Publish(_ context.Context, _ string, _ uuid.UUID, _ uuid.UUID, _, _ string) error { return nil }
+func (NullEventSink) Publish(_ context.Context, _ string, _ uuid.UUID, _ uuid.UUID, _, _ string) error {
+	return nil
+}

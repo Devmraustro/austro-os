@@ -5,16 +5,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	logger "austro-os/internal/log"
+	"github.com/google/uuid"
 )
 
 // Service is the task application service. It enforces workspace ownership
 // (deny-by-default), lifecycle transitions, and emits audit events and
 // structured logs with optional trace/span propagation.
 type Service struct {
-	store TaskStore
-	audit AuditSink
+	store  TaskStore
+	audit  AuditSink
 	events EventSink
 }
 

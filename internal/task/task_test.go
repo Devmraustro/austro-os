@@ -92,8 +92,8 @@ func (m *memStore) Delete(_ context.Context, workspaceID, id uuid.UUID) error {
 }
 
 type recordingAudit struct {
-	mu    sync.Mutex
-	recs  []AuditRecord
+	mu   sync.Mutex
+	recs []AuditRecord
 }
 
 func (r *recordingAudit) Record(_ context.Context, rec AuditRecord) {
