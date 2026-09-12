@@ -254,14 +254,25 @@ func TestFounderOrgLevelSemantics(t *testing.T) {
 	owner, err := sql.Open("pgx", getEnv().postgresDSN)
 	require.NoError(t, err)
 	defer owner.Close()
-	founderID := "66666666-0000-4000-8000-00000000000f"
-	_, err = owner.Exec(`INSERT INTO users (id, username, password_hash, display_name, is_founder, role, workspace_id)
-		VALUES ($1,'rt-founder','x','RT Founder',TRUE,'founder',NULL)
-		ON CONFLICT (username) DO UPDATE SET is_founder = TRUE, role = 'founder', workspace_id = NULL`, founderID)
-	require.NoError(t, err)
+	// The schema allows exactly one founder (idx_users_single_founder), and the
+	// database under test usually already has the production one: the API
+	// bootstraps it at startup and this suite runs against the same database.
+	// Adopt whichever founder exists instead of inserting a second one, which
+	// would violate the single-founder invariant this test is not about.
+	var founderName string
+	err = owner.QueryRow(`SELECT username FROM users WHERE is_founder = TRUE LIMIT 1`).Scan(&founderName)
+	if errors.Is(err, sql.ErrNoRows) {
+		founderName = "rt-founder"
+		_, err = owner.Exec(`INSERT INTO users (id, username, password_hash, display_name, is_founder, role, workspace_id)
+			VALUES ($1,$2,'x','RT Founder',TRUE,'founder',NULL)`,
+			"66666666-0000-4000-8000-00000000000f", founderName)
+		require.NoError(t, err)
+	} else {
+		require.NoError(t, err, "looking up the existing founder must not fail")
+	}
 
 	var founderVisible int
-	require.NoError(t, rt.QueryRow(`SELECT count(*) FROM users WHERE username = 'rt-founder'`).Scan(&founderVisible))
+	require.NoError(t, rt.QueryRow(`SELECT count(*) FROM users WHERE username = $1`, founderName).Scan(&founderVisible))
 	require.Equal(t, 1, founderVisible,
 		"an unbound session must still resolve the founder identity, or login cannot work")
 
