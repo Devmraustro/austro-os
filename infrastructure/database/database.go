@@ -491,7 +491,7 @@ func setupRLSPolicies(db *sql.DB, adminRole string) error {
 		-- Workspaces: direct match on id
 		IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'workspace_isolation_policy' AND polrelid = 'workspaces'::regclass) THEN
 			EXECUTE 'CREATE POLICY workspace_isolation_policy ON workspaces
-				USING (id = current_setting(''app.current_workspace'', true)::UUID)';
+				USING (id = NULLIF(current_setting(''app.current_workspace'', true), '''')::UUID)';
 		END IF;
 
 		-- Founders: organization-level, not workspace-scoped
@@ -503,55 +503,55 @@ func setupRLSPolicies(db *sql.DB, adminRole string) error {
 		-- CEOS: match workspace_id column
 		IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'workspace_isolation_policy' AND polrelid = 'ceos'::regclass) THEN
 			EXECUTE 'CREATE POLICY workspace_isolation_policy ON ceos
-				USING (workspace_id = current_setting(''app.current_workspace'', true)::UUID)';
+				USING (workspace_id = NULLIF(current_setting(''app.current_workspace'', true), '''')::UUID)';
 		END IF;
 
 		-- Departments: match workspace_id column
 		IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'workspace_isolation_policy' AND polrelid = 'departments'::regclass) THEN
 			EXECUTE 'CREATE POLICY workspace_isolation_policy ON departments
-				USING (workspace_id = current_setting(''app.current_workspace'', true)::UUID)';
+				USING (workspace_id = NULLIF(current_setting(''app.current_workspace'', true), '''')::UUID)';
 		END IF;
 
 		-- Teams: traverse through departments
 		IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'workspace_isolation_policy' AND polrelid = 'teams'::regclass) THEN
 			EXECUTE 'CREATE POLICY workspace_isolation_policy ON teams
-				USING (department_id IN (SELECT id FROM departments WHERE workspace_id = current_setting(''app.current_workspace'', true)::UUID))';
+				USING (department_id IN (SELECT id FROM departments WHERE workspace_id = NULLIF(current_setting(''app.current_workspace'', true), '''')::UUID))';
 		END IF;
 
 		-- AI Employees: traverse through teams -> departments
 		IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'workspace_isolation_policy' AND polrelid = 'ai_employees'::regclass) THEN
 			EXECUTE 'CREATE POLICY workspace_isolation_policy ON ai_employees
-				USING (team_id IN (SELECT t.id FROM teams t JOIN departments d ON t.department_id = d.id WHERE d.workspace_id = current_setting(''app.current_workspace'', true)::UUID))';
+				USING (team_id IN (SELECT t.id FROM teams t JOIN departments d ON t.department_id = d.id WHERE d.workspace_id = NULLIF(current_setting(''app.current_workspace'', true), '''')::UUID))';
 		END IF;
 
 		-- Tasks: direct match on workspace_id column
 		IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'workspace_isolation_policy' AND polrelid = 'tasks'::regclass) THEN
 			EXECUTE 'CREATE POLICY workspace_isolation_policy ON tasks
-				USING (workspace_id = current_setting(''app.current_workspace'', true)::UUID)';
+				USING (workspace_id = NULLIF(current_setting(''app.current_workspace'', true), '''')::UUID)';
 		END IF;
 
 		-- Knowledge documents: direct match on workspace_id column
 		IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'workspace_isolation_policy' AND polrelid = 'knowledge_documents'::regclass) THEN
 			EXECUTE 'CREATE POLICY workspace_isolation_policy ON knowledge_documents
-				USING (workspace_id = current_setting(''app.current_workspace'', true)::UUID)';
+				USING (workspace_id = NULLIF(current_setting(''app.current_workspace'', true), '''')::UUID)';
 		END IF;
 
 		-- Memory embeddings: direct match on workspace_id column
 		IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'workspace_isolation_policy' AND polrelid = 'memory_embeddings'::regclass) THEN
 			EXECUTE 'CREATE POLICY workspace_isolation_policy ON memory_embeddings
-				USING (workspace_id = current_setting(''app.current_workspace'', true)::UUID)';
+				USING (workspace_id = NULLIF(current_setting(''app.current_workspace'', true), '''')::UUID)';
 		END IF;
 
 		-- Publications: direct match on workspace_id column
 		IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'workspace_isolation_policy' AND polrelid = 'publications'::regclass) THEN
 			EXECUTE 'CREATE POLICY workspace_isolation_policy ON publications
-				USING (workspace_id = current_setting(''app.current_workspace'', true)::UUID)';
+				USING (workspace_id = NULLIF(current_setting(''app.current_workspace'', true), '''')::UUID)';
 		END IF;
 
 		-- Pipelines: direct match on workspace_id column
 		IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'workspace_isolation_policy' AND polrelid = 'pipelines'::regclass) THEN
 			EXECUTE 'CREATE POLICY workspace_isolation_policy ON pipelines
-				USING (workspace_id = current_setting(''app.current_workspace'', true)::UUID)';
+				USING (workspace_id = NULLIF(current_setting(''app.current_workspace'', true), '''')::UUID)';
 		END IF;
 
 		-- Users: founder identity is organization-level (visible without a
@@ -583,7 +583,7 @@ func setupRLSPolicies(db *sql.DB, adminRole string) error {
 		EXECUTE 'DROP POLICY IF EXISTS audit_workspace_policy ON audit_events';
 		EXECUTE 'CREATE POLICY audit_workspace_policy ON audit_events
 			USING (workspace_id IS NULL
-			       OR workspace_id = current_setting(''app.current_workspace'', true)::UUID)';
+			       OR workspace_id = NULLIF(current_setting(''app.current_workspace'', true), '''')::UUID)';
 
 		-- Chain verification needs the complete chain, so the administrative
 		-- role gets an organization-scoped read of the audit table.
@@ -605,7 +605,7 @@ func setupRLSPolicies(db *sql.DB, adminRole string) error {
 		EXECUTE 'DROP POLICY IF EXISTS user_scope_policy ON users';
 		EXECUTE 'CREATE POLICY user_scope_policy ON users
 			USING (is_founder
-			       OR workspace_id = current_setting(''app.current_workspace'', true)::UUID
+			       OR workspace_id = NULLIF(current_setting(''app.current_workspace'', true), '''')::UUID
 			       OR username = current_setting(''app.auth_principal'', true)
 			       OR id::text = current_setting(''app.auth_principal'', true))';
 	END$$;

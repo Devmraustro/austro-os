@@ -51,23 +51,23 @@ func EnableRLSPolicies(db *sql.DB) {
 	BEGIN
 		IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'workspace_isolation_policy' AND polrelid = 'workspaces'::regclass) THEN
 			CREATE POLICY workspace_isolation_policy ON workspaces
-				USING (id = current_setting('app.current_workspace', true)::UUID);
+				USING (id = NULLIF(current_setting('app.current_workspace', true), '')::UUID);
 			CREATE POLICY workspace_isolation_policy ON ceos
-				USING (workspace_id = current_setting('app.current_workspace', true)::UUID);
+				USING (workspace_id = NULLIF(current_setting('app.current_workspace', true), '')::UUID);
 			CREATE POLICY workspace_isolation_policy ON departments
-				USING (workspace_id = current_setting('app.current_workspace', true)::UUID);
+				USING (workspace_id = NULLIF(current_setting('app.current_workspace', true), '')::UUID);
 			CREATE POLICY workspace_isolation_policy ON teams
-				USING (department_id IN (SELECT id FROM departments WHERE workspace_id = current_setting('app.current_workspace', true)::UUID));
+				USING (department_id IN (SELECT id FROM departments WHERE workspace_id = NULLIF(current_setting('app.current_workspace', true), '')::UUID));
 			CREATE POLICY workspace_isolation_policy ON ai_employees
-				USING (team_id IN (SELECT t.id FROM teams t JOIN departments d ON t.department_id = d.id WHERE d.workspace_id = current_setting('app.current_workspace', true)::UUID));
+				USING (team_id IN (SELECT t.id FROM teams t JOIN departments d ON t.department_id = d.id WHERE d.workspace_id = NULLIF(current_setting('app.current_workspace', true), '')::UUID));
 			CREATE POLICY workspace_isolation_policy ON tasks
-				USING (workspace_id = current_setting('app.current_workspace', true)::UUID);
+				USING (workspace_id = NULLIF(current_setting('app.current_workspace', true), '')::UUID);
 			CREATE POLICY workspace_isolation_policy ON knowledge_documents
-				USING (workspace_id = current_setting('app.current_workspace', true)::UUID);
+				USING (workspace_id = NULLIF(current_setting('app.current_workspace', true), '')::UUID);
 			CREATE POLICY workspace_isolation_policy ON publications
-				USING (workspace_id = current_setting('app.current_workspace', true)::UUID);
+				USING (workspace_id = NULLIF(current_setting('app.current_workspace', true), '')::UUID);
 			CREATE POLICY workspace_isolation_policy ON pipelines
-				USING (workspace_id = current_setting('app.current_workspace', true)::UUID);
+				USING (workspace_id = NULLIF(current_setting('app.current_workspace', true), '')::UUID);
 		END IF;
 	END$$;`)
 	if err != nil {
