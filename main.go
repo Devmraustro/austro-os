@@ -2,14 +2,20 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
+	"austro-os/infrastructure/auditstore"
 	"austro-os/infrastructure/database"
 	"austro-os/infrastructure/postgres"
 	"austro-os/infrastructure/rabbitmq"
 	"austro-os/infrastructure/redis"
 	"austro-os/internal/api"
+	"austro-os/internal/audit"
 	"austro-os/internal/auth"
 	"austro-os/internal/authz"
 	"austro-os/internal/composition"
@@ -22,6 +28,12 @@ import (
 	"github.com/google/uuid"
 )
 
+// shutdownDrainTimeout bounds how long graceful shutdown waits for in-flight
+// requests. It is comfortably above the 60s write timeout so a request that is
+// still progressing is allowed to finish, while guaranteeing the process exits
+// rather than hanging on a stalled client.
+const shutdownDrainTimeout = 75 * time.Second
+
 func main() {
 	cfg, err := config.LoadStrict()
 	if err != nil {
@@ -29,8 +41,27 @@ func main() {
 		os.Exit(1)
 	}
 
-	db := database.Initialize(cfg)
+	// Bootstrap the schema as the owner principal, then serve on the
+	// unprivileged runtime pool. MustInitializeTopology verifies that pool
+	// against the live database before returning, so a process that reaches
+	// this line is running as a role the workspace policies actually constrain.
+	handles := database.MustInitializeTopology(cfg)
+	db := handles.Runtime
 	defer db.Close()
+	defer handles.Admin.Close()
+
+	// Persistent audit writer. It runs on the administrative handle because
+	// the runtime role is deliberately append-only on audit_events and cannot
+	// read back the chain it writes. A failure here is fatal: the security
+	// model requires durable audit evidence, so starting without it would let
+	// every audited operation report a record that was never written.
+	auditCtx, auditCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	auditStore, err := auditstore.New(auditCtx, handles.Admin)
+	auditCancel()
+	if err != nil {
+		logger.NewEntry("audit-store-failed").SetLevel("error").WithError(err).Log()
+		os.Exit(1)
+	}
 
 	redisClient := redis.Initialize(cfg)
 	defer redisClient.Close()
@@ -46,7 +77,7 @@ func main() {
 
 	authzService := authz.NewAuthorizer()
 
-	authHandler := api.NewAuthHandler(cfg, jwtSvc, postgres.NewUserStore(db))
+	authHandler := api.NewAuthHandler(cfg, jwtSvc, postgres.NewUserStore(db)).SetAuditSink(auditStore)
 
 	// The API composes the full runtime with the production adapters: PostgreSQL
 	// stores, Redis memory, RabbitMQ event/audit sinks. This proves the wiring
@@ -56,8 +87,8 @@ func main() {
 		Pipelines:    postgres.NewPipelineStore(db),
 	}, composition.Sinks{
 		AIDecision:    rabbitmq.NewDecisionSink(sink),
-		PublishAudit:  rabbitmq.NewPublishLogAuditSink(),
-		PipelineAudit: rabbitmq.NewPipelineLogAuditSink(),
+		PublishAudit:  auditstore.NewPublishSink(auditStore),
+		PipelineAudit: auditstore.NewPipelineSink(auditStore),
 		PublishEvent:  rabbitmq.NewPublishEventSink(sink).Publish,
 		PipelineEvent: rabbitmq.NewPipelineEventSink(sink).PublishPipeline,
 	})
@@ -103,7 +134,7 @@ func main() {
 	// GET /workspaces/{id} is founder org-level or the workspace admin's own
 	// workspace (ScopePath). The handlers never accept a client-supplied
 	// workspace: the lookup is bound to the verified claims.
-	workspaceHandler := api.NewWorkspaceHandler(postgres.NewWorkspaceStore(db))
+	workspaceHandler := api.NewWorkspaceHandler(postgres.NewWorkspaceStore(db)).SetAuditSink(auditStore)
 	mux.HandleFunc("GET /workspaces", workspaceHandler.List)
 	mux.HandleFunc("POST /workspaces", workspaceHandler.Create)
 	mux.HandleFunc("GET /workspaces/{id}", workspaceHandler.Get)
@@ -114,13 +145,49 @@ func main() {
 	// routes actually registered by this server are seeded — a route declared
 	// in the contract but not registered stays denied.
 	authzService.AddRules(rbac.ImplementedRules())
-	protected := authHandler.RequireAuth(authzMiddleware(authzService, mux))
+	protected := authHandler.RequireAuth(authzMiddleware(authzService, mux, auditStore))
 
 	logger.NewEntry("austro-os-serving").With("address", cfg.ServerAddress).Log()
-	if err := http.ListenAndServe(cfg.ServerAddress, middleware.Middleware(protected)); err != nil {
+
+	// Explicit server timeouts. http.ListenAndServe installs none, which leaves
+	// the listener open to slow-header and slow-body clients holding a
+	// connection indefinitely. The values are set against the actual request
+	// shape: bodies are capped at 1 MiB and responses are small JSON documents,
+	// so these bounds are generous for any legitimate client while still
+	// reclaiming a stalled connection.
+	srv := &http.Server{
+		Addr:              cfg.ServerAddress,
+		Handler:           middleware.Middleware(protected),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
+	// Graceful shutdown: on SIGINT/SIGTERM stop accepting, let in-flight
+	// requests finish within a bounded drain, then return so the deferred
+	// database/Redis/broker closes actually run. Without this the process is
+	// killed on the signal and those defers never execute.
+	idleClosed := make(chan struct{})
+	go func() {
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+		<-sig
+		logger.NewEntry("austro-os-shutting-down").Log()
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownDrainTimeout)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			logger.NewEntry("austro-os-shutdown-drain-incomplete").SetLevel("error").WithError(err).Log()
+		}
+		close(idleClosed)
+	}()
+
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.NewEntry("http-server-failed").SetLevel("error").WithError(err).Log()
 		os.Exit(1)
 	}
+	<-idleClosed
+	logger.NewEntry("austro-os-stopped").Log()
 }
 
 // queueFor mirrors rabbitmq.Initialize: the configured queue name, or the
@@ -155,7 +222,7 @@ func isPublicEndpoint(method, path string) bool {
 // auth handler's RequireAuth middleware runs first (it activates before this
 // layer) so verified claims are present on the request context when an action
 // is authorized.
-func authzMiddleware(a *authz.Authorizer, next http.Handler) http.Handler {
+func authzMiddleware(a *authz.Authorizer, next http.Handler, audits audit.Sink) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		action := r.Method
 		resource := r.URL.Path
@@ -173,6 +240,28 @@ func authzMiddleware(a *authz.Authorizer, next http.Handler) http.Handler {
 				With("resource", resource).
 				With("constitutional_principle", "Security by Design").
 				Log()
+			// A denied authorization attempt is security-relevant evidence:
+			// it is what a privilege-escalation probe looks like. The response
+			// is already a refusal, so a persistence failure cannot make it
+			// look like a success and is logged rather than propagated.
+			if audits != nil {
+				cv := middleware.ExtractContextValues(r)
+				rec := audit.Record{
+					EventType:  "authz.denied",
+					ActorType:  "user",
+					TargetType: "route",
+					Outcome:    "denied",
+					Principle:  "Security by Design",
+					Details:    map[string]any{"action": action, "resource": resource},
+				}
+				if id, perr := uuid.Parse(cv.TraceID); perr == nil {
+					rec.TraceID = id
+				}
+				if _, aerr := audits.Append(r.Context(), rec); aerr != nil {
+					logger.NewEntry("audit-persist-failed").SetLevel("error").
+						With("event_type", rec.EventType).WithError(aerr).Log()
+				}
+			}
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
