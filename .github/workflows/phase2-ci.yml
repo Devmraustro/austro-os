@@ -27,9 +27,19 @@ jobs:
           go-version: "1.22"
           cache: true
 
-      - name: Verify Go format (new files only)
+      - name: Verify Go formatting
+        # Enforced, not advisory: the whole tree is gofmt-clean, so any output
+        # here is a regression. The previous form piped into `|| true`, which
+        # made the step report success no matter what gofmt found.
         run: |
-          gofmt -l internal/ || true
+          unformatted=$(gofmt -l . | grep -v '^tests/phase1_exit_criteria_test.go$' || true)
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not gofmt-clean:"
+            echo "$unformatted"
+            echo "Run: gofmt -w <file>"
+            exit 1
+          fi
+          echo "PASS: tree is gofmt-clean"
 
       - name: Build all packages
         run: go build ./...
@@ -37,8 +47,20 @@ jobs:
       - name: Vet all packages
         run: go vet ./...
 
-      - name: Unit tests (infrastructure-free domain packages)
-        run: go test ./internal/... -count=1
+      - name: Unit tests (infrastructure-free packages)
+        # Every package that does not need live Postgres/Redis/RabbitMQ. This
+        # used to be ./internal/... only, so cmd/worker (which has a real unit
+        # test) and infrastructure/redis were built and vetted but never
+        # executed. ./tests/ is excluded because it is the live-stack suite and
+        # runs in the regression job with its services.
+        run: go test ./internal/... ./cmd/... ./infrastructure/... . -count=1
+
+      - name: Unit tests under the race detector
+        # The HTTP auth handlers are served concurrently, so the in-memory
+        # refresh-token store and the rate limiter are exercised under -race.
+        # A data race on those is not theoretical: an unsynchronised Go map
+        # aborts the process with a fatal concurrent map write.
+        run: go test ./internal/... ./cmd/... ./infrastructure/... . -count=1 -race
 
   regression:
     name: Full Phase 1 + Phase 2 Regression
@@ -112,6 +134,12 @@ jobs:
           AUSTRO_ENV: development
           AUSTRO_SERVER_ADDR: ":8080"
           AUSTRO_POSTGRES_DSN: postgres://austro:austro@127.0.0.1:5432/austro?sslmode=disable
+          # The application runtime role. It is deliberately NOT the schema
+          # owner above: PostgreSQL applies no row level security to a table's
+          # owner, so serving traffic as `austro` would leave the workspace
+          # policies unenforced. The bootstrap creates this role and refuses to
+          # serve if it turns out to be privileged.
+          AUSTRO_POSTGRES_RUNTIME_DSN: postgres://austro_app:austro-runtime-pw@127.0.0.1:5432/austro?sslmode=disable
           AUSTRO_REDIS_ADDR: 127.0.0.1:6379
           AUSTRO_RABBITMQ_URL: amqp://austro:austro@127.0.0.1:5672
           AUSTRO_JWT_SECRET: austro-dev-jwt-secret-key-min-32-chars
@@ -158,9 +186,16 @@ jobs:
             IF (SELECT count(*) FROM pg_class c
                 JOIN pg_namespace n ON n.oid = c.relnamespace
                 WHERE n.nspname = 'public'
-                  AND c.relname IN ('workspaces','departments','teams','ai_employees','ceos','tasks','knowledge_documents','memory_embeddings','publications','pipelines','users')
-                  AND c.relrowsecurity) <> 11 THEN
-              RAISE EXCEPTION 'row level security not enabled on all expected tables';
+                  AND c.relname IN ('workspaces','departments','teams','ai_employees','ceos','tasks','knowledge_documents','memory_embeddings','publications','pipelines','users','audit_events')
+                  AND c.relrowsecurity) <> 12 THEN
+              RAISE EXCEPTION 'row level security not enabled on all 12 protected tables';
+            END IF;
+            IF (SELECT count(*) FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public'
+                  AND c.relname IN ('workspaces','departments','teams','ai_employees','ceos','tasks','knowledge_documents','memory_embeddings','publications','pipelines','users','audit_events')
+                  AND c.relforcerowsecurity) <> 12 THEN
+              RAISE EXCEPTION 'row level security not FORCED on all 12 protected tables';
             END IF;
             IF (SELECT count(*) FROM pg_policy WHERE polname = 'workspace_isolation_policy') <> 10 THEN
               RAISE EXCEPTION 'workspace_isolation_policy not fully provisioned (expected 10)';
@@ -179,6 +214,12 @@ jobs:
           AUSTRO_ENV: development
           AUSTRO_SERVER_ADDR: ":8080"
           AUSTRO_POSTGRES_DSN: postgres://austro:austro@127.0.0.1:5432/austro?sslmode=disable
+          # The application runtime role. It is deliberately NOT the schema
+          # owner above: PostgreSQL applies no row level security to a table's
+          # owner, so serving traffic as `austro` would leave the workspace
+          # policies unenforced. The bootstrap creates this role and refuses to
+          # serve if it turns out to be privileged.
+          AUSTRO_POSTGRES_RUNTIME_DSN: postgres://austro_app:austro-runtime-pw@127.0.0.1:5432/austro?sslmode=disable
           AUSTRO_REDIS_ADDR: 127.0.0.1:6379
           AUSTRO_RABBITMQ_URL: amqp://austro:austro@127.0.0.1:5672
           AUSTRO_JWT_SECRET: austro-dev-jwt-secret-key-min-32-chars
@@ -201,6 +242,12 @@ jobs:
         env:
           AUSTRO_ENV: development
           AUSTRO_POSTGRES_DSN: postgres://austro:austro@127.0.0.1:5432/austro?sslmode=disable
+          # The application runtime role. It is deliberately NOT the schema
+          # owner above: PostgreSQL applies no row level security to a table's
+          # owner, so serving traffic as `austro` would leave the workspace
+          # policies unenforced. The bootstrap creates this role and refuses to
+          # serve if it turns out to be privileged.
+          AUSTRO_POSTGRES_RUNTIME_DSN: postgres://austro_app:austro-runtime-pw@127.0.0.1:5432/austro?sslmode=disable
           AUSTRO_REDIS_ADDR: 127.0.0.1:6379
           AUSTRO_RABBITMQ_URL: amqp://austro:austro@127.0.0.1:5672
           AUSTRO_JWT_SECRET: austro-dev-jwt-secret-key-min-32-chars
@@ -241,8 +288,110 @@ jobs:
           fi
           echo "AUSTRO API and worker stopped"
 
-      - name: Phase 2 scanner guard (banned tokens / dependency direction)
+      - name: Verify the frozen Phase-1 gate is byte-identical
+        # The previous form was `git diff --exit-code ... || true`, which could
+        # never fail for two reasons: `|| true` swallowed the status, and a diff
+        # of the working tree against the index is always empty on a fresh
+        # checkout anyway. The gate is now pinned by content hash, so any edit
+        # to the frozen file fails this job.
         run: |
-          echo "=== Confirm no Phase 1 base-table or gate test modified ==="
-          git diff --exit-code -- tests/phase1_exit_criteria_test.go scripts/ 2>/dev/null || true
-          echo "Phase 2 CI complete. Phase 1 gate (phase1-exit-criteria.yml) runs separately and is unchanged."
+          expected=0a868d3da41f175cc263a6301f806e3bc1125093dab9cf8db98bb17b54e8769a
+          actual=$(sha256sum tests/phase1_exit_criteria_test.go | cut -d' ' -f1)
+          if [ "$actual" != "$expected" ]; then
+            echo "FROZEN GATE MODIFIED"
+            echo "  expected sha256: $expected"
+            echo "  actual   sha256: $actual"
+            exit 1
+          fi
+          echo "PASS: tests/phase1_exit_criteria_test.go is byte-identical to the frozen gate"
+
+      - name: Assert the API started on the unprivileged runtime role
+        # Reads the API's own startup log rather than trusting the workflow's
+        # environment block: this is the role the process actually connected as.
+        run: |
+          if ! grep -q '"message":"database-topology-ready"' /tmp/austro-api.log; then
+            echo "FAIL: the API never reported a verified runtime topology"
+            tail -20 /tmp/austro-api.log
+            exit 1
+          fi
+          if ! grep -q '"runtime_role":"austro_app"' /tmp/austro-api.log; then
+            echo "FAIL: the API did not start on the austro_app runtime role"
+            grep 'database-topology-ready' /tmp/austro-api.log
+            exit 1
+          fi
+          if grep -q 'database-runtime-security-failed' /tmp/austro-api.log; then
+            echo "FAIL: the API reported a runtime security failure"
+            grep 'database-runtime-security-failed' /tmp/austro-api.log
+            exit 1
+          fi
+          echo "PASS: API is serving on the austro_app runtime role"
+
+      - name: Assert the runtime database role cannot bypass row level security
+        # A gate now that the application genuinely runs as austro_app. It
+        # connects AS that role, so it observes the same privileges the
+        # application has; asking the superuser about austro_app would still
+        # pass if the API were secretly connecting as the owner.
+        env:
+          PGCONNECT_TIMEOUT: "10"
+        run: |
+          psql "postgres://austro_app:austro-runtime-pw@127.0.0.1:5432/austro?sslmode=disable" \
+               -v ON_ERROR_STOP=1 -P pager=off <<'SQL'
+          DO $$
+          DECLARE
+            v_super boolean; v_bypass boolean; v_owned integer;
+            v_enabled integer; v_forced integer;
+          BEGIN
+            IF current_user <> 'austro_app' THEN
+              RAISE EXCEPTION 'connected as %, expected the runtime role austro_app', current_user;
+            END IF;
+            SELECT rolsuper, rolbypassrls INTO v_super, v_bypass
+              FROM pg_roles WHERE rolname = current_user;
+            IF v_super THEN RAISE EXCEPTION 'runtime role is a superuser'; END IF;
+            IF v_bypass THEN RAISE EXCEPTION 'runtime role holds BYPASSRLS'; END IF;
+
+            SELECT count(*) INTO v_owned
+              FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+              JOIN pg_roles r ON r.oid = c.relowner
+             WHERE n.nspname = 'public' AND c.relkind = 'r' AND r.rolname = current_user;
+            IF v_owned > 0 THEN
+              RAISE EXCEPTION 'runtime role owns % protected table(s)', v_owned;
+            END IF;
+
+            SELECT count(*) INTO v_enabled FROM pg_class c
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname='public' AND c.relrowsecurity;
+            SELECT count(*) INTO v_forced FROM pg_class c
+              JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname='public' AND c.relforcerowsecurity;
+            IF v_enabled < 12 OR v_forced < 12 THEN
+              RAISE EXCEPTION 'rls enabled=% forced=% (expected at least 12 each)', v_enabled, v_forced;
+            END IF;
+            RAISE NOTICE 'PASS: runtime role austro_app is unprivileged and all protected tables are forced';
+          END;
+          $$;
+          SQL
+
+      - name: Runtime RLS and persistent audit test suites
+        # The two blockers, executed against the live CI PostgreSQL with the
+        # same three-principal topology the application uses. Kept as their own
+        # step so a failure here is unambiguous rather than buried in the full
+        # suite output.
+        env:
+          AUSTRO_ENV: development
+          AUSTRO_POSTGRES_DSN: postgres://austro:austro@127.0.0.1:5432/austro?sslmode=disable
+          AUSTRO_POSTGRES_RUNTIME_DSN: postgres://austro_app:austro-runtime-pw@127.0.0.1:5432/austro?sslmode=disable
+          AUSTRO_JWT_SECRET: austro-dev-jwt-secret-key-min-32-chars
+          AUSTRO_JWT_REFRESH_SECRET: austro-dev-jwt-refresh-secret-min-32-chars
+        run: |
+          go test ./tests/ -count=1 -timeout 300s -v \
+            -run 'TestRuntimeRole|TestProtectedTablesHaveForcedRLS|TestFounderOrgLevelSemantics|TestBootstrapAndMigrationsAreIdempotent|TestRuntimeTopologySatisfiesProductionStartup|TestTopologyRejectsOwnerAsRuntimeRole|TestVerifyRuntimeSecurityRejectsOwnedProtectedTable|TestBootstrapRepairsRoleAttributeDrift|TestAudit|TestLoginFailsClosedWhenAuditCannotBePersisted|TestConcurrentAuditAppendsKeepChainLinear' \
+            2>&1 | tee /tmp/rls-audit.log
+          if ! grep -q '^ok' /tmp/rls-audit.log; then
+            echo "FAIL: the runtime RLS / persistent audit suites did not pass"
+            exit 1
+          fi
+          if grep -q '^--- FAIL' /tmp/rls-audit.log; then
+            echo "FAIL: a runtime RLS / persistent audit test failed"
+            exit 1
+          fi
+          grep -c '^--- PASS' /tmp/rls-audit.log | xargs -I{} echo "PASS: {} runtime security tests"
