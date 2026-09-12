@@ -25,7 +25,10 @@ func testHandler(founder bool) *AuthHandler {
 		cfg.FounderPassword = "test-founder-password"
 	}
 	jwt := auth.InitializeWithStore(cfg, auth.NewMemoryRefreshStore())
-	return NewAuthHandler(cfg, jwt, auth.NewMemoryUserStore())
+	// The handlers fail closed when a security-relevant outcome cannot be
+	// audited, so the unit tests attach an in-memory sink. Persistent audit is
+	// proven separately, against a real database, in tests/.
+	return NewAuthHandler(cfg, jwt, auth.NewMemoryUserStore()).SetAuditSink(&recordingSink{})
 }
 
 func doRequest(t *testing.T, h *AuthHandler, method, path, body string, token string) *httptest.ResponseRecorder {
