@@ -265,18 +265,52 @@ jobs:
       - name: Surface regression failures as annotations
         # Reporting only. It runs after the suite has already decided the job's
         # outcome and cannot change it; it exists so a failure names the test
-        # rather than only an exit code. No masking: every branch below leaves
-        # the step's own status derived from real output.
+        # rather than only an exit code. No masking: nothing here swallows an
+        # exit status, and the suite's own step still fails the job.
         if: always()
         shell: bash
         run: |
+          emit() {
+            # $1 = annotation title (no spaces), $2 = file whose contents become
+            # the message. Escapes the three characters GitHub parses in an
+            # annotation line.
+            local title="$1" file="$2" body
+            if [ ! -s "$file" ]; then
+              return 0
+            fi
+            body=$(head -c 6000 "$file")
+            body=${body//%/%25}
+            body=${body//$'\r'/%0D}
+            body=${body//$'\n'/%0A}
+            printf '::error title=%s::%s\n' "$title" "$body"
+          }
+
           if [ ! -f /tmp/regression.log ]; then
             echo "no regression log was produced"
-          elif grep -qE '^(--- FAIL|FAIL|panic:)' /tmp/regression.log; then
-            grep -E '^(--- FAIL|FAIL|panic:)' /tmp/regression.log | head -60 | \
-              while IFS= read -r line; do printf '::error::%s\n' "$line"; done
           else
-            echo "no failing tests recorded in the regression log"
+            if grep -qE '^(--- FAIL|FAIL|panic:)' /tmp/regression.log; then
+              grep -E '^(--- FAIL|FAIL|panic:)' /tmp/regression.log | head -60 | \
+                while IFS= read -r line; do printf '::error::%s\n' "$line"; done
+              # The assertion text is the indented block that follows each
+              # failing test header; without it a failure is only a name.
+              awk '/^--- FAIL:/ {cap=30; print; next}
+                   cap>0 && /^[ \t]/ {sub(/^[ \t]+/, ""); print; cap--; next}
+                   cap>0 {cap=0}' /tmp/regression.log | head -140 > /tmp/fail-detail.txt
+              emit regression-failure-detail /tmp/fail-detail.txt
+            else
+              echo "no failing tests recorded in the regression log"
+            fi
+          fi
+
+          # The live end-to-end tests exercise the running API and worker, so
+          # their own output is only half the story.
+          if [ -f /tmp/austro-api.log ]; then
+            tail -70 /tmp/austro-api.log > /tmp/api-tail.txt
+            emit api-log-tail /tmp/api-tail.txt
+          fi
+          if [ -f /tmp/austro-worker.log ]; then
+            tail -30 /tmp/austro-worker.log > /tmp/worker-tail.txt
+            emit worker-log-tail /tmp/worker-tail.txt
           fi
 
       - name: Print API and worker logs
