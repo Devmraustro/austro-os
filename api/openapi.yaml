@@ -381,8 +381,311 @@ paths:
       principles:
         - Principle 9 — Security by Design
         - Principle 10 — Privacy by Design
+  /audit/events:
+    get:
+      summary: List audit events (organization scope)
+      description: |
+        A bounded, newest-first page of the append-only audit chain across the
+        whole organization. Founder only: this read is served from the
+        administrative database role, the only principal audit_org_policy names,
+        so no other role can hold it without creating a cross-tenant read the
+        database itself would not refuse.
+
+        The response omits the chain hash, the digital signature, and the
+        free-form outcome_details and permissions_checked columns. Those are
+        internal, and the JSONB pair is unbounded writer-controlled text, which
+        is exactly where a caller's input or an error string would land.
+
+        Pagination is by seq, which is unique and monotonic, so the ordering is
+        total and a cursor can neither skip nor repeat a row. limit is clamped
+        to 200. Unknown query parameters are rejected rather than ignored, so a
+        misspelled filter cannot silently return an unfiltered page.
+      operationId: listAuditEventsOrg
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: event_type
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: outcome
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: actor_type
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 200
+            default: 50
+        - name: before_seq
+          in: query
+          required: false
+          description: Pagination cursor. Returns only events with a lower seq.
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+      responses:
+        '200':
+          description: One page of audit events, newest first
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditPage'
+        '400':
+          description: Malformed or unsupported filter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Caller is not the founder
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 11 — Human Oversight
+        - Principle 9 — Security by Design
+  /audit/verification:
+    get:
+      summary: Verify the audit hash chain
+      description: |
+        Re-reads the persisted chain and recomputes every link, reporting
+        whether it is intact and how many events were checked. The check is
+        independent of anything the writer remembers, so it detects an edit made
+        behind the application's back.
+
+        Founder only, and expensive by nature: it reads the whole table, because
+        a bounded proof of a hash chain is not a thing. It is meant to be run
+        deliberately, not polled.
+      operationId: verifyAuditChain
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Result of the whole-chain integrity check
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditVerification'
+        '401':
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Caller is not the founder
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 11 — Human Oversight
+        - Principle 9 — Security by Design
+  /workspaces/{id}/audit/events:
+    get:
+      summary: List audit events for one workspace
+      description: |
+        A bounded, newest-first audit page for a single workspace.
+
+        A founder may name any workspace. A workspace_admin or workspace_member
+        is confined to the workspace in their verified token: the path id must
+        equal it, and the read runs on the unprivileged runtime connection with
+        app.current_workspace bound, so audit_workspace_policy enforces the
+        boundary in PostgreSQL rather than in the handler. A diverging path is
+        refused, not silently rewritten.
+      operationId: listAuditEventsForWorkspace
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: event_type
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: outcome
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: actor_type
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 200
+            default: 50
+        - name: before_seq
+          in: query
+          required: false
+          description: Pagination cursor. Returns only events with a lower seq.
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+      responses:
+        '200':
+          description: One page of audit events, newest first
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditPage'
+        '400':
+          description: Malformed id or filter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Caller may not read this workspace's audit history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 10 — Privacy by Design
+        - Principle 11 — Human Oversight
 components:
   schemas:
+    AuditEventView:
+      type: object
+      description: |
+        One audit event as exposed to clients. Deliberately narrower than the
+        stored row: the chain hash, digital signature, outcome_details and
+        permissions_checked are withheld, because the first two are internal
+        cryptographic material and the second two are unbounded
+        writer-controlled JSON.
+      required:
+        - seq
+        - event_id
+        - timestamp
+        - actor_type
+        - target_type
+        - event_type
+        - outcome
+        - constitutional_principle
+      properties:
+        seq:
+          type: integer
+          format: int64
+          description: Chain position. Unique and monotonic; also the page cursor.
+        event_id:
+          type: string
+          format: uuid
+        timestamp:
+          type: string
+          format: date-time
+          description: The canonical instant the hash chain binds.
+        workspace_id:
+          type: string
+          format: uuid
+          nullable: true
+        trace_id:
+          type: string
+          format: uuid
+          nullable: true
+        span_id:
+          type: string
+          format: uuid
+          nullable: true
+        actor_type:
+          type: string
+        actor_id:
+          type: string
+          format: uuid
+          nullable: true
+        target_type:
+          type: string
+        target_id:
+          type: string
+          format: uuid
+          nullable: true
+        event_type:
+          type: string
+        outcome:
+          type: string
+        constitutional_principle:
+          type: string
+        genesis:
+          type: boolean
+          description: True only for the chain root.
+    AuditPage:
+      type: object
+      required:
+        - events
+        - limit
+      properties:
+        events:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/AuditEventView'
+        next_cursor:
+          type: string
+          description: |
+            seq to pass as before_seq for the next page. Absent when the page
+            was short enough to be the last one.
+        limit:
+          type: integer
+          description: The effective page size after clamping.
+    AuditVerification:
+      type: object
+      required:
+        - verified
+        - events_checked
+      properties:
+        verified:
+          type: boolean
+          description: True when every link in the persisted chain recomputes.
+        events_checked:
+          type: integer
+          description: How many events the check covered.
+        head_seq:
+          type: integer
+          format: int64
+          description: Chain position of the newest event, when any exists.
     Workspace:
       type: object
       properties:

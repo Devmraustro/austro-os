@@ -128,9 +128,12 @@ func TestOpenAPIPrincipleReferences(t *testing.T) {
 	require.Equal(t, "3.1.0", spec.openapi, "spec must use OpenAPI 3.1.0")
 	require.Equal(t, "AUSTRO OS API", spec.title)
 
-	require.GreaterOrEqual(t, spec.totalOps, 10, "expected a richly-specified API surface")
-	require.Equal(t, 10, spec.totalOps,
-		"spec must define exactly the operations the server routes; see TestOpenAPIMatchesRegisteredRoutes")
+	// A floor, not an exact count. The exact surface is pinned structurally by
+	// TestOpenAPIMatchesRegisteredRoutes, which compares this document against
+	// api.Routes() in both directions; repeating the number here would only
+	// mean editing two places every time a capability is added, and the parity
+	// test is the one that can actually catch a phantom or a missing entry.
+	require.GreaterOrEqual(t, spec.totalOps, 13, "expected a richly-specified API surface")
 
 	for _, op := range spec.ops {
 		// Public, read-only surface: health probes and the constitutional

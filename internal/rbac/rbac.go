@@ -199,6 +199,45 @@ func ImplementedRules() []Rule {
 			Scope:           ScopePath,
 			Principle:       "Principle 10 - Privacy by Design",
 		},
+
+		// Audit visibility. The organization-scoped reads are founder-only
+		// because they are served from the administrative handle, the only
+		// principal audit_org_policy names. Granting them to any other role
+		// would hand out a cross-tenant read the database would not refuse.
+		{
+			Action:          "GET",
+			ResourcePattern: "/audit/events",
+			Roles:           []Role{RoleFounder},
+			Scope:           ScopeNone,
+			Principle:       "Principle 11 - Human Oversight",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/audit/verification",
+			Roles:           []Role{RoleFounder},
+			Scope:           ScopeNone,
+			Principle:       "Principle 11 - Human Oversight",
+		},
+		// The workspace-scoped audit read is open to every workspace role.
+		// ScopePath makes the path workspace mandatory and equal to the claims
+		// workspace for admins and members, so a member cannot name another
+		// tenant's id; the founder's separate ScopeNone rule is what lets the
+		// founder read any workspace. Isolation for the non-founder path is
+		// enforced again in PostgreSQL by audit_workspace_policy.
+		{
+			Action:          "GET",
+			ResourcePattern: "/workspaces/{id}/audit/events",
+			Roles:           []Role{RoleFounder},
+			Scope:           ScopeNone,
+			Principle:       "Principle 11 - Human Oversight",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/workspaces/{id}/audit/events",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopePath,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
 	}
 }
 
@@ -211,16 +250,20 @@ func PermissionsForRole(r Role) map[string][]string {
 	switch r {
 	case RoleFounder:
 		return map[string][]string{
-			"GET":  {"/api/me", "/workspaces", "/workspaces/{id}"},
+			"GET": {
+				"/api/me", "/workspaces", "/workspaces/{id}",
+				"/audit/events", "/audit/verification",
+				"/workspaces/{id}/audit/events",
+			},
 			"POST": {"/workspaces"},
 		}
 	case RoleWorkspaceAdmin:
 		return map[string][]string{
-			"GET": {"/api/me", "/workspaces/{id}"},
+			"GET": {"/api/me", "/workspaces/{id}", "/workspaces/{id}/audit/events"},
 		}
 	case RoleWorkspaceMember:
 		return map[string][]string{
-			"GET": {"/api/me"},
+			"GET": {"/api/me", "/workspaces/{id}/audit/events"},
 		}
 	default:
 		return nil

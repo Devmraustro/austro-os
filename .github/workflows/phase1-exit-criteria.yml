@@ -102,16 +102,25 @@ jobs:
             exit 1
           fi
           count=$(grep -c "principles:" api/openapi.yaml)
-          echo "operations declaring principles: $count"
-          # Eight, not "at least 17": the spec declares ten operations and the
-          # two health probes are unauthenticated liveness checks with no
-          # principle to serve, so every remaining operation declares one. The
-          # old floor of 17 was only reachable because the document also carried
-          # eight operations the server never routed; a lower bound that large
-          # cannot be met by an honest spec. TestOpenAPIDeclaresPrinciples-
-          # ForAuthenticatedOperations asserts the same rule structurally.
-          if [ "$count" -ne 8 ]; then
-            echo "FAIL: expected exactly 8 principle declarations (every non-health operation), found $count"
+          # Derive the expectation instead of hardcoding it, so adding a
+          # capability does not require editing this step -- and so the step
+          # still fails when someone adds an operation and forgets the
+          # declaration. The rule is: every operation except the two
+          # unauthenticated health probes declares at least one principle.
+          ops=$(grep -cE '^    (get|post|put|patch|delete):$' api/openapi.yaml)
+          expected=$((ops - 2))
+          echo "operations: $ops, declaring principles: $count, expected: $expected"
+          if [ "$ops" -lt 3 ]; then
+            echo "FAIL: parsed only $ops operations from the spec; the operation grep is broken"
+            exit 1
+          fi
+          # The old floor of 17 was only reachable because the document also
+          # carried eight operations the server never routed; a lower bound that
+          # large cannot be met by an honest spec.
+          # TestOpenAPIDeclaresPrinciplesForAuthenticatedOperations asserts the
+          # same rule structurally, against the parsed document.
+          if [ "$count" -ne "$expected" ]; then
+            echo "FAIL: expected $expected principle declarations (every non-health operation), found $count"
             exit 1
           fi
           

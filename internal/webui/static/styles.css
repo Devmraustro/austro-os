@@ -132,3 +132,50 @@ button:disabled { opacity: .55; cursor: progress; }
 
 .state { color: var(--ok); }
 .state.bad { color: var(--danger); }
+
+/* Audit trail. The table is read-only presentation; nothing here hints at an
+   editable control, because there is no mutation path into audit history. */
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: flex-end;
+  margin-bottom: 1rem;
+}
+
+.filters label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+}
+
+.filters input,
+.filters select {
+  min-width: 9rem;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.table th,
+.table td {
+  text-align: left;
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.25);
+  vertical-align: top;
+  word-break: break-word;
+}
+
+.table th {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.bad {
+  color: #b3261e;
+  font-weight: 600;
+}

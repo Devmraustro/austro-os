@@ -45,5 +45,18 @@ func Routes() []Route {
 		{http.MethodGet, "/workspaces"},
 		{http.MethodPost, "/workspaces"},
 		{http.MethodGet, "/workspaces/{id}"},
+
+		// Audit visibility. Read-only by construction: no audit route accepts a
+		// body, and the chain stays append-only behind the audit store.
+		//
+		// /audit/events and /audit/verification are organization-scoped and
+		// founder-only; they are served from the administrative handle, which is
+		// the only principal audit_org_policy names.
+		{http.MethodGet, "/audit/events"},
+		{http.MethodGet, "/audit/verification"},
+		// The workspace-scoped read is served from the unprivileged runtime
+		// handle with the workspace bound in PostgreSQL, so tenant isolation is
+		// enforced by the database rather than by the handler.
+		{http.MethodGet, "/workspaces/{id}/audit/events"},
 	}
 }

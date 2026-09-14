@@ -108,6 +108,61 @@
         </form>
       </section>
 
+      <section class="card" id="audit-card">
+        <h2>Audit trail</h2>
+        <p class="muted">
+          The append-only event chain. This view is read-only: there is no
+          control here that can alter, delete or reorder history. Sensitive
+          columns (hash material, signatures, free-form detail) are withheld by
+          the API.
+        </p>
+
+        <form id="audit-form" class="filters">
+          <label for="audit-event-type">Event type</label>
+          <input id="audit-event-type" name="event_type" maxlength="64"
+                 placeholder="e.g. auth.login">
+
+          <label for="audit-outcome">Outcome</label>
+          <select id="audit-outcome" name="outcome">
+            <option value="">Any</option>
+            <option value="success">success</option>
+            <option value="denied">denied</option>
+            <option value="failure">failure</option>
+            <option value="rejected">rejected</option>
+          </select>
+
+          <label for="audit-limit">Page size</label>
+          <select id="audit-limit" name="limit">
+            <option value="25">25</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+            <option value="200">200</option>
+          </select>
+
+          <button type="submit" class="primary">Load</button>
+          <button type="button" id="audit-verify-btn">Verify chain</button>
+        </form>
+
+        <div id="audit-loading" class="muted" hidden>Loading audit events…</div>
+        <div id="audit-empty" class="muted" hidden>No audit events match these filters.</div>
+        <div id="audit-verification" class="muted" hidden></div>
+        <p id="audit-message" class="message" role="alert" hidden></p>
+
+        <table id="audit-table" class="table" hidden>
+          <thead>
+            <tr>
+              <th>Seq</th><th>When</th><th>Event</th><th>Outcome</th>
+              <th>Actor</th><th>Workspace</th><th>Principle</th>
+            </tr>
+          </thead>
+          <tbody id="audit-body"></tbody>
+        </table>
+
+        <p>
+          <button type="button" id="audit-older-btn" hidden>Load older events</button>
+        </p>
+      </section>
+
       <section class="card">
         <h2>Not available in this build</h2>
         <p class="muted">
@@ -122,7 +177,6 @@
           <li>Knowledge</li>
           <li>Memory</li>
           <li>AI employees</li>
-          <li>Audit event history</li>
         </ul>
       </section>
     </main>

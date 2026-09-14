@@ -119,6 +119,17 @@ func main() {
 	// runtime handle.
 	workspaceHandler := api.NewWorkspaceHandler(postgres.NewWorkspaceStore(handles.Admin)).SetAuditSink(auditStore)
 
+	// Audit visibility runs on two deliberately different principals. The
+	// organization-wide reads need audit_org_policy, which names only the
+	// administrative role; the workspace-scoped read uses the unprivileged
+	// runtime pool so audit_workspace_policy confines it inside PostgreSQL
+	// rather than relying on a WHERE clause in Go. Passing the same handle to
+	// both would quietly make every workspace read organization-wide.
+	auditHandler := api.NewAuditHandler(
+		auditstore.NewReader(handles.Admin),
+		auditstore.NewReader(db),
+	)
+
 	// The browser application (ADR-016) is embedded in the binary. Loading it
 	// here turns a missing asset into a startup failure rather than a runtime
 	// 404 on a blank page.
@@ -162,6 +173,12 @@ func main() {
 		{Method: http.MethodGet, Pattern: "/workspaces"}:      workspaceHandler.List,
 		{Method: http.MethodPost, Pattern: "/workspaces"}:     workspaceHandler.Create,
 		{Method: http.MethodGet, Pattern: "/workspaces/{id}"}: workspaceHandler.Get,
+
+		// Audit visibility. Read-only: none of these accept a body, and the
+		// chain remains append-only behind the audit store.
+		{Method: http.MethodGet, Pattern: "/audit/events"}:                 auditHandler.ListOrg,
+		{Method: http.MethodGet, Pattern: "/audit/verification"}:           auditHandler.Verification,
+		{Method: http.MethodGet, Pattern: "/workspaces/{id}/audit/events"}: auditHandler.ListForWorkspace,
 	}
 
 	// Registration is a separate function so the wiring can be exercised by a

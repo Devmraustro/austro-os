@@ -194,6 +194,7 @@
     showApp();
     loadStatus();
     loadWorkspaces();
+    loadAudit(false);
     return authenticated("GET", "/api/me").then(function (r) {
       if (r.status !== 200 || !r.body) { signOut(false); return; }
       renderIdentity(r.body);
@@ -284,6 +285,122 @@
         }
         setMessage(msg, errorMessage(r), false);
       }).catch(function () { setMessage(msg, "Could not reach the API.", false); });
+  });
+
+  /* ---------- audit trail ---------- */
+
+  /* The cursor for "load older". It is module state rather than a DOM value so
+   * that changing a filter and reloading resets the walk instead of silently
+   * continuing it under different conditions. */
+  var auditCursor = "";
+
+  function auditQuery(append) {
+    var parts = ["limit=" + encodeURIComponent(el("audit-limit").value)];
+    var eventType = el("audit-event-type").value.trim();
+    var outcome = el("audit-outcome").value;
+    if (eventType) parts.push("event_type=" + encodeURIComponent(eventType));
+    if (outcome) parts.push("outcome=" + encodeURIComponent(outcome));
+    if (append && auditCursor) parts.push("before_seq=" + encodeURIComponent(auditCursor));
+    return "/audit/events?" + parts.join("&");
+  }
+
+  /* Rows are built with createElement and textContent, never innerHTML. Audit
+   * detail is recorded by whatever code produced the event, so it is exactly
+   * the kind of value that must never be parsed as markup. */
+  function renderAuditRows(events, append) {
+    var body = el("audit-body");
+    if (!append) body.innerHTML = "";
+    for (var i = 0; i < events.length; i++) {
+      var ev = events[i];
+      var tr = document.createElement("tr");
+      var cells = [
+        String(ev.seq),
+        ev.timestamp ? String(ev.timestamp).replace("T", " ").slice(0, 23) : "—",
+        ev.event_type,
+        ev.outcome,
+        ev.actor_type + (ev.actor_id ? " " + String(ev.actor_id).slice(0, 8) : ""),
+        ev.workspace_id ? String(ev.workspace_id).slice(0, 8) : "org",
+        ev.constitutional_principle
+      ];
+      for (var c = 0; c < cells.length; c++) {
+        var td = document.createElement("td");
+        td.textContent = cells[c];
+        tr.appendChild(td);
+      }
+      body.appendChild(tr);
+    }
+  }
+
+  function loadAudit(append) {
+    var loading = el("audit-loading");
+    var msg = el("audit-message");
+    var table = el("audit-table");
+    var empty = el("audit-empty");
+    var older = el("audit-older-btn");
+    if (!append) { auditCursor = ""; }
+    loading.hidden = false;
+    setMessage(msg, "", false);
+    el("audit-verification").hidden = true;
+
+    return authenticated("GET", auditQuery(append)).then(function (r) {
+      loading.hidden = true;
+      if (r.status === 403) {
+        table.hidden = true;
+        empty.hidden = true;
+        older.hidden = true;
+        setMessage(msg,
+          "Your role cannot read the organization-wide audit log. " +
+          "This view is founder-only, because it spans every workspace.", false);
+        return;
+      }
+      if (r.status !== 200 || !r.body) {
+        setMessage(msg, errorMessage(r) + " — adjust the filters and retry.", false);
+        return;
+      }
+      var events = r.body.events || [];
+      renderAuditRows(events, !!append);
+      var total = el("audit-body").children.length;
+      table.hidden = total === 0;
+      empty.hidden = total !== 0;
+      auditCursor = r.body.next_cursor || "";
+      older.hidden = auditCursor === "";
+    }).catch(function () {
+      loading.hidden = true;
+      setMessage(msg, "Could not reach the API. Check the connection and retry.", false);
+    });
+  }
+
+  el("audit-form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    loadAudit(false);
+  });
+
+  el("audit-older-btn").addEventListener("click", function () {
+    loadAudit(true);
+  });
+
+  el("audit-verify-btn").addEventListener("click", function () {
+    var out = el("audit-verification");
+    out.hidden = false;
+    out.classList.remove("bad");
+    out.textContent = "Recomputing every link in the chain…";
+    authenticated("GET", "/audit/verification").then(function (r) {
+      if (r.status === 403) {
+        out.textContent = "Chain verification is founder-only.";
+        return;
+      }
+      if (r.status !== 200 || !r.body) {
+        out.textContent = errorMessage(r);
+        return;
+      }
+      out.textContent = r.body.verified
+        ? "Chain intact: " + r.body.events_checked + " events verified."
+        : "CHAIN BROKEN: " + r.body.events_checked +
+          " events checked and the hash chain did not verify.";
+      if (!r.body.verified) out.classList.add("bad");
+    }).catch(function () {
+      out.textContent = "Could not reach the API.";
+    });
   });
 
   if (token()) { enterApp(); } else { initAuthView(); }
