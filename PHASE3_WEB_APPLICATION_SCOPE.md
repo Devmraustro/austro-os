@@ -1,8 +1,12 @@
 # PHASE 3 — AUSTRO OS WEB APPLICATION — FOUNDER-APPROVED SCOPE
 
 - **Owner**: Founder
-- **Status**: Accepted scope decision (no implementation in this step)
-- **Decision record**: `decisions/adr-016-phase3-web-application.md`
+- **Status**: Accepted scope decision. Implementation has **started** — see
+  "Implementation status" below. This document still defines the full approved
+  scope; it has not been narrowed.
+- **Decision records**: `decisions/adr-016-phase3-web-application.md` (scope),
+  `decisions/adr-022-phase3-web-application-vertical-slice.md` (first
+  implementation step)
 - **Goal**: Provide the first real human-facing product surface for the
   already-completed AUSTRO OS engine: an authenticated Founder/operator
   interacts with the existing platform through a secure browser UI.
@@ -153,3 +157,54 @@ A later, separately approved implementation step will, in order:
    Phase 1 gate.
 
 Sign-off: **Founder-approved.**
+
+---
+
+## 9. Implementation status
+
+Recorded by `decisions/adr-022-phase3-web-application-vertical-slice.md`. The
+first implementation step delivered a **real vertical slice**, not a mock: a
+browser application embedded in and served by the existing Go binary
+(`internal/webui`), with no second backend, no build step and no new dependency.
+It runs entirely over endpoints that exist.
+
+**Delivered**
+
+- **2.1 Authentication** — login, logout, refresh-on-401 with token rotation,
+  and first-run Founder bootstrap. Bootstrap is behind an explicit control and
+  is never issued on page load, because it is unauthenticated and
+  state-changing.
+- **2.2 Main Dashboard (partial)** — identity and role, liveness/readiness,
+  workspace context.
+- **Workspace administration** — list and create; Founder-only, authorized
+  server-side.
+
+**Not delivered, and why**
+
+| Area | Blocker |
+| --- | --- |
+| 2.2 Active pipelines, pending approvals, recent activity | no endpoints |
+| 2.3 Creator | no pipeline/stage/task/artifact endpoints |
+| 2.4 AI Employees | no endpoint |
+| 2.5 Knowledge | no endpoint |
+| 2.6 Memory | no endpoint |
+| 2.7 Tasks | no endpoint |
+| 2.8 Publishing approval queue | no endpoint; `/api/publications/{id}/approve` has a handler but is registered by no route |
+| 2.9 Audit visibility | no `GET /audit/events` route |
+
+These areas are named as unavailable inside the signed-in view, so an operator
+sees the boundary instead of hitting a broken control.
+
+Each one requires its API first. That ordering is now enforced rather than
+advisory: `api/openapi.yaml` and the registered route table are held in parity
+by `tests/openapi_route_parity_test.go`, so an endpoint can no longer be
+published before it exists.
+
+**Security position** — unchanged and now structurally pinned. Three new public
+routes serve fixed assets only (`/`, `/assets/app.js`, `/assets/styles.css`);
+every data route still returns 403 without credentials. The document is served
+with `default-src 'none'` and `'self'`-only script, style and connect sources,
+uses no inline code, and holds tokens in `sessionStorage` only.
+`tests/webui_live_test.go` and `internal/webui/webui_test.go` assert all of it.
+
+Acceptance criteria 1, 2, 11, 13, 14, 15 and 16 are met. Items 4–10 remain open.
