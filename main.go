@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -24,6 +25,7 @@ import (
 	"austro-os/internal/memory"
 	"austro-os/internal/middleware"
 	"austro-os/internal/rbac"
+	"austro-os/internal/webui"
 
 	"github.com/google/uuid"
 )
@@ -107,34 +109,6 @@ func main() {
 		With("usage_limit_per_workspace", cfg.AIUsageLimitPerWorkspace).
 		Log()
 
-	mux := http.NewServeMux()
-
-	mux.HandleFunc("/health/live", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`))
-	})
-
-	mux.HandleFunc("/health/ready", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"ready":true}`))
-	})
-
-	// Authentication endpoints. Login/refresh/logout/bootstrap are explicit
-	// public exemptions (unauthenticated by design); every other route requires
-	// an explicit authorization rule.
-	mux.HandleFunc("POST /api/auth/bootstrap", authHandler.Bootstrap)
-	mux.HandleFunc("POST /api/auth/login", authHandler.Login)
-	mux.HandleFunc("POST /api/auth/refresh", authHandler.Refresh)
-	mux.HandleFunc("POST /api/auth/logout", authHandler.Logout)
-	mux.HandleFunc("GET /api/me", authHandler.Me)
-
-	// Workspace administration. All three routes are protected (no public
-	// exemption), so they are reachable only through an explicit allow rule:
-	// GET/POST /workspaces are founder organization-level (ScopeNone), and
-	// GET /workspaces/{id} is founder org-level or the workspace admin's own
-	// workspace (ScopePath). The handlers never accept a client-supplied
-	// workspace: the lookup is bound to the verified claims.
-	//
 	// Workspaces are organization-level records, so the store runs on the admin
 	// handle rather than the runtime one. The runtime role is deliberately not
 	// the table owner, and an unbound runtime session is visible to no
@@ -144,9 +118,59 @@ func main() {
 	// exactly org_admin_policy, and every tenant-scoped table stays on the
 	// runtime handle.
 	workspaceHandler := api.NewWorkspaceHandler(postgres.NewWorkspaceStore(handles.Admin)).SetAuditSink(auditStore)
-	mux.HandleFunc("GET /workspaces", workspaceHandler.List)
-	mux.HandleFunc("POST /workspaces", workspaceHandler.Create)
-	mux.HandleFunc("GET /workspaces/{id}", workspaceHandler.Get)
+
+	// The browser application (ADR-016) is embedded in the binary. Loading it
+	// here turns a missing asset into a startup failure rather than a runtime
+	// 404 on a blank page.
+	webAssets, err := webui.Load()
+	if err != nil {
+		logger.NewEntry("webui-load-failed").SetLevel("error").WithError(err).Log()
+		os.Exit(1)
+	}
+
+	mux := http.NewServeMux()
+
+	// Handlers for exactly the canonical route list in internal/api.Routes.
+	// The registration loop below refuses to start if the two disagree, so a
+	// route cannot exist in the router without being declared, or be declared
+	// without being served.
+	handlers := map[api.Route]http.HandlerFunc{
+		{Method: http.MethodGet, Pattern: "/health/live"}: func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"status":"ok"}`))
+		},
+		{Method: http.MethodGet, Pattern: "/health/ready"}: func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"ready":true}`))
+		},
+
+		// Authentication endpoints. Login/refresh/logout/bootstrap are explicit
+		// public exemptions (unauthenticated by design); every other route
+		// requires an explicit authorization rule.
+		{Method: http.MethodPost, Pattern: "/api/auth/bootstrap"}: authHandler.Bootstrap,
+		{Method: http.MethodPost, Pattern: "/api/auth/login"}:     authHandler.Login,
+		{Method: http.MethodPost, Pattern: "/api/auth/refresh"}:   authHandler.Refresh,
+		{Method: http.MethodPost, Pattern: "/api/auth/logout"}:    authHandler.Logout,
+		{Method: http.MethodGet, Pattern: "/api/me"}:              authHandler.Me,
+
+		// Workspace administration. All three routes are protected (no public
+		// exemption), so they are reachable only through an explicit allow rule:
+		// GET/POST /workspaces are founder organization-level (ScopeNone), and
+		// GET /workspaces/{id} is founder org-level or the workspace admin's own
+		// workspace (ScopePath). The handlers never accept a client-supplied
+		// workspace: the lookup is bound to the verified claims.
+		{Method: http.MethodGet, Pattern: "/workspaces"}:      workspaceHandler.List,
+		{Method: http.MethodPost, Pattern: "/workspaces"}:     workspaceHandler.Create,
+		{Method: http.MethodGet, Pattern: "/workspaces/{id}"}: workspaceHandler.Get,
+	}
+
+	// Registration is a separate function so the wiring can be exercised by a
+	// test instead of only by starting the whole server. A mismatch here is a
+	// build defect, so main() treats it as fatal.
+	if err := registerRoutes(mux, handlers, webAssets); err != nil {
+		logger.NewEntry("route-registration-failed").SetLevel("error").WithError(err).Log()
+		os.Exit(1)
+	}
 
 	// Deny-by-default: every protected route must carry an explicit allow rule.
 	// Any request without an explicit permission for its action/resource is DENIED.
@@ -223,6 +247,18 @@ func isPublicEndpoint(method, path string) bool {
 			path == "/api/auth/bootstrap"):
 		return true
 	}
+	// The embedded browser application serves fixed assets and nothing else: no
+	// handler behind these paths reads the body, the query, the path values or a
+	// cookie, so they carry no data and cannot widen access. The list is taken
+	// from the package that serves them, which keeps the exemption and the
+	// registration from drifting apart in either direction.
+	if method == http.MethodGet || method == http.MethodHead {
+		for _, asset := range webui.Assets() {
+			if path == asset.Pattern {
+				return true
+			}
+		}
+	}
 	return false
 }
 
@@ -231,6 +267,40 @@ func isPublicEndpoint(method, path string) bool {
 // auth handler's RequireAuth middleware runs first (it activates before this
 // layer) so verified claims are present on the request context when an action
 // is authorized.
+// registerRoutes wires the JSON handlers to the canonical route table in
+// internal/api and adds the embedded browser assets.
+//
+// It refuses to build a router that disagrees with the declared surface in
+// either direction. A route declared in api.Routes() with no handler would be a
+// documented endpoint that 404s; a handler with no route is dead code that the
+// next reader will assume is reachable. Both are build defects, so both are
+// errors rather than warnings.
+func registerRoutes(mux *http.ServeMux, handlers map[api.Route]http.HandlerFunc, assets map[webui.Asset][]byte) error {
+	for _, route := range api.Routes() {
+		handler, ok := handlers[route]
+		if !ok {
+			return fmt.Errorf("route %s is declared in api.Routes() but has no handler", route)
+		}
+		mux.HandleFunc(route.String(), handler)
+		delete(handlers, route)
+	}
+	for route := range handlers {
+		return fmt.Errorf("handler is registered for %s, which is not declared in api.Routes()", route)
+	}
+
+	// Static browser application. These serve fixed assets and nothing else: no
+	// handler behind them reads the body, the query, the path values or a
+	// cookie, which is what makes them safe to exempt from authorization.
+	for _, asset := range webui.Assets() {
+		body, ok := assets[asset]
+		if !ok {
+			return fmt.Errorf("asset %s is declared by webui.Assets() but was not loaded", asset.Pattern)
+		}
+		mux.HandleFunc(asset.Method+" "+asset.Pattern, webui.Handler(asset, body))
+	}
+	return nil
+}
+
 func authzMiddleware(a *authz.Authorizer, next http.Handler, audits audit.Sink) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		action := r.Method
