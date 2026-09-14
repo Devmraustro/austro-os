@@ -67,7 +67,7 @@ func TestAuditReaderListIsBoundedAndOrdered(t *testing.T) {
 	reader := auditstore.NewReader(admin)
 	ctx := context.Background()
 
-	page, err := reader.List(ctx, auditstore.Query{
+	page, err := reader.List(ctx, audit.Query{
 		EventType: "auditread." + marker,
 		Limit:     2,
 	})
@@ -77,7 +77,7 @@ func TestAuditReaderListIsBoundedAndOrdered(t *testing.T) {
 	require.Greater(t, page[0].Seq, page[1].Seq, "ordering must be strictly descending by seq")
 
 	// The cursor yields the remainder with no overlap.
-	rest, err := reader.List(ctx, auditstore.Query{
+	rest, err := reader.List(ctx, audit.Query{
 		EventType: "auditread." + marker,
 		Limit:     10,
 		BeforeSeq: page[1].Seq,
@@ -96,8 +96,8 @@ func TestAuditReaderListIsBoundedAndOrdered(t *testing.T) {
 	require.Len(t, seen, 4)
 }
 
-func concatViews(a, b []auditstore.EventView) []auditstore.EventView {
-	return append(append([]auditstore.EventView{}, a...), b...)
+func concatViews(a, b []audit.EventView) []audit.EventView {
+	return append(append([]audit.EventView{}, a...), b...)
 }
 
 func TestAuditReaderFiltersAreExactAndBounded(t *testing.T) {
@@ -113,7 +113,7 @@ func TestAuditReaderFiltersAreExactAndBounded(t *testing.T) {
 	ctx := context.Background()
 	eventType := "auditread." + marker
 
-	byOutcome, err := reader.List(ctx, auditstore.Query{
+	byOutcome, err := reader.List(ctx, audit.Query{
 		EventType: eventType, Outcome: "denied", Limit: 50,
 	})
 	require.NoError(t, err)
@@ -126,7 +126,7 @@ func TestAuditReaderFiltersAreExactAndBounded(t *testing.T) {
 	// A filter is an exact match, so a prefix of a real value matches nothing.
 	// Silently treating it as a prefix would return rows the caller did not ask
 	// for, which is a wrong answer rather than a refused one.
-	partial, err := reader.List(ctx, auditstore.Query{
+	partial, err := reader.List(ctx, audit.Query{
 		EventType: "auditread." + marker[:4], Limit: 50,
 	})
 	require.NoError(t, err)
@@ -134,18 +134,18 @@ func TestAuditReaderFiltersAreExactAndBounded(t *testing.T) {
 
 	// An over-long filter is rejected rather than truncated: truncating would
 	// match different rows than the caller asked for.
-	long := auditstore.Query{Limit: 10, EventType: repeat("x", 200)}
+	long := audit.Query{Limit: 10, EventType: repeat("x", 200)}
 	_, err = reader.List(ctx, long)
 	require.Error(t, err, "an over-long filter must be refused")
 
 	// The limit is clamped, not rejected: a caller asking for too much gets the
 	// documented maximum.
-	clamped := auditstore.Query{Limit: 100000}
+	clamped := audit.Query{Limit: 100000}
 	require.NoError(t, clamped.Normalize())
-	require.Equal(t, auditstore.MaxPageSize, clamped.Limit)
-	zero := auditstore.Query{}
+	require.Equal(t, audit.MaxPageSize, clamped.Limit)
+	zero := audit.Query{}
 	require.NoError(t, zero.Normalize())
-	require.Equal(t, auditstore.DefaultPageSize, zero.Limit)
+	require.Equal(t, audit.DefaultPageSize, zero.Limit)
 }
 
 func repeat(s string, n int) string {
@@ -179,7 +179,7 @@ func TestAuditReaderWorkspaceScopeIsEnforcedByDatabase(t *testing.T) {
 	reader := auditstore.NewReader(runtime)
 	eventType := "auditread." + marker
 
-	got, err := reader.ListForWorkspace(ctx, wsA, auditstore.Query{EventType: eventType, Limit: 50})
+	got, err := reader.ListForWorkspace(ctx, wsA, audit.Query{EventType: eventType, Limit: 50})
 	require.NoError(t, err)
 	require.NotEmpty(t, got)
 	for _, ev := range got {
@@ -193,7 +193,7 @@ func TestAuditReaderWorkspaceScopeIsEnforcedByDatabase(t *testing.T) {
 	// This is the assertion that would fail if isolation were only a Go-side
 	// filter, because the reader here is the unprivileged runtime role and
 	// audit_workspace_policy is what confines it.
-	gotB, err := reader.ListForWorkspace(ctx, wsB, auditstore.Query{EventType: eventType, Limit: 50})
+	gotB, err := reader.ListForWorkspace(ctx, wsB, audit.Query{EventType: eventType, Limit: 50})
 	require.NoError(t, err)
 	require.NotEmpty(t, gotB, "workspace B has events of its own")
 	for _, ev := range gotB {
@@ -209,9 +209,9 @@ func TestAuditReaderWorkspaceScopeIsEnforcedByDatabase(t *testing.T) {
 	// -- and RLS would hide B's rows even if it did not. Either way the caller
 	// cannot widen a tenant-scoped read; what matters is that nothing belonging
 	// to B comes back.
-	q := auditstore.Query{EventType: eventType, Limit: 50}
+	q := audit.Query{EventType: eventType, Limit: 50}
 	other := wsB
-	q.WorkspaceID = &other
+	q.Workspace = &other
 	sneaky, err := reader.ListForWorkspace(ctx, wsA, q)
 	require.NoError(t, err)
 	require.NotEmpty(t, sneaky, "the forced workspace-A scope still has events")
@@ -237,7 +237,7 @@ func TestAuditReaderRedactsSensitiveColumns(t *testing.T) {
 	defer admin.Close()
 	reader := auditstore.NewReader(admin)
 
-	page, err := reader.List(context.Background(), auditstore.Query{
+	page, err := reader.List(context.Background(), audit.Query{
 		EventType: "auditread." + marker, Limit: 10,
 	})
 	require.NoError(t, err)

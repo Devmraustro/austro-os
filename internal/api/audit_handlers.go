@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"austro-os/infrastructure/auditstore"
+	"austro-os/internal/audit"
 	"austro-os/internal/auth"
 	logger "austro-os/internal/log"
 	"austro-os/internal/rbac"
@@ -34,15 +34,15 @@ import (
 //	          audit_workspace_policy through a bound app.current_workspace, so
 //	          isolation is enforced by PostgreSQL and not by this file.
 type AuditHandler struct {
-	org    *auditstore.Reader
-	tenant *auditstore.Reader
+	org    audit.Reader
+	tenant audit.Reader
 }
 
 // NewAuditHandler builds the handler from both readers. Both are required: a
 // nil tenant reader would mean workspace-scoped reads silently fall back to the
 // organization-wide one, which is precisely the privilege escalation this
 // separation exists to prevent.
-func NewAuditHandler(org, tenant *auditstore.Reader) *AuditHandler {
+func NewAuditHandler(org, tenant audit.Reader) *AuditHandler {
 	return &AuditHandler{org: org, tenant: tenant}
 }
 
@@ -50,9 +50,9 @@ func NewAuditHandler(org, tenant *auditstore.Reader) *AuditHandler {
 // before_seq for the following page, and is omitted when the page was short
 // enough to be the last one.
 type auditPage struct {
-	Events     []auditstore.EventView `json:"events"`
-	NextCursor string                 `json:"next_cursor,omitempty"`
-	Limit      int                    `json:"limit"`
+	Events     []audit.EventView `json:"events"`
+	NextCursor string            `json:"next_cursor,omitempty"`
+	Limit      int               `json:"limit"`
 }
 
 // ListOrg returns an organization-wide audit page. Founder only.
@@ -72,7 +72,7 @@ func (h *AuditHandler) ListOrg(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if q.Limit <= 0 {
-		q.Limit = auditstore.DefaultPageSize
+		q.Limit = audit.DefaultPageSize
 	}
 	events, err := h.org.List(r.Context(), q)
 	if err != nil {
@@ -101,7 +101,7 @@ func (h *AuditHandler) ListForWorkspace(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if q.Limit <= 0 {
-		q.Limit = auditstore.DefaultPageSize
+		q.Limit = audit.DefaultPageSize
 	}
 
 	pathID, err := uuid.Parse(r.PathValue("id"))
@@ -111,7 +111,7 @@ func (h *AuditHandler) ListForWorkspace(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if claims.Role == rbac.RoleFounder {
-		q.WorkspaceID = &pathID
+		q.Workspace = &pathID
 		events, err := h.org.List(r.Context(), q)
 		if err != nil {
 			h.serverError(w, "list-audit-workspace", err)
@@ -178,7 +178,7 @@ func (h *AuditHandler) Verification(w http.ResponseWriter, r *http.Request) {
 	head := int64(0)
 	if length > 0 {
 		// The newest event is the head; one bounded read gets its seq.
-		if page, err := h.org.List(r.Context(), auditstore.Query{Limit: 1}); err == nil && len(page) > 0 {
+		if page, err := h.org.List(r.Context(), audit.Query{Limit: 1}); err == nil && len(page) > 0 {
 			head = page[0].Seq
 		}
 	}
@@ -188,8 +188,8 @@ func (h *AuditHandler) Verification(w http.ResponseWriter, r *http.Request) {
 // parseAuditQuery reads the bounded filter set from the query string. Unknown
 // parameters are rejected rather than ignored: a caller who typos a filter
 // should get an error, not an unfiltered page that looks like it worked.
-func parseAuditQuery(w http.ResponseWriter, r *http.Request) (auditstore.Query, bool) {
-	var q auditstore.Query
+func parseAuditQuery(w http.ResponseWriter, r *http.Request) (audit.Query, bool) {
+	var q audit.Query
 	known := map[string]bool{
 		"event_type": true, "outcome": true, "actor_type": true,
 		"limit": true, "before_seq": true,
@@ -227,7 +227,7 @@ func parseAuditQuery(w http.ResponseWriter, r *http.Request) (auditstore.Query, 
 // newAuditPage builds the envelope. The cursor is offered only when the page
 // came back full: a short page means the end of the history, and advertising a
 // cursor there would send the client on a request that can only return empty.
-func newAuditPage(events []auditstore.EventView, limit int) auditPage {
+func newAuditPage(events []audit.EventView, limit int) auditPage {
 	page := auditPage{Events: events, Limit: limit}
 	if len(events) == limit && limit > 0 {
 		page.NextCursor = strconv.FormatInt(events[len(events)-1].Seq, 10)
