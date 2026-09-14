@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AUSTRO OS</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <!--
+    The browser application for an authenticated Founder/operator (ADR-016).
+
+    Security model: this document contains no data and no secrets. Every value
+    on screen is fetched from the authenticated JSON API after login, and the
+    server - never this file - decides what a caller may see. The token is held
+    in sessionStorage for the lifetime of the tab only.
+
+    The Content-Security-Policy served with this page forbids inline script and
+    inline style, so all behaviour lives in /assets/app.js and registers its
+    listeners there rather than through markup attributes.
+  -->
+
+  <div id="auth-view" class="view" hidden>
+    <main class="card narrow">
+      <h1>AUSTRO OS</h1>
+      <p class="muted">Sign in as the Founder to operate the organization.</p>
+
+      <!--
+        Bootstrap creates the Founder and is unauthenticated, so it is never
+        issued on page load. It stays behind an explicit disclosure and the
+        call is only sent when the operator presses the button.
+      -->
+      <p class="muted">
+        <button id="bootstrap-toggle" type="button" class="link">
+          First run? Initialize the organization
+        </button>
+      </p>
+
+      <section id="bootstrap-panel" hidden>
+        <h2>Initialize the organization</h2>
+        <p class="muted">
+          No Founder identity exists yet. Bootstrapping creates it from the
+          server's configured credentials and is recorded in the audit log.
+          This can only succeed once.
+        </p>
+        <button id="bootstrap-btn" type="button" class="primary">Bootstrap Founder</button>
+      </section>
+
+      <form id="login-form">
+        <label for="username">Username</label>
+        <input id="username" name="username" autocomplete="username" required>
+
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+
+        <button id="login-btn" type="submit" class="primary">Sign in</button>
+      </form>
+
+      <p id="auth-message" class="message" role="alert" hidden></p>
+    </main>
+  </div>
+
+  <div id="app-view" class="view" hidden>
+    <header class="topbar">
+      <strong>AUSTRO OS</strong>
+      <span id="identity" class="muted"></span>
+      <button id="logout-btn" type="button" class="link">Sign out</button>
+    </header>
+
+    <main class="content">
+      <section class="card">
+        <h2>Identity</h2>
+        <dl id="identity-details" class="details">
+          <dt>Username</dt><dd data-field="username">—</dd>
+          <dt>Role</dt><dd data-field="role">—</dd>
+          <dt>Founder</dt><dd data-field="founder">—</dd>
+          <dt>Workspace</dt><dd data-field="workspace">—</dd>
+        </dl>
+      </section>
+
+      <section class="card">
+        <h2>System status</h2>
+        <dl id="status-details" class="details">
+          <dt>Liveness</dt><dd data-field="live">—</dd>
+          <dt>Readiness</dt><dd data-field="ready">—</dd>
+        </dl>
+        <p class="muted">
+          Dependency detail (PostgreSQL, Redis, RabbitMQ) is reported in the
+          service logs; this surface reflects the API's own probes.
+        </p>
+      </section>
+
+      <section class="card">
+        <h2>Workspaces</h2>
+        <p class="muted">
+          Organization-level records. Listing and creating require the Founder
+          role; the server authorizes every call.
+        </p>
+        <div id="workspace-loading" class="muted" hidden>Loading workspaces…</div>
+        <div id="workspace-empty" class="muted" hidden>No workspaces yet.</div>
+        <ul id="workspace-list" class="list"></ul>
+        <p id="workspace-message" class="message" role="alert" hidden></p>
+
+        <form id="workspace-form">
+          <label for="workspace-name">New workspace name</label>
+          <input id="workspace-name" name="name" required>
+          <button type="submit" class="primary">Create workspace</button>
+        </form>
+      </section>
+
+      <section class="card">
+        <h2>Not available in this build</h2>
+        <p class="muted">
+          ADR-016 approves a wider surface. These areas are approved but their
+          backend APIs are not implemented yet, so they are listed rather than
+          left to fail silently:
+        </p>
+        <ul class="list muted">
+          <li>Creator pipelines and stage review</li>
+          <li>Publishing approval queue</li>
+          <li>Tasks</li>
+          <li>Knowledge</li>
+          <li>Memory</li>
+          <li>AI employees</li>
+          <li>Audit event history</li>
+        </ul>
+      </section>
+    </main>
+  </div>
+
+  <script src="/assets/app.js"></script>
+</body>
+</html>
