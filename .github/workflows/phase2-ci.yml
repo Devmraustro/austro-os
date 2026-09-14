@@ -121,9 +121,20 @@ jobs:
         run: go build -o /tmp/austro-api .
 
       - name: Install PostgreSQL client
+        # apt-get applies no network timeout of its own, so a stalled mirror
+        # makes this step hang until the job's 30-minute budget expires and the
+        # whole gate is cancelled before a single test runs. That is what
+        # happened on run 34896696718: 30m19s consumed here, conclusion
+        # "cancelled", zero tests executed.
+        #
+        # Bound the acquisition and retry it, so a bad mirror fails in seconds
+        # with a readable error. Nothing is swallowed: `set -e` plus timeout's
+        # exit status means a genuine failure still fails the step.
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends postgresql-client
+          set -euo pipefail
+          opts="-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
+          timeout 180 sudo apt-get update $opts
+          timeout 180 sudo apt-get install -y --no-install-recommends $opts postgresql-client
 
       - name: Start API and wait for readiness
         # Loopback 127.0.0.1 connection strings are used so the strict config
