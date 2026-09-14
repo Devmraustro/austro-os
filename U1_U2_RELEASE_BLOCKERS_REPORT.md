@@ -646,9 +646,13 @@ not weakened.
   they are validated before being written to an audit row.
 * `AUSTRO_POSTGRES_ADMIN_USER` has no dedicated password; it inherits the
   runtime one.
-* The OpenAPI document still declares 8 operations with no route, pinned by
-  `totalOps == 18` in `tests/health_openapi_test.go`.
+* ~~The OpenAPI document still declares 8 operations with no route, pinned by
+  `totalOps == 18` in `tests/health_openapi_test.go`.~~ **Closed** in
+  `d5a6fb3`: the spec now documents the 10 operations the binary actually
+  registers, and `tests/openapi_route_parity_test.go` fails if the two drift in
+  either direction.
 * Local verification in this sandbox used a rebuilt Go 1.22.12, PostgreSQL
-  16.2 from a PyPI wheel, and no Redis or RabbitMQ. The 13 local `./tests/`
-  failures are exactly those needing Redis (2), RabbitMQ (6) or a live API
-  (5); all pass in CI.
+  16.2 from a PyPI wheel, and no Redis or RabbitMQ. The 15 local `./tests/`
+  failures are exactly those needing Redis (2), RabbitMQ (6) or a live API (5),
+  plus the 2 new browser-application live tests, which also need a live API;
+  all pass in CI.
