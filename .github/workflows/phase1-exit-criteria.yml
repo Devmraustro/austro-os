@@ -75,9 +75,15 @@ jobs:
       - name: Verify principle references in events
         run: |
           echo "=== Checking principle references ==="
-          # Every event carries constitutional_principle. The audit schema, the
-          # audit domain type and the OpenAPI enum must all declare it.
-          for target in infrastructure/database/database.go internal/audit/audit.go api/openapi.yaml; do
+          # Every event carries constitutional_principle, declared both by the
+          # persisted schema and by the audit domain type.
+          #
+          # api/openapi.yaml used to be a third target, because the spec carried
+          # an AuditEvent schema enumerating the principles. That schema
+          # described an audit endpoint the server never routed, so it was
+          # removed as dead contract; a spec that documents unroutable
+          # operations is checked by TestOpenAPIMatchesRegisteredRoutes instead.
+          for target in infrastructure/database/database.go internal/audit/audit.go; do
             if ! grep -q "constitutional_principle" "$target"; then
               echo "FAIL: $target does not declare constitutional_principle"
               exit 1
@@ -97,8 +103,15 @@ jobs:
           fi
           count=$(grep -c "principles:" api/openapi.yaml)
           echo "operations declaring principles: $count"
-          if [ "$count" -lt 17 ]; then
-            echo "FAIL: expected at least 17 principle declarations, found $count"
+          # Eight, not "at least 17": the spec declares ten operations and the
+          # two health probes are unauthenticated liveness checks with no
+          # principle to serve, so every remaining operation declares one. The
+          # old floor of 17 was only reachable because the document also carried
+          # eight operations the server never routed; a lower bound that large
+          # cannot be met by an honest spec. TestOpenAPIDeclaresPrinciples-
+          # ForAuthenticatedOperations asserts the same rule structurally.
+          if [ "$count" -ne 8 ]; then
+            echo "FAIL: expected exactly 8 principle declarations (every non-health operation), found $count"
             exit 1
           fi
           
