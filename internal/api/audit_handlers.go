@@ -71,9 +71,6 @@ func (h *AuditHandler) ListOrg(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if q.Limit <= 0 {
-		q.Limit = audit.DefaultPageSize
-	}
 	events, err := h.org.List(r.Context(), q)
 	if err != nil {
 		h.serverError(w, "list-audit-org", err)
@@ -99,9 +96,6 @@ func (h *AuditHandler) ListForWorkspace(w http.ResponseWriter, r *http.Request) 
 	q, ok := parseAuditQuery(w, r)
 	if !ok {
 		return
-	}
-	if q.Limit <= 0 {
-		q.Limit = audit.DefaultPageSize
 	}
 
 	pathID, err := uuid.Parse(r.PathValue("id"))
@@ -220,6 +214,19 @@ func parseAuditQuery(w http.ResponseWriter, r *http.Request) (audit.Query, bool)
 			return q, false
 		}
 		q.BeforeSeq = n
+	}
+	// Apply the bounds here rather than leaving them to the reader. The reader
+	// enforces them too, but it reports a violation as an ordinary error, and an
+	// ordinary error from a read is a 500 -- so an over-long filter, which is
+	// malformed client input, would come back as a server fault. Validating at
+	// the boundary keeps the client's mistakes classified as the client's.
+	//
+	// This also fixes the effective limit for the response envelope: the page
+	// reports the limit that was actually applied, not the one that was asked
+	// for.
+	if err := q.Normalize(); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return q, false
 	}
 	return q, true
 }
