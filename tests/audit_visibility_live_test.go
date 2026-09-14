@@ -1,12 +1,21 @@
 package austro_os_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 
+	"austro-os/infrastructure/auditstore"
+	"austro-os/internal/audit"
+	"austro-os/internal/auth"
+	"austro-os/internal/config"
+	"austro-os/internal/rbac"
+
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
 
@@ -45,28 +54,109 @@ var withheldFields = []string{
 	"outcome_details", "permissions_checked", "hash_chain_value", "digital_signature",
 }
 
-// founderToken bootstraps if necessary and returns a founder access token. The
-// bootstrap call is idempotent: an already-initialized organization answers 409
-// and the login proceeds regardless.
-func founderToken(t *testing.T) string {
+// Shared sessions.
+//
+// Both credential routes are rate limited: 5 bootstraps and 10 logins per
+// minute per client address, and the whole suite issues its requests from one
+// address inside a window of a few seconds. A helper that authenticated per
+// test therefore exhausted the login budget partway through the run, and every
+// later test that needed a session failed on 429 -- which read like a product
+// regression but was the limiter working exactly as designed. So the founder
+// session is established once for the package, and the workspace identities are
+// minted rather than logged in, which is the pattern rbac_authorization_test.go
+// already uses.
+var (
+	auditFounderOnce sync.Once
+	auditFounderTok  string
+	auditFounderErr  error
+
+	auditRBACOnce sync.Once
+	auditRBACTok  rbacSessions
+	auditRBACErr  error
+)
+
+// rbacSessions holds one access token per workspace identity these tests use:
+// an admin and a member of workspace A, and an admin of workspace B.
+type rbacSessions struct {
+	adminA  string
+	memberA string
+	adminB  string
+}
+
+// auditFounderToken returns a founder access token, performing at most one
+// bootstrap and one login for the whole package. Bootstrap is idempotent: an
+// already-initialized organization answers 409 and the login proceeds anyway.
+func auditFounderToken(t *testing.T) string {
 	t.Helper()
-	authJSON(t, http.MethodPost, "/api/auth/bootstrap", map[string]string{}, "")
-	status, body := authJSON(t, http.MethodPost, "/api/auth/login", map[string]string{
-		"username": envOrDefault("AUSTRO_FOUNDER_USERNAME", "founder"),
-		"password": envOrDefault("AUSTRO_FOUNDER_PASSWORD", ""),
-	}, "")
-	require.Equal(t, http.StatusOK, status, "founder login must succeed: %s", body)
-	var tok authTokenResponse
-	require.NoError(t, json.Unmarshal(body, &tok))
-	require.NotEmpty(t, tok.AccessToken)
-	return tok.AccessToken
+	auditFounderOnce.Do(func() {
+		if status, body := authJSON(t, http.MethodPost, "/api/auth/bootstrap", map[string]string{}, ""); status >= http.StatusInternalServerError {
+			auditFounderErr = fmt.Errorf("bootstrap failed (%d): %s", status, body)
+			return
+		}
+		status, body := authJSON(t, http.MethodPost, "/api/auth/login", map[string]string{
+			"username": envOrDefault("AUSTRO_FOUNDER_USERNAME", "founder"),
+			"password": envOrDefault("AUSTRO_FOUNDER_PASSWORD", ""),
+		}, "")
+		if status != http.StatusOK {
+			auditFounderErr = fmt.Errorf("founder login failed (%d): %s", status, body)
+			return
+		}
+		var tok authTokenResponse
+		if err := json.Unmarshal(body, &tok); err != nil {
+			auditFounderErr = err
+			return
+		}
+		auditFounderTok = tok.AccessToken
+	})
+	require.NoError(t, auditFounderErr, "the shared founder session could not be established")
+	require.NotEmpty(t, auditFounderTok)
+	return auditFounderTok
+}
+
+// auditWorkspaceTokens returns one token per workspace identity. They are
+// minted with the same signing secret the API is configured with -- compose
+// gives the test service the identical AUSTRO_JWT_SECRET -- so the server
+// accepts them as ordinary access tokens, while the login rate limit is left
+// intact for the tests that exercise the login route itself.
+func auditWorkspaceTokens(t *testing.T) rbacSessions {
+	t.Helper()
+	auditRBACOnce.Do(func() {
+		adminA, memberA, adminB := ensureRbacUsers(t)
+		svc := rbacJWT(&config.Config{
+			JWTSecret:        envOrDefault("AUSTRO_JWT_SECRET", "change-me-in-production"),
+			JWTRefreshSecret: envOrDefault("AUSTRO_JWT_REFRESH_SECRET", "change-me-in-production"),
+		})
+		mint := func(u *auth.UserRecord) string {
+			if auditRBACErr != nil {
+				return ""
+			}
+			role := auth.RoleFor(u)
+			tok, err := svc.GenerateAccessTokenWithPermissions(
+				u.ID, u.WorkspaceID, role, rbac.PermissionsForRole(role))
+			if err != nil {
+				auditRBACErr = err
+				return ""
+			}
+			return tok
+		}
+		auditRBACTok = rbacSessions{
+			adminA:  mint(adminA),
+			memberA: mint(memberA),
+			adminB:  mint(adminB),
+		}
+	})
+	require.NoError(t, auditRBACErr, "workspace access tokens could not be minted")
+	require.NotEmpty(t, auditRBACTok.adminA)
+	require.NotEmpty(t, auditRBACTok.memberA)
+	require.NotEmpty(t, auditRBACTok.adminB)
+	return auditRBACTok
 }
 
 // TestAuditVisibilityFounderOrgRead is the happy path plus the two properties
 // that make a paginated audit log trustworthy: a total ordering, and a cursor
 // that can neither skip nor repeat a row.
 func TestAuditVisibilityFounderOrgRead(t *testing.T) {
-	token := founderToken(t)
+	token := auditFounderToken(t)
 
 	status, body := authJSON(t, http.MethodGet, "/audit/events?limit=5", nil, token)
 	require.Equal(t, http.StatusOK, status, "founder must read the org audit log: %s", body)
@@ -111,25 +201,24 @@ func TestAuditVisibilityFounderOrgRead(t *testing.T) {
 
 	// Repeating the identical request must produce the identical sequence;
 	// a page that reorders between calls is a page a cursor cannot traverse.
+	//
+	// The comparison is made on decoded pages, not on re-encoded JSON. This
+	// struct models a subset of the wire fields, so marshalling it back would
+	// drop the fields it does not declare and could never equal the raw
+	// response -- the assertion would fail for a reason that has nothing to do
+	// with ordering.
 	status, again := authJSON(t, http.MethodGet, "/audit/events?limit=5", nil, token)
 	require.Equal(t, http.StatusOK, status)
-	require.JSONEq(t, string(bodyOf(first)), string(again))
-}
-
-// bodyOf re-encodes a decoded page so two responses can be compared as JSON
-// rather than as byte strings.
-func bodyOf(p auditPage) []byte {
-	b, err := json.Marshal(p)
-	if err != nil {
-		return nil
-	}
-	return b
+	var repeat auditPage
+	require.NoError(t, json.Unmarshal(again, &repeat))
+	require.Equal(t, first, repeat,
+		"repeating the identical request must return the identical page")
 }
 
 // TestAuditVisibilityPagination walks the whole chain with a small page size and
 // asserts the cursor covers every event exactly once.
 func TestAuditVisibilityPagination(t *testing.T) {
-	token := founderToken(t)
+	token := auditFounderToken(t)
 
 	status, body := authJSON(t, http.MethodGet, "/audit/verification", nil, token)
 	require.Equal(t, http.StatusOK, status, string(body))
@@ -171,17 +260,8 @@ func TestAuditVisibilityPagination(t *testing.T) {
 // the two cross-tenant attempts that matter most: a workspace admin naming
 // another tenant's id, and any non-founder reaching the organization-wide view.
 func TestAuditVisibilityRoleBoundaries(t *testing.T) {
-	adminA, memberA, adminB := ensureRbacUsers(t)
-
-	login := func(username string) string {
-		status, body := authJSON(t, http.MethodPost, "/api/auth/login",
-			map[string]string{"username": username, "password": rbacPassword}, "")
-		require.Equal(t, http.StatusOK, status, "login %s: %s", username, body)
-		var tok authTokenResponse
-		require.NoError(t, json.Unmarshal(body, &tok))
-		return tok.AccessToken
-	}
-	adminAToken, memberAToken, adminBToken := login(adminA.Username), login(memberA.Username), login(adminB.Username)
+	sessions := auditWorkspaceTokens(t)
+	adminAToken, memberAToken, adminBToken := sessions.adminA, sessions.memberA, sessions.adminB
 
 	// The organization-wide view and the whole-chain proof are founder-only.
 	// They run on the administrative handle, so granting them to anyone else
@@ -234,23 +314,15 @@ func TestAuditVisibilityRoleBoundaries(t *testing.T) {
 // is confined by PostgreSQL and not merely by a Go-side filter: every event
 // returned for workspace A belongs to workspace A or is organization-level.
 func TestAuditVisibilityWorkspaceIsolationEnforcedInDatabase(t *testing.T) {
-	adminA, _, adminB := ensureRbacUsers(t)
-	login := func(username string) string {
-		status, body := authJSON(t, http.MethodPost, "/api/auth/login",
-			map[string]string{"username": username, "password": rbacPassword}, "")
-		require.Equal(t, http.StatusOK, status, string(body))
-		var tok authTokenResponse
-		require.NoError(t, json.Unmarshal(body, &tok))
-		return tok.AccessToken
-	}
+	tokens := auditWorkspaceTokens(t)
 
 	// Produce audit rows in each workspace by making an authorized read that the
 	// server records, so both tenants have history to compare.
-	for _, tok := range []string{login(adminA.Username), login(adminB.Username)} {
-		authJSON(t, http.MethodGet, "/api/me", nil, tok)
+	for _, tk := range []string{tokens.adminA, tokens.adminB} {
+		authJSON(t, http.MethodGet, "/api/me", nil, tk)
 	}
 
-	for ws, tok := range map[string]string{workspaceA: login(adminA.Username), workspaceB: login(adminB.Username)} {
+	for ws, tok := range map[string]string{workspaceA: tokens.adminA, workspaceB: tokens.adminB} {
 		status, body := authJSON(t, http.MethodGet,
 			"/workspaces/"+ws+"/audit/events?limit=200", nil, tok)
 		require.Equal(t, http.StatusOK, status, string(body))
@@ -273,7 +345,7 @@ func TestAuditVisibilityWorkspaceIsolationEnforcedInDatabase(t *testing.T) {
 // parameters are refused rather than ignored, and an oversized limit is clamped
 // rather than honoured.
 func TestAuditVisibilityInputBounds(t *testing.T) {
-	token := founderToken(t)
+	token := auditFounderToken(t)
 
 	for _, path := range []string{
 		"/audit/events?workspace_id=11111111-1111-1111-1111-111111111111",
@@ -297,15 +369,11 @@ func TestAuditVisibilityInputBounds(t *testing.T) {
 	require.LessOrEqual(t, len(p.Events), 200)
 
 	// A client-supplied workspace filter must not widen a workspace-scoped read.
-	// The tenant route ignores it entirely and stays bound to the caller.
-	adminA, _, _ := ensureRbacUsers(t)
-	status, body = authJSON(t, http.MethodPost, "/api/auth/login",
-		map[string]string{"username": adminA.Username, "password": rbacPassword}, "")
-	require.Equal(t, http.StatusOK, status, string(body))
-	var tok authTokenResponse
-	require.NoError(t, json.Unmarshal(body, &tok))
+	// The tenant route refuses the unsupported parameter rather than silently
+	// applying a scope the caller did not earn.
 	status, body = authJSON(t, http.MethodGet,
-		"/workspaces/"+workspaceA+"/audit/events?workspace_id="+workspaceB, nil, tok.AccessToken)
+		"/workspaces/"+workspaceA+"/audit/events?workspace_id="+workspaceB,
+		nil, auditWorkspaceTokens(t).adminA)
 	require.Equal(t, http.StatusBadRequest, status,
 		"an unsupported filter must be rejected, not silently applied: %s", body)
 }
@@ -315,7 +383,7 @@ func TestAuditVisibilityInputBounds(t *testing.T) {
 // application's back, must make the verification endpoint report failure, and
 // restoring the row must make it report success again.
 func TestAuditVisibilityTamperIsReported(t *testing.T) {
-	token := founderToken(t)
+	token := auditFounderToken(t)
 
 	verify := func() auditVerificationResponse {
 		status, body := authJSON(t, http.MethodGet, "/audit/verification", nil, token)
@@ -324,33 +392,74 @@ func TestAuditVisibilityTamperIsReported(t *testing.T) {
 		require.NoError(t, json.Unmarshal(body, &v))
 		return v
 	}
-	require.True(t, verify().Verified, "the chain must verify before the test tampers with it")
 
-	db, err := getEnv().AdminDB()
+	// Connect with a handle that outlives the test body. t.Cleanup runs after
+	// the deferred Close of anything opened here, so a cleanup that reused a
+	// closed handle would silently fail to restore the row and leave the chain
+	// broken for every test that runs afterwards.
+	admin, err := getEnv().AdminDB()
 	require.NoError(t, err)
-	defer db.Close()
+	defer admin.Close()
 
-	// Tamper with a non-genesis row's outcome, which is bound into its hash.
-	var (
-		id      string
-		origOut string
-	)
-	require.NoError(t, db.QueryRow(
-		`SELECT event_id, outcome FROM audit_events WHERE genesis = false ORDER BY seq DESC LIMIT 1`,
-	).Scan(&id, &origOut))
+	// Tamper with a row this test owns rather than whichever event happens to
+	// be newest. Picking the newest row means editing another test's event, and
+	// it makes the outcome depend on what else the suite recorded.
+	const probeType = "austro.tamper_probe"
+	probeMarker := "tamper-" + uuid.NewString()[:8]
 
+	store, err := auditstore.New(context.Background(), admin)
+	require.NoError(t, err)
+	_, err = store.Append(context.Background(), audit.Record{
+		EventType:  probeType,
+		ActorType:  "user",
+		TargetType: probeMarker,
+		Outcome:    "success",
+		Principle:  "Security by Design",
+	})
+	require.NoError(t, err, "the probe event must be persisted before it is tampered with")
+
+	var probeID string
+	require.NoError(t, admin.QueryRow(
+		`SELECT event_id FROM audit_events WHERE target_type = $1`, probeMarker,
+	).Scan(&probeID))
+
+	// Restore unconditionally, on a connection opened inside the cleanup, and
+	// fail loudly if the database could not be put back as it was found. A
+	// tamper test that can leave the chain broken is worse than no test.
 	t.Cleanup(func() {
-		if _, err := db.Exec(`UPDATE audit_events SET outcome = $1 WHERE event_id = $2`, origOut, id); err != nil {
-			t.Errorf("could not restore the tampered audit row: %v", err)
+		db, err := getEnv().AdminDB()
+		if err != nil {
+			t.Errorf("could not reconnect to restore the tampered audit row: %v", err)
+			return
+		}
+		defer db.Close()
+		if _, err := db.Exec(
+			`UPDATE audit_events SET outcome = 'success' WHERE event_id = $1`, probeID); err != nil {
+			t.Errorf("could not restore the tampered audit row %s: %v", probeID, err)
+			return
+		}
+		if !verify().Verified {
+			t.Errorf("the audit chain does not verify after restoring %s", probeID)
 		}
 	})
-	_, err = db.Exec(`UPDATE audit_events SET outcome = 'tampered' WHERE event_id = $1`, id)
-	require.NoError(t, err)
 
-	require.False(t, verify().Verified,
-		"a tampered chain must be reported as unverified through the API")
+	// Record the state before tampering instead of assuming the chain is clean:
+	// what this test proves is the transition, not the ambient state.
+	before := verify()
+	require.True(t, before.Verified,
+		"the chain must verify before this test tampers with it (%d events checked)",
+		before.EventsChecked)
 
-	_, err = db.Exec(`UPDATE audit_events SET outcome = $1 WHERE event_id = $2`, origOut, id)
+	_, err = admin.Exec(`UPDATE audit_events SET outcome = 'tampered' WHERE event_id = $1`, probeID)
+	require.NoError(t, err, "the owner role must be able to edit the table; the append-only guarantee is a privilege grant, not a trigger")
+
+	after := verify()
+	require.False(t, after.Verified,
+		"an edit made behind the application's back must be reported as unverified")
+	require.Equal(t, before.EventsChecked, after.EventsChecked,
+		"verification must still cover the whole chain when it reports a break")
+
+	_, err = admin.Exec(`UPDATE audit_events SET outcome = 'success' WHERE event_id = $1`, probeID)
 	require.NoError(t, err)
 	require.True(t, verify().Verified,
 		"restoring the row must make the chain verify again")
