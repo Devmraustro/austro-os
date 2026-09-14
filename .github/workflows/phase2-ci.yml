@@ -450,8 +450,19 @@ jobs:
           AUSTRO_JWT_SECRET: austro-dev-jwt-secret-key-min-32-chars
           AUSTRO_JWT_REFRESH_SECRET: austro-dev-jwt-refresh-secret-min-32-chars
         run: |
+          # The audit alternation is spelled out rather than written as the bare
+          # prefix "TestAudit". Go's -run matches an unanchored regular
+          # expression, so "TestAudit" also selected TestAuditVisibility*, which
+          # are HTTP tests: they drive the running API, and this step has no API
+          # to talk to, so they failed here for want of a server rather than for
+          # anything wrong with the chain. The prefix is the bug, not the tests.
+          #
+          # The guard below is what keeps the spelled-out list honest: if the
+          # tests are ever renamed and this filter stops matching anything,
+          # `go test` still prints "ok ... no tests to run" and the step would
+          # otherwise pass while testing nothing.
           go test ./tests/ -count=1 -timeout 300s -v \
-            -run 'TestRuntimeRole|TestProtectedTablesHaveForcedRLS|TestFounderOrgLevelSemantics|TestBootstrapAndMigrationsAreIdempotent|TestRuntimeTopologySatisfiesProductionStartup|TestTopologyRejectsOwnerAsRuntimeRole|TestVerifyRuntimeSecurityRejectsOwnedProtectedTable|TestBootstrapRepairsRoleAttributeDrift|TestAudit|TestLoginFailsClosedWhenAuditCannotBePersisted|TestConcurrentAuditAppendsKeepChainLinear' \
+            -run 'TestRuntimeRole|TestProtectedTablesHaveForcedRLS|TestFounderOrgLevelSemantics|TestBootstrapAndMigrationsAreIdempotent|TestRuntimeTopologySatisfiesProductionStartup|TestTopologyRejectsOwnerAsRuntimeRole|TestVerifyRuntimeSecurityRejectsOwnedProtectedTable|TestBootstrapRepairsRoleAttributeDrift|TestAudit(Chain|Events|HMAC|Never|Reader|Rows|Table|Tampering)|TestLoginFailsClosedWhenAuditCannotBePersisted|TestConcurrentAuditAppendsKeepChainLinear' \
             2>&1 | tee /tmp/rls-audit.log
           if ! grep -q '^ok' /tmp/rls-audit.log; then
             echo "FAIL: the runtime RLS / persistent audit suites did not pass"
@@ -461,4 +472,9 @@ jobs:
             echo "FAIL: a runtime RLS / persistent audit test failed"
             exit 1
           fi
-          grep -c '^--- PASS' /tmp/rls-audit.log | xargs -I{} echo "PASS: {} runtime security tests"
+          passes=$(grep -c '^--- PASS' /tmp/rls-audit.log || true)
+          if [ "$passes" -lt 1 ]; then
+            echo "FAIL: the filter matched no tests, so nothing was verified"
+            exit 1
+          fi
+          echo "PASS: $passes runtime security tests"
