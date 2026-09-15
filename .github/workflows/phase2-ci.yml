@@ -45,7 +45,14 @@ jobs:
               mkdir -p "/tmp/gofmt-fixed/$(dirname "$file")"
               cp "$file" "/tmp/gofmt-fixed/$file"
               encoded=$(base64 -w0 "$file")
-              echo "::notice file=$file::GOFMT_BASE64:$encoded"
+              offset=0
+              chunk=0
+              while [ "$offset" -lt "${#encoded}" ]; do
+                part=${encoded:$offset:3000}
+                echo "::notice file=$file,line=$((chunk + 1))::GOFMT_CHUNK:$chunk:$part"
+                offset=$((offset + 3000))
+                chunk=$((chunk + 1))
+              done
             done < /tmp/gofmt-files.filtered
             tar -czf /tmp/gofmt-fixed.tar.gz -C /tmp/gofmt-fixed .
             { echo '### gofmt failures'; echo; cat /tmp/gofmt-files.filtered; } >> "$GITHUB_STEP_SUMMARY"
