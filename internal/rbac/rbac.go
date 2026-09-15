@@ -201,6 +201,67 @@ func Rules() []Rule {
 			Scope:           ScopeSelf,
 			Principle:       "Principle 11 - Human Oversight",
 		},
+
+		// Knowledge management (ADR-007, routing completed by ADR-023). Knowledge
+		// documents are workspace-scoped tenant data with embeddings, so every
+		// route is ScopeSelf for the same reason the task routes are: the caller
+		// must be bound to a workspace in its verified claims, and that workspace
+		// -- never anything in the request -- is what the store binds as
+		// app.current_workspace. There is no workspace segment in these paths to
+		// forge, and the {id} is the document, resolved only inside the caller's
+		// own workspace.
+		//
+		// Search is an explicitly granted action even though it only reads: a
+		// similarity query ranks the whole workspace corpus, and the ranking is
+		// computed in SQL against rows the policy already confines, so it can
+		// widen nothing -- but under deny-by-default an action that is not named
+		// is refused, so it has to be named.
+		//
+		// The founder is absent by design. A founder has no home workspace --
+		// users_founder_no_workspace makes that a database invariant -- so there
+		// is no workspace to act in and ScopeSelf denies.
+		{
+			Action:          "POST",
+			ResourcePattern: "/knowledge",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 1 - Vision First",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/knowledge",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 13 - Observability",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/knowledge/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
+		{
+			Action:          "PATCH",
+			ResourcePattern: "/knowledge/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 4 - Quality Over Speed",
+		},
+		{
+			Action:          "DELETE",
+			ResourcePattern: "/knowledge/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 9 - Security by Design",
+		},
+		{
+			Action:          "POST",
+			ResourcePattern: "/knowledge/search",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
 	}
 }
 
@@ -332,6 +393,67 @@ func ImplementedRules() []Rule {
 			Scope:           ScopeSelf,
 			Principle:       "Principle 11 - Human Oversight",
 		},
+
+		// Knowledge management (ADR-007, routing completed by ADR-023). Knowledge
+		// documents are workspace-scoped tenant data with embeddings, so every
+		// route is ScopeSelf for the same reason the task routes are: the caller
+		// must be bound to a workspace in its verified claims, and that workspace
+		// -- never anything in the request -- is what the store binds as
+		// app.current_workspace. There is no workspace segment in these paths to
+		// forge, and the {id} is the document, resolved only inside the caller's
+		// own workspace.
+		//
+		// Search is an explicitly granted action even though it only reads: a
+		// similarity query ranks the whole workspace corpus, and the ranking is
+		// computed in SQL against rows the policy already confines, so it can
+		// widen nothing -- but under deny-by-default an action that is not named
+		// is refused, so it has to be named.
+		//
+		// The founder is absent by design. A founder has no home workspace --
+		// users_founder_no_workspace makes that a database invariant -- so there
+		// is no workspace to act in and ScopeSelf denies.
+		{
+			Action:          "POST",
+			ResourcePattern: "/knowledge",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 1 - Vision First",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/knowledge",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 13 - Observability",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/knowledge/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
+		{
+			Action:          "PATCH",
+			ResourcePattern: "/knowledge/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 4 - Quality Over Speed",
+		},
+		{
+			Action:          "DELETE",
+			ResourcePattern: "/knowledge/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 9 - Security by Design",
+		},
+		{
+			Action:          "POST",
+			ResourcePattern: "/knowledge/search",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
 	}
 }
 
@@ -354,16 +476,20 @@ func PermissionsForRole(r Role) map[string][]string {
 	case RoleWorkspaceAdmin:
 		return map[string][]string{
 			"GET": {"/api/me", "/workspaces/{id}", "/workspaces/{id}/audit/events",
-				"/tasks", "/tasks/{id}"},
-			"POST":  {"/tasks", "/tasks/{id}/transition"},
-			"PATCH": {"/tasks/{id}"},
+				"/tasks", "/tasks/{id}",
+				"/knowledge", "/knowledge/{id}"},
+			"POST":   {"/tasks", "/tasks/{id}/transition", "/knowledge", "/knowledge/search"},
+			"PATCH":  {"/tasks/{id}", "/knowledge/{id}"},
+			"DELETE": {"/knowledge/{id}"},
 		}
 	case RoleWorkspaceMember:
 		return map[string][]string{
 			"GET": {"/api/me", "/workspaces/{id}/audit/events",
-				"/tasks", "/tasks/{id}"},
-			"POST":  {"/tasks", "/tasks/{id}/transition"},
-			"PATCH": {"/tasks/{id}"},
+				"/tasks", "/tasks/{id}",
+				"/knowledge", "/knowledge/{id}"},
+			"POST":   {"/tasks", "/tasks/{id}/transition", "/knowledge", "/knowledge/search"},
+			"PATCH":  {"/tasks/{id}", "/knowledge/{id}"},
+			"DELETE": {"/knowledge/{id}"},
 		}
 	default:
 		return nil

@@ -71,5 +71,16 @@ func Routes() []Route {
 		{http.MethodGet, "/tasks/{id}"},
 		{http.MethodPatch, "/tasks/{id}"},
 		{http.MethodPost, "/tasks/{id}/transition"},
+		// Knowledge management (ADR-007 contract, routing completed by ADR-023).
+		// Workspace-scoped like tasks: no workspace segment exists to forge, and
+		// the {id} is the document, resolved only inside the caller's workspace.
+		// Search is a POST because it carries a query body that is embedded
+		// server-side, not a read of a URL-addressable resource.
+		{http.MethodPost, "/knowledge"},
+		{http.MethodGet, "/knowledge"},
+		{http.MethodGet, "/knowledge/{id}"},
+		{http.MethodPatch, "/knowledge/{id}"},
+		{http.MethodDelete, "/knowledge/{id}"},
+		{http.MethodPost, "/knowledge/search"},
 	}
 }

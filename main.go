@@ -15,12 +15,14 @@ import (
 	"austro-os/infrastructure/postgres"
 	"austro-os/infrastructure/rabbitmq"
 	"austro-os/infrastructure/redis"
+	"austro-os/internal/ai"
 	"austro-os/internal/api"
 	"austro-os/internal/audit"
 	"austro-os/internal/auth"
 	"austro-os/internal/authz"
 	"austro-os/internal/composition"
 	"austro-os/internal/config"
+	"austro-os/internal/knowledge"
 	logger "austro-os/internal/log"
 	"austro-os/internal/memory"
 	"austro-os/internal/middleware"
@@ -143,6 +145,26 @@ func main() {
 	// cannot say who moved the work. Its event sink stays a no-op: nothing
 	// consumes task events today, and publishing to a queue with no consumer
 	// would be unverifiable surface rather than a feature.
+	// Knowledge. The embedder comes from the configured AI provider, which is the
+	// deterministic stub unless a backend is selected; ai.NewProvider fails fast on
+	// an unknown one rather than silently degrading. The store runs on the
+	// unprivileged runtime handle, not the admin handle, so the workspace policy
+	// genuinely constrains it.
+	aiProvider, err := ai.NewProvider(ai.ProviderConfig{
+		Backend: cfg.AIBackend,
+		Model:   cfg.AIModel,
+		BaseURL: cfg.AIBaseURL,
+		APIKey:  cfg.AIAPIKey,
+	})
+	if err != nil {
+		logger.NewEntry("ai-provider-failed").SetLevel("error").WithError(err).Log()
+		os.Exit(1)
+	}
+	knowledgeStore := postgres.NewKnowledgeStore(db)
+	knowledgeService := knowledge.NewService(knowledgeStore,
+		knowledge.NewGatewayEmbedder(aiProvider), nil, nil, knowledge.DefaultEmbeddingDimensions)
+	knowledgeHandler := api.NewKnowledgeHandler(knowledgeService).SetAuditSink(auditStore)
+
 	taskStore := postgres.NewTaskStore(db)
 	taskService := task.NewService(taskStore, nil, nil)
 	taskHandler := api.NewTaskHandler(taskService).SetAuditSink(auditStore)
@@ -205,6 +227,16 @@ func main() {
 		{Method: http.MethodGet, Pattern: "/tasks/{id}"}:             taskHandler.Get,
 		{Method: http.MethodPatch, Pattern: "/tasks/{id}"}:           taskHandler.Update,
 		{Method: http.MethodPost, Pattern: "/tasks/{id}/transition"}: taskHandler.Transition,
+
+		// Knowledge management. Same shape as tasks: every route is protected,
+		// so each is reachable only through an explicit RBAC rule, and the store
+		// runs on the unprivileged runtime handle so row-level security applies.
+		{Method: http.MethodPost, Pattern: "/knowledge"}:        knowledgeHandler.Create,
+		{Method: http.MethodGet, Pattern: "/knowledge"}:         knowledgeHandler.List,
+		{Method: http.MethodGet, Pattern: "/knowledge/{id}"}:    knowledgeHandler.Get,
+		{Method: http.MethodPatch, Pattern: "/knowledge/{id}"}:  knowledgeHandler.Update,
+		{Method: http.MethodDelete, Pattern: "/knowledge/{id}"}: knowledgeHandler.Delete,
+		{Method: http.MethodPost, Pattern: "/knowledge/search"}: knowledgeHandler.Search,
 	}
 
 	// Registration is a separate function so the wiring can be exercised by a
