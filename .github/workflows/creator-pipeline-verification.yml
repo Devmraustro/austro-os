@@ -10,9 +10,13 @@ permissions:
 
 jobs:
   mutation:
-    name: Creator/Pipelines mutation tests
+    name: Creator/Pipelines mutation tests (${{ matrix.mutation }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        mutation: [transition, rbac, workspace, route, approval, worker_ack, retry, audit, duplicate]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -32,7 +36,7 @@ jobs:
           set -o pipefail
           chmod +x scripts/creator-pipeline-mutation.sh
           set +e
-          scripts/creator-pipeline-mutation.sh > /tmp/mutation.log 2>&1
+          MUTATION_ONLY="${{ matrix.mutation }}" scripts/creator-pipeline-mutation.sh > /tmp/mutation.log 2>&1
           status=$?
           set -e
           cat /tmp/mutation.log
