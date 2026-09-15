@@ -1274,8 +1274,195 @@ paths:
         - Principle 10 — Privacy by Design
         - Principle 9 — Security by Design
 
+  /memory/{layer}/{key}:
+    get:
+      summary: Read one memory cell
+      description: |
+        Reads exactly one key from the caller's workspace. The workspace is
+        derived from the verified bearer claims; there is no workspace path,
+        query parameter, or request field that can override it. Only the exact
+        lower-case layers session, longterm and workspace are public.
+      operationId: readMemory
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: layer
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [session, longterm, workspace]
+        - name: key
+          in: path
+          required: true
+          description: Non-blank memory key, at most 256 bytes.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 256
+      responses:
+        '200':
+          description: The requested memory cell
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryReadResponse'
+        '400':
+          description: Invalid layer, key, or query parameter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Caller has no supported workspace-bound role or workspace
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No memory cell exists for this workspace, layer and key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Memory storage or audit persistence failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 10 — Privacy by Design
+        - Principle 9 — Security by Design
+    put:
+      summary: Create or replace one memory cell
+      description: |
+        Creates or replaces exactly one key in the caller's workspace. The
+        request body contains only the value and optional TTL; workspace, actor,
+        role and authorization scope are server-derived and unknown fields are
+        rejected. This operation is idempotent for a workspace, layer and key.
+      operationId: writeMemory
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: layer
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [session, longterm, workspace]
+        - name: key
+          in: path
+          required: true
+          description: Non-blank memory key, at most 256 bytes.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 256
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemoryWriteRequest'
+      responses:
+        '200':
+          description: The stored memory cell
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryWriteResponse'
+        '400':
+          description: Invalid JSON, unknown field, layer, key, value, secret-shaped content, or TTL
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Caller has no supported workspace-bound role or workspace
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Per-workspace memory write limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Memory storage or audit persistence failed; the mutation fails closed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 9 — Security by Design
+        - Principle 10 — Privacy by Design
+
 components:
   schemas:
+    MemoryReadResponse:
+      type: object
+      additionalProperties: false
+      required: [layer, key, value, workspace_id]
+      properties:
+        layer:
+          type: string
+          enum: [session, longterm, workspace]
+        key:
+          type: string
+        value:
+          type: string
+        workspace_id:
+          type: string
+          format: uuid
+          description: Derived by the server from the verified caller claims.
+    MemoryWriteRequest:
+      type: object
+      additionalProperties: false
+      required: [value]
+      properties:
+        value:
+          type: string
+          maxLength: 65536
+        ttl_seconds:
+          type: integer
+          minimum: 0
+          maximum: 7776000
+          default: 86400
+    MemoryWriteResponse:
+      type: object
+      additionalProperties: false
+      required: [layer, key, value, workspace_id, ttl_seconds]
+      properties:
+        layer:
+          type: string
+          enum: [session, longterm, workspace]
+        key:
+          type: string
+        value:
+          type: string
+        workspace_id:
+          type: string
+          format: uuid
+        ttl_seconds:
+          type: integer
+          minimum: 0
+          maximum: 7776000
+
     KnowledgeDocument:
       type: object
       description: |-

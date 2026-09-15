@@ -864,5 +864,72 @@
     });
   });
 
+  /* ---------- memory ---------- */
+
+  function memoryPath() {
+    return "/memory/" + encodeURIComponent(el("memory-layer").value) +
+      "/" + encodeURIComponent(el("memory-key").value);
+  }
+
+  function renderMemoryResult(body) {
+    el("memory-result").hidden = false;
+    el("memory-workspace").textContent = body.workspace_id || "—";
+    el("memory-result-layer").textContent = body.layer || "—";
+    el("memory-result-key").textContent = body.key || "—";
+    el("memory-result-ttl").textContent = body.ttl_seconds === undefined
+      ? "not returned by read" : String(body.ttl_seconds) + " seconds";
+    if (body.value !== undefined) el("memory-value").value = body.value;
+  }
+
+  function readMemory() {
+    var msg = el("memory-message");
+    setMessage(msg, "", false);
+    return authenticated("GET", memoryPath()).then(function (r) {
+      if (r.status === 403) {
+        setMessage(msg, "Your session is not authorized for workspace memory.", false);
+        return;
+      }
+      if (r.status === 404) {
+        el("memory-result").hidden = true;
+        setMessage(msg, "No memory exists for this key in your workspace.", false);
+        return;
+      }
+      if (r.status !== 200 || !r.body) {
+        setMessage(msg, "Read refused: " + errorMessage(r), false);
+        return;
+      }
+      renderMemoryResult(r.body);
+      setMessage(msg, "Memory read.", true);
+    }).catch(function () {
+      setMessage(msg, "Could not reach the API. The memory was not changed.", false);
+    });
+  }
+
+  el("memory-form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var msg = el("memory-message");
+    setMessage(msg, "", false);
+    var ttl = Number(el("memory-ttl").value);
+    var payload = { value: el("memory-value").value, ttl_seconds: ttl };
+    authenticated("PUT", memoryPath(), payload).then(function (r) {
+      if (r.status === 403) {
+        setMessage(msg, "Your session is not authorized for workspace memory.", false);
+        return;
+      }
+      if (r.status !== 200 || !r.body) {
+        setMessage(msg, "Save refused: " + errorMessage(r), false);
+        return;
+      }
+      renderMemoryResult(r.body);
+      setMessage(msg, "Memory saved.", true);
+    }).catch(function () {
+      setMessage(msg, "Could not reach the API. The memory was not changed.", false);
+    });
+  });
+
+  el("memory-read-btn").addEventListener("click", function () {
+    readMemory();
+  });
+
   if (token()) { enterApp(); } else { initAuthView(); }
 })();

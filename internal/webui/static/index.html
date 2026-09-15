@@ -339,6 +339,46 @@
         </p>
       </section>
 
+      <section class="card" id="memory-card">
+        <h2>Memory</h2>
+        <p class="muted">
+          Read or replace one key in your current workspace. The server derives
+          the workspace, actor and authorization scope from your session. This
+          browser surface intentionally exposes no list, search or delete control.
+        </p>
+
+        <form id="memory-form">
+          <label for="memory-layer">Layer</label>
+          <select id="memory-layer" name="layer">
+            <option value="session">session</option>
+            <option value="longterm">longterm</option>
+            <option value="workspace" selected>workspace</option>
+          </select>
+
+          <label for="memory-key">Key</label>
+          <input id="memory-key" name="key" required maxlength="256"
+                 autocomplete="off" placeholder="e.g. campaign.tone">
+
+          <label for="memory-value">Value</label>
+          <textarea id="memory-value" name="value" rows="4" maxlength="65536"
+                    placeholder="Value to store"></textarea>
+
+          <label for="memory-ttl">TTL in seconds</label>
+          <input id="memory-ttl" name="ttl_seconds" type="number" min="0"
+                 max="7776000" value="86400">
+
+          <button type="submit" class="primary">Save memory</button>
+          <button type="button" id="memory-read-btn">Read memory</button>
+        </form>
+        <p id="memory-message" class="message" role="alert" hidden></p>
+        <dl id="memory-result" class="details" hidden>
+          <dt>Server workspace</dt><dd id="memory-workspace">—</dd>
+          <dt>Stored layer</dt><dd id="memory-result-layer">—</dd>
+          <dt>Stored key</dt><dd id="memory-result-key">—</dd>
+          <dt>TTL</dt><dd id="memory-result-ttl">—</dd>
+        </dl>
+      </section>
+
       <section class="card">
         <h2>Not available in this build</h2>
         <p class="muted">
@@ -349,7 +389,6 @@
         <ul class="list muted">
           <li>Creator pipelines and stage review</li>
           <li>Publishing approval queue</li>
-          <li>Memory</li>
           <li>AI employees</li>
         </ul>
       </section>

@@ -101,7 +101,12 @@ func main() {
 		logger.NewEntry("runtime-compose-failed").SetLevel("error").WithError(err).Log()
 		os.Exit(1)
 	}
-	_ = memory.NewBank(redis.NewMemoryStore(redisClient), logMemoryAudit{}, logMemoryEvents{})
+	memoryBank := memory.NewBank(
+		redis.NewMemoryStore(redisClient),
+		auditstore.NewMemorySink(auditStore),
+		logMemoryEvents{},
+	)
+	memoryHandler := api.NewMemoryHandler(memoryBank).SetAuditSink(auditStore)
 
 	logger.NewEntry("austro-os-startup").
 		With("version", "1.0").
@@ -237,6 +242,10 @@ func main() {
 		{Method: http.MethodPatch, Pattern: "/knowledge/{id}"}:  knowledgeHandler.Update,
 		{Method: http.MethodDelete, Pattern: "/knowledge/{id}"}: knowledgeHandler.Delete,
 		{Method: http.MethodPost, Pattern: "/knowledge/search"}: knowledgeHandler.Search,
+
+		// Memory is deliberately limited to key-based read/write operations.
+		{Method: http.MethodGet, Pattern: "/memory/{layer}/{key}"}: memoryHandler.Read,
+		{Method: http.MethodPut, Pattern: "/memory/{layer}/{key}"}: memoryHandler.Write,
 	}
 
 	// Registration is a separate function so the wiring can be exercised by a

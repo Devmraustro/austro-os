@@ -82,5 +82,10 @@ func Routes() []Route {
 		{http.MethodPatch, "/knowledge/{id}"},
 		{http.MethodDelete, "/knowledge/{id}"},
 		{http.MethodPost, "/knowledge/search"},
+
+		// Memory is intentionally key-based. There is no list, search or delete
+		// operation in the HTTP contract.
+		{http.MethodGet, "/memory/{layer}/{key}"},
+		{http.MethodPut, "/memory/{layer}/{key}"},
 	}
 }

@@ -262,6 +262,24 @@ func Rules() []Rule {
 			Scope:           ScopeSelf,
 			Principle:       "Principle 10 - Privacy by Design",
 		},
+
+		// Memory is a key-based, workspace-scoped surface. The layer and key
+		// are resource segments, not workspace selectors; the workspace comes
+		// from the verified identity and the Bank derives the Redis partition.
+		{
+			Action:          "GET",
+			ResourcePattern: "/memory/{layer}/{key}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
+		{
+			Action:          "PUT",
+			ResourcePattern: "/memory/{layer}/{key}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 9 - Security by Design",
+		},
 	}
 }
 
@@ -454,6 +472,21 @@ func ImplementedRules() []Rule {
 			Scope:           ScopeSelf,
 			Principle:       "Principle 10 - Privacy by Design",
 		},
+
+		{
+			Action:          "GET",
+			ResourcePattern: "/memory/{layer}/{key}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
+		{
+			Action:          "PUT",
+			ResourcePattern: "/memory/{layer}/{key}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 9 - Security by Design",
+		},
 	}
 }
 
@@ -480,6 +513,7 @@ func PermissionsForRole(r Role) map[string][]string {
 				"/knowledge", "/knowledge/{id}"},
 			"POST":   {"/tasks", "/tasks/{id}/transition", "/knowledge", "/knowledge/search"},
 			"PATCH":  {"/tasks/{id}", "/knowledge/{id}"},
+			"PUT":    {"/memory/{layer}/{key}"},
 			"DELETE": {"/knowledge/{id}"},
 		}
 	case RoleWorkspaceMember:
@@ -489,6 +523,7 @@ func PermissionsForRole(r Role) map[string][]string {
 				"/knowledge", "/knowledge/{id}"},
 			"POST":   {"/tasks", "/tasks/{id}/transition", "/knowledge", "/knowledge/search"},
 			"PATCH":  {"/tasks/{id}", "/knowledge/{id}"},
+			"PUT":    {"/memory/{layer}/{key}"},
 			"DELETE": {"/knowledge/{id}"},
 		}
 	default:

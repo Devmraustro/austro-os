@@ -169,9 +169,12 @@ func inScope(scope rbac.WorkspaceScope, captured, claimsWorkspace string) bool {
 	return false
 }
 
-// matchResource matches a template resource (which may contain a single {id}
-// segment) against a concrete request path. It returns the captured {id}
-// segment (empty when the pattern has none or the paths do not match).
+// matchResource matches a template resource against a concrete request path.
+// Any non-empty `{name}` segment is a single path-segment placeholder. This
+// keeps the existing {id} routes strict while allowing key-based resources
+// such as /memory/{layer}/{key} without treating a slash as part of a key.
+// The first captured segment is returned for ScopePath rules; Memory uses
+// ScopeSelf, so its layer/key placeholders never become a workspace binding.
 func matchResource(pattern, actual string) (string, bool) {
 	pSegs := splitPath(pattern)
 	aSegs := splitPath(actual)
@@ -179,22 +182,21 @@ func matchResource(pattern, actual string) (string, bool) {
 		return "", false
 	}
 	var captured string
-	idPicked := 0
 	for i := range pSegs {
-		if pSegs[i] == "{id}" {
+		segment := pSegs[i]
+		placeholder := len(segment) > 2 && strings.HasPrefix(segment, "{") && strings.HasSuffix(segment, "}")
+		if placeholder {
 			if aSegs[i] == "" {
 				return "", false
 			}
-			captured = aSegs[i]
-			idPicked++
+			if captured == "" {
+				captured = aSegs[i]
+			}
 			continue
 		}
-		if pSegs[i] != aSegs[i] {
+		if segment != aSegs[i] {
 			return "", false
 		}
-	}
-	if idPicked > 1 {
-		return "", false
 	}
 	return captured, true
 }
