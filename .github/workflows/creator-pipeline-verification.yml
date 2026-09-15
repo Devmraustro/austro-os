@@ -29,8 +29,21 @@ jobs:
           GOTOOLCHAIN: local
           GOPROXY: https://proxy.golang.org,direct
         run: |
+          set -o pipefail
           chmod +x scripts/creator-pipeline-mutation.sh
-          scripts/creator-pipeline-mutation.sh
+          set +e
+          scripts/creator-pipeline-mutation.sh > /tmp/mutation.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/mutation.log
+          if [ "$status" -ne 0 ]; then
+            if grep -E '^(=== mutation|CAUGHT:|SURVIVED:|RESTORED|RESTORE FAILED|mutation target|--- FAIL|FAIL|panic:|expected)' /tmp/mutation.log; then
+              while IFS= read -r line; do
+                echo "::error title=mutation-suite::$line"
+              done < <(grep -E '^(=== mutation|CAUGHT:|SURVIVED:|RESTORED|RESTORE FAILED|mutation target|--- FAIL|FAIL|panic:|expected)' /tmp/mutation.log)
+            fi
+          fi
+          exit "$status"
 
   independent-security:
     name: Independent Go security tooling
