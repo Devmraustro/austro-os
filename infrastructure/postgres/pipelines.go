@@ -43,7 +43,7 @@ func (s *PipelineStore) Create(ctx context.Context, p *orchestration.Pipeline) (
 		RETURNING id, created_at, updated_at, version`,
 		p.WorkspaceID, nullableUUID(p.GoalID), string(p.Stage), string(p.Status), nullableUUID(p.TaskID), nullableUUID(p.PublicationID),
 		nullablePipelineString(p.ResearchReference), nullablePipelineString(p.ScriptReference), nullablePipelineString(p.ReviewReference), nullablePipelineString(p.PublishedReference), nullablePipelineString(p.FailureReason),
-		p.RetryCount, nullablePipelineString(p.IdempotencyKey), nullablePipelineString(p.ApprovedBy), nullableTime(p.ApprovedAt), p.Version, nullIfEmpty(p.TraceID), p.CreatedAt, p.UpdatedAt).Scan(&id, &createdAt, &updatedAt, &version)
+		p.RetryCount, nullablePipelineString(p.IdempotencyKey), nullablePipelineString(p.ApprovedBy), nullableTime(p.ApprovedAt), p.Version, nullablePipelineString(p.TraceID), p.CreatedAt, p.UpdatedAt).Scan(&id, &createdAt, &updatedAt, &version)
 	if err != nil {
 		return nil, err
 	}
