@@ -104,6 +104,7 @@ func Bootstrap(owner *sql.DB, topo *Topology) error {
 		{"migrate-users", func() error { return migrateUsers(owner) }},
 		{"migrate-audit-events", func() error { return migrateAuditEvents(owner) }},
 		{"migrate-tasks", func() error { return migrateTasks(owner) }},
+		{"migrate-knowledge", func() error { return migrateKnowledge(owner) }},
 		{"enable-rls", func() error { return enableRLS(owner) }},
 		// Roles before policies: CREATE POLICY ... TO <role> requires the role
 		// to exist, so provisioning them afterwards fails the policy step.
@@ -512,6 +513,43 @@ func migrateTasks(db *sql.DB) error {
 		// the invariant. Surface that loudly: silently skipping the constraint
 		// would leave the table accepting values the lifecycle cannot handle.
 		return fmt.Errorf("migrate tasks: %w", err)
+	}
+	return nil
+}
+
+// migrateKnowledge pins the invariants the knowledge domain already validates,
+// so a row written by any other path cannot carry a kind or a title the domain
+// does not recognize. It also adds the index that makes the bounded, newest-first
+// listing cheap.
+//
+// Additive and idempotent: every statement is guarded, so re-running the
+// bootstrap neither duplicates a constraint nor rewrites the table. A constraint
+// add can only fail if pre-existing rows already violate the invariant, and that
+// is surfaced rather than skipped -- silently omitting the constraint would
+// leave the table accepting values the domain cannot handle.
+func migrateKnowledge(db *sql.DB) error {
+	migration := `
+	DO $$
+	BEGIN
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'knowledge_kind_valid') THEN
+			ALTER TABLE knowledge_documents ADD CONSTRAINT knowledge_kind_valid CHECK (kind IN (
+				'document', 'campaign_rule', 'style_guide'));
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'knowledge_title_not_blank') THEN
+			ALTER TABLE knowledge_documents ADD CONSTRAINT knowledge_title_not_blank
+				CHECK (length(trim(title)) > 0);
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'knowledge_content_not_blank') THEN
+			ALTER TABLE knowledge_documents ADD CONSTRAINT knowledge_content_not_blank
+				CHECK (length(trim(content)) > 0);
+		END IF;
+	END$$;
+
+	CREATE INDEX IF NOT EXISTS idx_knowledge_workspace_created
+		ON knowledge_documents(workspace_id, created_at DESC, id DESC);
+	`
+	if _, err := db.Exec(migration); err != nil {
+		return fmt.Errorf("migrate knowledge: %w", err)
 	}
 	return nil
 }
