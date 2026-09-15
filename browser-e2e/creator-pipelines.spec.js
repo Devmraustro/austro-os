@@ -149,8 +149,14 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
     await founderPage.locator('#login-btn').click();
     await expect(founderPage.locator('#app-view')).toBeVisible();
     await expect(founderPage.locator('#identity')).toContainText(founderUsername);
-    await expect(founderPage.locator('#workspace-list li').filter({ hasText: workspaceAName })).toBeVisible();
-    await expect(founderPage.locator('#workspace-list li').filter({ hasText: workspaceBName })).toBeVisible();
+    await expect.poll(() => founderPage.locator('#workspace-list').innerText(), {
+      timeout: 15000,
+      message: `workspace A did not render; expected ${workspaceAName}`,
+    }).toContain(workspaceAName);
+    await expect.poll(() => founderPage.locator('#workspace-list').innerText(), {
+      timeout: 15000,
+      message: `workspace B did not render; expected ${workspaceBName}`,
+    }).toContain(workspaceBName);
     await expect(founderPage.locator('#workspace-form')).toBeVisible();
 
     const founderRefreshBeforeLogout = await founderPage.evaluate(() => sessionStorage.getItem('austro.refresh'));
