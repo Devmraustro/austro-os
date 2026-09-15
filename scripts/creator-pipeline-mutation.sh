@@ -166,5 +166,10 @@ else
 fi
 
 git diff --check
-git diff --exit-code -- . ':!scripts/creator-pipeline-mutation.sh'
+if ! git diff --exit-code -- . ':!scripts/creator-pipeline-mutation.sh'; then
+  echo "FINAL_DIFF_START"
+  git diff -- . ':!scripts/creator-pipeline-mutation.sh'
+  echo "FINAL_DIFF_END"
+  exit 1
+fi
 echo "MUTATION_SUITE_PASS: $selected mutation case(s) were caught and restored byte-for-byte"
