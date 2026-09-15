@@ -1,0 +1,11 @@
+{
+  "name": "austro-os-browser-e2e",
+  "private": true,
+  "description": "Real Chromium E2E verification for the AUSTRO OS browser application",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}

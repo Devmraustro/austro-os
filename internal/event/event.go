@@ -23,29 +23,29 @@ const (
 )
 
 type UniversalEnvelope struct {
-	EventID        uuid.UUID     `json:"event_id"`
-	Timestamp      time.Time     `json:"timestamp"`
-	WorkspaceID    string        `json:"workspace_id,omitempty"`
-	TraceID        uuid.UUID     `json:"trace_id,omitempty"`
-	SpanID         uuid.UUID     `json:"span_id,omitempty"`
-	ActorType      string        `json:"actor_type"`
-	ActorID        uuid.UUID     `json:"actor_id"`
-	TargetType     string        `json:"target_type"`
-	TargetID       uuid.UUID     `json:"target_id"`
-	EventType      EventType     `json:"event_type"`
-	Outcome        string        `json:"outcome"`
-	OutcomeDetails json.RawMessage `json:"outcome_details,omitempty"`
-	PermissionsChecked map[string]bool `json:"permissions_checked,omitempty"`
-	ConstitutionalPrinciple string   `json:"constitutional_principle"`
-	Details        json.RawMessage `json:"details,omitempty"`
-	Genesis        bool          `json:"genesis,omitempty"`
+	EventID                 uuid.UUID       `json:"event_id"`
+	Timestamp               time.Time       `json:"timestamp"`
+	WorkspaceID             string          `json:"workspace_id,omitempty"`
+	TraceID                 uuid.UUID       `json:"trace_id,omitempty"`
+	SpanID                  uuid.UUID       `json:"span_id,omitempty"`
+	ActorType               string          `json:"actor_type"`
+	ActorID                 uuid.UUID       `json:"actor_id"`
+	TargetType              string          `json:"target_type"`
+	TargetID                uuid.UUID       `json:"target_id"`
+	EventType               EventType       `json:"event_type"`
+	Outcome                 string          `json:"outcome"`
+	OutcomeDetails          json.RawMessage `json:"outcome_details,omitempty"`
+	PermissionsChecked      map[string]bool `json:"permissions_checked,omitempty"`
+	ConstitutionalPrinciple string          `json:"constitutional_principle"`
+	Details                 json.RawMessage `json:"details,omitempty"`
+	Genesis                 bool            `json:"genesis,omitempty"`
 }
 
 func NewEnvelope() *UniversalEnvelope {
 	return &UniversalEnvelope{
-		EventID:      uuid.New(),
-		Timestamp:  time.Now().UTC(),
-		OutcomeDetails: nil,
+		EventID:            uuid.New(),
+		Timestamp:          time.Now().UTC(),
+		OutcomeDetails:     nil,
 		PermissionsChecked: make(map[string]bool),
 	}
 }

@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"austro-os/internal/principlemapping"
+
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
@@ -126,8 +128,12 @@ func TestOpenAPIPrincipleReferences(t *testing.T) {
 	require.Equal(t, "3.1.0", spec.openapi, "spec must use OpenAPI 3.1.0")
 	require.Equal(t, "AUSTRO OS API", spec.title)
 
-	require.GreaterOrEqual(t, spec.totalOps, 10, "expected a richly-specified API surface")
-	require.Equal(t, 18, spec.totalOps, "spec should define 18 operations")
+	// A floor, not an exact count. The exact surface is pinned structurally by
+	// TestOpenAPIMatchesRegisteredRoutes, which compares this document against
+	// api.Routes() in both directions; repeating the number here would only
+	// mean editing two places every time a capability is added, and the parity
+	// test is the one that can actually catch a phantom or a missing entry.
+	require.GreaterOrEqual(t, spec.totalOps, 13, "expected a richly-specified API surface")
 
 	for _, op := range spec.ops {
 		// Public, read-only surface: health probes and the constitutional
@@ -152,23 +158,23 @@ func TestOpenAPIPrincipleReferences(t *testing.T) {
 func isPublicReadOnlyPath(p string) bool {
 	switch p {
 	case "/health/live", "/health/ready",
-		"/constitutional/principles", "/constitutional/principles/{name}",
 		"/api/auth/bootstrap", "/api/auth/login", "/api/auth/refresh", "/api/auth/logout":
 		return true
 	}
 	return false
 }
 
-// TestOpenAPIConstitutionalEnum verifies the audit schema's constitutional
-// principle enum matches the full set of 18 principles.
-func TestOpenAPIConstitutionalEnum(t *testing.T) {
-	// Verify the 18 principles are enumerated in the AuditEvent schema by
-	// scanning the raw spec text (the enum lives in the components section).
-	b, err := os.ReadFile(filepath.Join("..", "api", "openapi.yaml"))
-	require.NoError(t, err)
-	s := string(b)
-
-	enumerated := []string{
+// TestConstitutionalPrincipleRegistry pins the constitutional principle set to
+// the runtime registry rather than to a documentation string.
+//
+// This used to scan api/openapi.yaml for the 18 names, because the spec carried
+// an AuditEvent schema whose constitutional_principle field enumerated them.
+// That schema described an audit endpoint the server never routed, so it was
+// removed as dead contract; the registry in internal/principlemapping is the
+// authority the audit system actually validates against, and asserting it here
+// catches a missing or renamed principle rather than a missing line of YAML.
+func TestConstitutionalPrincipleRegistry(t *testing.T) {
+	want := []string{
 		"Vision First", "Architecture Before Implementation",
 		"Documentation Is Part of the Product", "Quality Over Speed",
 		"Modular Design", "Replaceability", "Separation of Concerns",
@@ -177,8 +183,15 @@ func TestOpenAPIConstitutionalEnum(t *testing.T) {
 		"Backward Compatibility", "Simplicity", "Scalability",
 		"Explicit Decisions", "Founder Authority",
 	}
-	for _, p := range enumerated {
-		require.Contains(t, s, "    - "+p, "constitutional principle %q must be enumerated", p)
+	got := principlemapping.AllPrinciples()
+	require.Len(t, got, 18, "the constitution defines exactly 18 principles")
+	require.ElementsMatch(t, want, got,
+		"the runtime principle registry must match the constitution")
+
+	seen := map[string]bool{}
+	for _, p := range got {
+		require.False(t, seen[p], "principle %q is registered twice", p)
+		seen[p] = true
 	}
 }
 

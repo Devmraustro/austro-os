@@ -14,11 +14,6 @@ func claims(role rbac.Role, workspace string, perms map[string][]string) *auth.C
 	return &auth.Claims{ID: "user-1", Role: role, WorkspaceID: workspace, Permissions: perms}
 }
 
-// profilePerms is the grant a member/admin/founder carries for /api/me.
-func profilePerms() map[string][]string {
-	return rbac.PermissionsForRole(rbac.RoleWorkspaceMember)
-}
-
 func seeded(t *testing.T, rules []rbac.Rule) *Authorizer {
 	t.Helper()
 	a := NewAuthorizer()

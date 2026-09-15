@@ -152,3 +152,38 @@ authoritative for later wiring.
 - Real platform adapters and credentials (deferred, ROADMAP §2.3/§5.8).
 - Analytics / KPI over publications (deferred, ROADMAP §2.3).
 - HTTP wiring of `/publications` (deferred to keep the OpenAPI gate green).
+## Completion amendment — browser contract and durable delivery outcomes
+
+This amendment supersedes the earlier HTTP deferral and the earlier terminal-state
+wording for the completed Publishing capability. The existing aggregate, service,
+store port, publisher adapters, audit sink and RabbitMQ event sink remain the
+single Publishing domain; this is an additive boundary, not a second subsystem.
+
+The browser/API surface is intentionally limited to:
+
+- `POST /publications` — create a queued draft. `Idempotency-Key` is optional,
+  bounded to 128 characters and unique within a workspace.
+- `GET /publications` — newest-first deterministic list, bounded to 100 rows,
+  with optional `status` and `limit` filters.
+- `GET /publications/{id}` — workspace-scoped status/detail read.
+- `POST /publications/{id}/submit` — queued → review.
+- `POST /publications/{id}/approve` — review → approved (workspace admin only).
+- `POST /publications/{id}/reject` — review → rejected (workspace admin only).
+- `POST /publications/{id}/publish` — approved → published (workspace admin only).
+- `POST /publications/{id}/retry` — failed delivery recovery (workspace admin
+  only); it retries the already human-approved aggregate and is the only path
+  out of `failed`.
+
+Workspace members may create, list, read and submit their own workspace's
+publications. Workspace admins may perform all of those operations plus the
+three human decisions and retry. Founders have no workspace-scoped Publishing
+context and receive no Publishing grants. There is no arbitrary status PATCH,
+delete, search, or organization-wide publication operation.
+
+Delivery failure is durable. The additive columns `idempotency_key`,
+`external_reference`, `failure_reason` and `published_by` are persisted. A
+publisher error is recorded as `failed` before the API reports delivery failure;
+it is never acknowledged as a successful publication. `failed` is terminal for
+ordinary lifecycle commands, while the explicit retry command may recover it to
+`published`. Stub delivery remains the safe default; generic HTTP delivery is
+still configuration-required.

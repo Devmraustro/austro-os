@@ -50,9 +50,13 @@ func TestTaskWorkspaceRLSIsolation(t *testing.T) {
 
 	// Clean up the seeded tasks so repeated runs do not accumulate rows in the
 	// shared workspaces (the RLS tests run after the lifecycle/count assertions).
-	t.Cleanup(func() {
-		_, _ = admin.Exec(`DELETE FROM tasks WHERE id IN ($1, $2)`, taskA, taskB)
-	})
+	//
+	// This goes through cleanupWithAdmin rather than the admin handle above:
+	// t.Cleanup callbacks run after this function's deferred admin.Close(), so a
+	// cleanup holding that handle silently deleted nothing and every run left two
+	// more rows behind in the shared fixtures. cleanupWithAdmin opens its own
+	// connection.
+	cleanupWithAdmin(t, `DELETE FROM tasks WHERE id IN ($1, $2)`, taskA, taskB)
 
 	t.Run("A sees only A tasks", func(t *testing.T) {
 		dbA := connectRestricted(t, workspaceARole)

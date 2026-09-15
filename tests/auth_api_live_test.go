@@ -121,6 +121,6 @@ func TestAuthLiveEndToEnd(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, status)
 
 	// The already-issued access token keeps working within its 15-minute window.
-	status, body = authJSON(t, http.MethodGet, "/api/me", nil, rotated.AccessToken)
+	status, _ = authJSON(t, http.MethodGet, "/api/me", nil, rotated.AccessToken)
 	require.Equal(t, http.StatusOK, status)
 }

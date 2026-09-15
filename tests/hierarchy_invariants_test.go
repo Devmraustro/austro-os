@@ -94,15 +94,19 @@ func TestWorkspaceIsolationEnforcement(t *testing.T) {
 	_ = wsB
 
 	// From context of workspace A the hierarchy validates.
-	ctxA := context.WithValue(context.Background(), "current_workspace", workspaceA)
+	ctxA := context.WithValue(context.Background(), currentWorkspaceKey, workspaceA)
 	require.NoError(t, validateHierarchy(admin, ctxA, empA))
 
 	// From context of workspace B the same employee must fail validation
 	// (cross-workspace ownership rejected).
-	ctxB := context.WithValue(context.Background(), "current_workspace", workspaceB)
+	ctxB := context.WithValue(context.Background(), currentWorkspaceKey, workspaceB)
 	err = validateHierarchy(admin, ctxB, empA)
 	require.Error(t, err, "cross-workspace ownership must be rejected")
 }
+
+type hierarchyContextKey string
+
+const currentWorkspaceKey hierarchyContextKey = "current_workspace"
 
 // validateHierarchy re-implements the hierarchy/workspace ownership check
 // against the actual schema (ai_employees -> teams -> departments).
@@ -116,7 +120,7 @@ func validateHierarchy(db *sql.DB, ctx context.Context, empID uuid.UUID) error {
 	if err != nil {
 		return err
 	}
-	if cur, ok := ctx.Value("current_workspace").(string); ok && cur != "" && ws != cur {
+	if cur, ok := ctx.Value(currentWorkspaceKey).(string); ok && cur != "" && ws != cur {
 		return sql.ErrNoRows
 	}
 	return nil

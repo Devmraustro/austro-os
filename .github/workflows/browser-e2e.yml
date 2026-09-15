@@ -1,0 +1,245 @@
+name: AUSTRO OS Real Browser E2E
+
+on:
+  push:
+    branches: [arena/01a0a5ea-austro-os]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  browser-e2e:
+    name: Real Chromium Creator/Pipelines E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: austro
+          POSTGRES_PASSWORD: austro
+          POSTGRES_DB: austro
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U austro -d austro" --health-interval 5s
+          --health-timeout 5s --health-retries 12
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s
+          --health-timeout 3s --health-retries 12
+
+      rabbitmq:
+        image: rabbitmq:3-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: austro
+          RABBITMQ_DEFAULT_PASS: austro
+          RABBITMQ_DEFAULT_VHOST: /
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping" --health-interval 5s
+          --health-timeout 5s --health-retries 12
+
+    env:
+      GOFLAGS: -mod=mod
+      GOTOOLCHAIN: local
+      GOPROXY: https://proxy.golang.org,direct
+      AUSTRO_ENV: development
+      AUSTRO_SERVER_ADDR: ":8080"
+      AUSTRO_POSTGRES_DSN: postgres://austro:austro@127.0.0.1:5432/austro?sslmode=disable
+      AUSTRO_POSTGRES_RUNTIME_DSN: postgres://austro_app:austro-runtime-pw@127.0.0.1:5432/austro?sslmode=disable
+      AUSTRO_REDIS_ADDR: 127.0.0.1:6379
+      AUSTRO_RABBITMQ_URL: amqp://austro:austro@127.0.0.1:5672
+      AUSTRO_JWT_SECRET: austro-dev-jwt-secret-key-min-32-chars
+      AUSTRO_JWT_REFRESH_SECRET: austro-dev-jwt-refresh-secret-min-32-chars
+      AUSTRO_AI_BACKEND: stub
+      AUSTRO_PUBLISH_BACKEND: stub
+      BROWSER_E2E_BASE_URL: http://127.0.0.1:8080
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.13"
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.3"
+          cache: npm
+          cache-dependency-path: browser-e2e/package-lock.json
+
+      - name: Install browser test package
+        working-directory: browser-e2e
+        run: npm ci --ignore-scripts
+
+      - name: Create isolated CI browser credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          founder_password=$(openssl rand -hex 24)
+          browser_password=$(openssl rand -hex 24)
+          founder_username="browser-founder-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          browser_env_file="$RUNNER_TEMP/browser-e2e.env"
+
+          echo "AUSTRO_FOUNDER_USERNAME=$founder_username" >> "$GITHUB_ENV"
+          echo "AUSTRO_FOUNDER_PASSWORD=$founder_password" >> "$GITHUB_ENV"
+          echo "BROWSER_E2E_ENV_FILE=$browser_env_file" >> "$GITHUB_ENV"
+          echo "BROWSER_E2E_FOUNDER_USERNAME=$founder_username" >> "$GITHUB_ENV"
+          echo "BROWSER_E2E_FOUNDER_PASSWORD=$founder_password" >> "$GITHUB_ENV"
+          echo "BROWSER_E2E_PASSWORD=$browser_password" >> "$GITHUB_ENV"
+
+          echo "::add-mask::$founder_password"
+          echo "::add-mask::$browser_password"
+
+      - name: Build and start real API and worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          go build -o /tmp/austro-api .
+          go build -o /tmp/austro-worker ./cmd/worker
+
+          nohup /tmp/austro-api > /tmp/austro-api.log 2>&1 &
+          echo $! > /tmp/austro-api.pid
+          api_ready=0
+          for _ in $(seq 1 60); do
+            if curl --fail --silent --show-error http://127.0.0.1:8080/health/live >/dev/null && \
+               curl --fail --silent --show-error http://127.0.0.1:8080/health/ready >/dev/null; then
+              api_ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$api_ready" -ne 1 ]; then
+            echo "API did not become ready"
+            tail -n 160 /tmp/austro-api.log
+            exit 1
+          fi
+
+          nohup /tmp/austro-worker > /tmp/austro-worker.log 2>&1 &
+          echo $! > /tmp/austro-worker.pid
+          worker_ready=0
+          for _ in $(seq 1 60); do
+            if kill -0 "$(cat /tmp/austro-worker.pid)" 2>/dev/null && \
+               grep -q '"message":"worker-started"' /tmp/austro-worker.log; then
+              worker_ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$worker_ready" -ne 1 ]; then
+            echo "worker did not report readiness"
+            tail -n 160 /tmp/austro-worker.log
+            exit 1
+          fi
+          echo "real API and worker are ready"
+
+      - name: Provision isolated browser identities and workspaces
+        run: |
+          set -euo pipefail
+          go run ./cmd/browser-e2e-setup
+          cat "$BROWSER_E2E_ENV_FILE" >> "$GITHUB_ENV"
+
+      - name: Install headless Chromium and system dependencies
+        working-directory: browser-e2e
+        run: timeout 900 npm exec playwright -- install --with-deps chromium
+
+      - name: Prove browser authorization assertion with a temporary mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/browser-e2e-mutation.sh
+          scripts/browser-e2e-mutation.sh
+
+      - name: Publish fresh browser E2E data identifiers
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat "$BROWSER_E2E_ENV_FILE" >> "$GITHUB_ENV"
+
+      - name: Fail if the browser selector matches zero tests
+        working-directory: browser-e2e
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm exec playwright -- test --list --reporter=line | tee /tmp/browser-e2e-test-list.log
+          if ! grep -Eq 'Total: [1-9][0-9]* test' /tmp/browser-e2e-test-list.log; then
+            echo "browser selector matched zero tests"
+            exit 1
+          fi
+
+      - name: Execute real Chromium DOM journey
+        working-directory: browser-e2e
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          npm test -- --reporter=list > /tmp/browser-e2e.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/browser-e2e.log
+          if [ -f /tmp/browser-e2e-diagnostic.log ]; then
+            diagnostic_line=$(tail -n 1 /tmp/browser-e2e-diagnostic.log | tr '\n' ' ' | cut -c 1-900)
+            echo "::error title=Browser DOM diagnostic::$diagnostic_line"
+          fi
+          if [ "$status" -ne 0 ]; then
+            milestone_line=$(grep -E 'BROWSER_STEP|BROWSER_DIAGNOSTIC' /tmp/browser-e2e.log | tail -n 1 | tr '\n' ' ' | cut -c 1-900)
+            if [ -n "$milestone_line" ]; then
+              echo "::error title=Browser DOM milestone::$milestone_line"
+            fi
+            failure_line=$(grep -E 'BROWSER_DIAGNOSTIC|Error:|Timeout|expect\(|locator|toHave|received|expected' /tmp/browser-e2e.log | grep -vE '[0-9]+[[:space:]]+\|' | tail -n 1 | tr '\n' ' ' | cut -c 1-900)
+            if [ -n "$failure_line" ]; then
+              echo "::error title=Browser DOM journey failure::$failure_line"
+            else
+              echo "::error title=Browser DOM journey failure::Playwright exited with status $status; see the uploaded trace and failure artifacts"
+            fi
+          fi
+          exit "$status"
+
+      - name: Upload browser screenshots, traces, videos, and report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: austro-browser-e2e-failure-${{ github.run_id }}
+          path: |
+            browser-e2e/test-results/
+            browser-e2e/playwright-report/
+            /tmp/browser-e2e.log
+            /tmp/browser-e2e-test-list.log
+          if-no-files-found: warn
+
+      - name: Clean isolated browser data
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f "$BROWSER_E2E_ENV_FILE" ]; then
+            go run ./cmd/browser-e2e-setup -mode=cleanup
+          else
+            echo "browser E2E setup did not create an environment file"
+          fi
+
+      - name: Stop API and worker processes
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          for pid_file in /tmp/austro-api.pid /tmp/austro-worker.pid; do
+            if [ -f "$pid_file" ]; then
+              pid=$(cat "$pid_file")
+              if kill -0 "$pid" 2>/dev/null; then
+                kill "$pid"
+              fi
+            fi
+          done
