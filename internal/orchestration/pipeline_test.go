@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -165,6 +166,41 @@ func TestInvalidAndSkippedTransitions(t *testing.T) {
 	if _, err := svc.Advance(ctx(), ws, p.ID, StageResearch, Stage("bogus")); err != ErrInvalidStage {
 		t.Fatalf("expected ErrInvalidStage, got %v", err)
 	}
+}
+
+type failOnceReviewer struct{ failed bool }
+
+func (r *failOnceReviewer) Review(context.Context, uuid.UUID, *Pipeline) (bool, error) {
+	if !r.failed {
+		r.failed = true
+		return false, errors.New("temporary review dependency failure")
+	}
+	return true, nil
+}
+
+func TestFailedStageCanOnlyRecoverThroughRetry(t *testing.T) {
+	store := newMemStore()
+	reviewer := &failOnceReviewer{}
+	svc := NewService(store, StubResearcher{}, StubScriptWriter{}, reviewer, StubPublisher{}, nil, nil)
+	ws := validWS()
+	p := basePipeline(t, store, ws)
+
+	p, err := svc.Advance(ctx(), ws, p.ID, StageResearch, StageScript)
+	if err != nil { t.Fatalf("research->script: %v", err) }
+	if _, err = svc.Advance(ctx(), ws, p.ID, StageScript, StageReview); err == nil {
+		t.Fatal("temporary stage failure must be returned")
+	}
+	failed, err := svc.Get(ctx(), ws, p.ID)
+	if err != nil { t.Fatalf("get failed pipeline: %v", err) }
+	if failed.Status != StatusFailed || failed.FailureReason == "" { t.Fatalf("expected durable failure evidence, got %s/%q", failed.Status, failed.FailureReason) }
+	if _, err = svc.Advance(ctx(), ws, p.ID, StageScript, StageReview); err != ErrTerminalState { t.Fatalf("failed pipeline must not be advanced directly, got %v", err) }
+
+	recovered, err := svc.Retry(ctx(), ws, p.ID, "operator")
+	if err != nil { t.Fatalf("retry: %v", err) }
+	if recovered.Stage != StageReview || recovered.Status != StatusAwaitingApproval || recovered.RetryCount != 1 { t.Fatalf("unexpected recovery state: %s/%s retries=%d", recovered.Stage, recovered.Status, recovered.RetryCount) }
+	if _, err = svc.Approve(ctx(), ws, p.ID, "operator"); err != nil { t.Fatalf("approve recovery: %v", err) }
+	if _, err = svc.Advance(ctx(), ws, p.ID, StageReview, StagePublish); err != nil { t.Fatalf("publish recovery: %v", err) }
+	if _, err = svc.Advance(ctx(), ws, p.ID, StagePublish, StageComplete); err != nil { t.Fatalf("complete recovery: %v", err) }
 }
 
 func TestWorkspaceIsolation(t *testing.T) {
