@@ -149,6 +149,7 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
     await founderPage.locator('#password').fill('wrong-browser-e2e-password');
     await founderPage.locator('#login-btn').click();
     await expect(founderPage.locator('#auth-message')).toContainText('Invalid username or password.');
+    console.log('BROWSER_STEP founder-invalid-login');
 
     await observeHiddenStates(founderPage);
     await founderPage.locator('#password').fill(founderPassword);
@@ -171,6 +172,7 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
       timeout: 15000,
       message: `founder identity did not render for ${founderUsername}`,
     }).toContain(founderUsername);
+    console.log('BROWSER_STEP founder-authenticated');
     async function expectWorkspaceRendered(name, label) {
       try {
         await expect.poll(() => founderPage.locator('#workspace-list').innerText(), {
@@ -184,6 +186,7 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
     }
     await expectWorkspaceRendered(workspaceAName, 'workspace A');
     await expectWorkspaceRendered(workspaceBName, 'workspace B');
+    console.log('BROWSER_STEP founder-workspaces-rendered');
     await expect(founderPage.locator('#workspace-form')).toBeVisible();
 
     const founderRefreshBeforeLogout = await founderPage.evaluate(() => sessionStorage.getItem('austro.refresh'));
@@ -193,6 +196,7 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
       access: sessionStorage.getItem('austro.access'),
       refresh: sessionStorage.getItem('austro.refresh'),
     }))).resolves.toEqual({ access: null, refresh: null });
+    console.log('BROWSER_STEP founder-logout');
 
     // WORKSPACE → CREATOR/PIPELINE. The admin starts with an isolated empty
     // workspace. The UI has a real loading transition and renders the empty
@@ -201,6 +205,7 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
     await expect(adminPage.locator('#pipelines-card')).toBeVisible();
     await expect(adminPage.locator('#pipeline-empty')).toBeVisible();
     await expect(adminPage.locator('#pipeline-table')).toBeHidden();
+    console.log('BROWSER_STEP admin-empty-state');
 
     const initialUIStates = await adminPage.evaluate(() => window.__austroUIStates || []);
     expect(initialUIStates).toEqual(expect.arrayContaining([
@@ -219,6 +224,7 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
     await expect(adminPage.locator('#pipeline-create-message')).toContainText('Pipeline started.');
     await expect(adminPage.locator('#pipeline-body-rows tr')).toHaveCount(1);
     await expect(adminPage.locator('#pipeline-body-rows [name="stage"], #pipeline-body-rows [name="status"]')).toHaveCount(0);
+    console.log('BROWSER_STEP pipeline-created');
 
     // VIEW REAL STATUS → RESEARCH → SCRIPT → REVIEW. The test polls the
     // rendered table and waits for the persisted worker-owned handoff; it never
@@ -228,6 +234,7 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
     await expect(adminPage.locator('#pipeline-body-rows button', { hasText: 'Approve' })).toHaveCount(1);
     await expect(adminPage.locator('#pipeline-body-rows button', { hasText: 'Publish' })).toHaveCount(0);
     await expect(adminPage.locator('#pipeline-body-rows button', { hasText: 'Complete' })).toHaveCount(0);
+    console.log('BROWSER_STEP pipeline-review');
 
     // SECURITY A: a member can observe the real review state but is not shown
     // an approval control. This is an actual second authenticated browser.
