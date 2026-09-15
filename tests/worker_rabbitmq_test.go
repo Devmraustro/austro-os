@@ -84,7 +84,7 @@ func TestWorkerSuccessPath(t *testing.T) {
 
 	// Because the handler succeeded, the worker ACKs: the queue must drain.
 	require.Eventually(t, func() bool {
-		info, err := ch.QueueInspect(q)
+		info, err := ch.QueueDeclarePassive(q, true, false, false, false, nil)
 		if err != nil {
 			return false
 		}
@@ -117,7 +117,7 @@ func TestWorkerInvalidMessagePath(t *testing.T) {
 	// The malformed message must be consumed (acked on the decode-error path)
 	// and therefore must drain out of the queue rather than requeue forever.
 	require.Eventually(t, func() bool {
-		info, err := ch.QueueInspect(q)
+		info, err := ch.QueueDeclarePassive(q, true, false, false, false, nil)
 		if err != nil {
 			return false
 		}
