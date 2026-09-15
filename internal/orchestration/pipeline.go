@@ -56,26 +56,26 @@ const (
 // References are opaque, bounded stage outputs from the existing capability
 // ports; this aggregate deliberately does not invent a content-studio model.
 type Pipeline struct {
-	ID                uuid.UUID      `json:"id"`
-	WorkspaceID       uuid.UUID      `json:"workspace_id"`
-	GoalID            *uuid.UUID     `json:"goal_id,omitempty"`
-	Stage             Stage          `json:"stage"`
-	Status            PipelineStatus `json:"status"`
-	TaskID            *uuid.UUID     `json:"task_id,omitempty"`
-	PublicationID     *uuid.UUID     `json:"publication_id,omitempty"`
-	ResearchReference string         `json:"research_reference,omitempty"`
-	ScriptReference   string         `json:"script_reference,omitempty"`
-	ReviewReference   string         `json:"review_reference,omitempty"`
-	PublishedReference string        `json:"published_reference,omitempty"`
-	FailureReason     string         `json:"failure_reason,omitempty"`
-	RetryCount        int            `json:"retry_count"`
-	IdempotencyKey    string         `json:"-"`
-	ApprovedBy        string         `json:"approved_by,omitempty"`
-	ApprovedAt        *time.Time     `json:"approved_at,omitempty"`
-	TraceID           string         `json:"trace_id,omitempty"`
-	CreatedAt         time.Time      `json:"created_at"`
-	UpdatedAt         time.Time      `json:"updated_at"`
-	Version           int64          `json:"-"`
+	ID                 uuid.UUID      `json:"id"`
+	WorkspaceID        uuid.UUID      `json:"workspace_id"`
+	GoalID             *uuid.UUID     `json:"goal_id,omitempty"`
+	Stage              Stage          `json:"stage"`
+	Status             PipelineStatus `json:"status"`
+	TaskID             *uuid.UUID     `json:"task_id,omitempty"`
+	PublicationID      *uuid.UUID     `json:"publication_id,omitempty"`
+	ResearchReference  string         `json:"research_reference,omitempty"`
+	ScriptReference    string         `json:"script_reference,omitempty"`
+	ReviewReference    string         `json:"review_reference,omitempty"`
+	PublishedReference string         `json:"published_reference,omitempty"`
+	FailureReason      string         `json:"failure_reason,omitempty"`
+	RetryCount         int            `json:"retry_count"`
+	IdempotencyKey     string         `json:"-"`
+	ApprovedBy         string         `json:"approved_by,omitempty"`
+	ApprovedAt         *time.Time     `json:"approved_at,omitempty"`
+	TraceID            string         `json:"trace_id,omitempty"`
+	CreatedAt          time.Time      `json:"created_at"`
+	UpdatedAt          time.Time      `json:"updated_at"`
+	Version            int64          `json:"-"`
 }
 
 // New validates inputs and returns a freshly created pipeline.
@@ -143,14 +143,24 @@ func CanAdvance(stage Stage, from Stage, status PipelineStatus) error {
 	}
 	switch from {
 	case StageResearch:
-		if stage != StageScript { return ErrInvalidTransition }
+		if stage != StageScript {
+			return ErrInvalidTransition
+		}
 	case StageScript:
-		if stage != StageReview { return ErrInvalidTransition }
+		if stage != StageReview {
+			return ErrInvalidTransition
+		}
 	case StageReview:
-		if stage != StagePublish { return ErrInvalidTransition }
-		if status != StatusApproved { return ErrApprovalRequired }
+		if stage != StagePublish {
+			return ErrInvalidTransition
+		}
+		if status != StatusApproved {
+			return ErrApprovalRequired
+		}
 	case StagePublish:
-		if stage != StageComplete { return ErrInvalidTransition }
+		if stage != StageComplete {
+			return ErrInvalidTransition
+		}
 	default:
 		return ErrInvalidStage
 	}

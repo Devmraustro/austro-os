@@ -52,22 +52,25 @@ type PublicationPort interface {
 }
 
 // AuditSink records principle-tagged orchestration decisions.
-type AuditSink interface { Record(ctx context.Context, rec AuditRecord) }
+type AuditSink interface {
+	Record(ctx context.Context, rec AuditRecord)
+}
 
 type AuditRecord struct {
-	EventType string
+	EventType               string
 	ConstitutionalPrinciple string
-	Outcome string
-	WorkspaceID string
-	PipelineID string
-	ActorType string
-	ActorID string
-	TraceID string
-	SpanID string
-	Stage string
+	Outcome                 string
+	WorkspaceID             string
+	PipelineID              string
+	ActorType               string
+	ActorID                 string
+	TraceID                 string
+	SpanID                  string
+	Stage                   string
 }
 
 type NullAuditSink struct{}
+
 func (NullAuditSink) Record(_ context.Context, _ AuditRecord) {}
 
 type EventSink interface {
@@ -75,4 +78,7 @@ type EventSink interface {
 }
 
 type NullEventSink struct{}
-func (NullEventSink) PublishPipeline(_ context.Context, _ string, _ uuid.UUID, _ uuid.UUID, _, _, _ string) error { return nil }
+
+func (NullEventSink) PublishPipeline(_ context.Context, _ string, _ uuid.UUID, _ uuid.UUID, _, _, _ string) error {
+	return nil
+}
