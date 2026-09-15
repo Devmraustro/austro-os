@@ -183,8 +183,21 @@ jobs:
         working-directory: browser-e2e
         shell: bash
         run: |
-          set -o pipefail
-          npm test -- --reporter=line 2>&1 | tee /tmp/browser-e2e.log
+          set -euo pipefail
+          set +e
+          npm test -- --reporter=line > /tmp/browser-e2e.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/browser-e2e.log
+          if [ "$status" -ne 0 ]; then
+            failure_line=$(grep -E 'failed|Error:|expect\(' /tmp/browser-e2e.log | tail -n 1 | tr '\n' ' ' | cut -c 1-900)
+            if [ -n "$failure_line" ]; then
+              echo "::error title=Browser DOM journey failure::$failure_line"
+            else
+              echo "::error title=Browser DOM journey failure::Playwright exited with status $status; see the uploaded trace and failure artifacts"
+            fi
+          fi
+          exit "$status"
 
       - name: Upload browser screenshots, traces, videos, and report on failure
         if: failure()

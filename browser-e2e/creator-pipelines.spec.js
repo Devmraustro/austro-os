@@ -78,6 +78,21 @@ async function waitForAPI(page) {
   }).toBe(true);
 }
 
+async function waitForAPIDown(page) {
+  await expect.poll(async () => {
+    try {
+      const response = await page.request.get('/health/ready', { timeout: 2000 });
+      return response.status() === 200;
+    } catch (_) {
+      return false;
+    }
+  }, {
+    timeout: 30000,
+    intervals: [100, 250, 500, 1000],
+    message: 'API did not stop for the rendered server-error assertion',
+  }).toBe(false);
+}
+
 function stopAPI() {
   const pid = Number(readFileSync('/tmp/austro-api.pid', 'utf8').trim());
   process.kill(pid, 'SIGTERM');
@@ -211,6 +226,7 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
     try {
       stopAPI();
       apiStopped = true;
+      await waitForAPIDown(adminPage);
       await adminPage.locator('#pipeline-form button[type="submit"]').click();
       await expect(adminPage.locator('#pipeline-message')).toContainText('Could not reach the API.');
     } finally {
