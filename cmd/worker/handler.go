@@ -88,7 +88,7 @@ func newHandler(rt *composition.Runtime) func(*event.UniversalEnvelope) error {
 		// Review readiness is deliberately an acknowledgement-only notification.
 		// It cannot advance a pipeline past the human gate. Complete is likewise
 		// a terminal observation, not another command.
-		if d.Event == "pipeline.review_ready" || d.Event == "pipeline.complete" {
+		if d.Event == "pipeline.review" || d.Event == "pipeline.review_ready" || d.Event == "pipeline.complete" {
 			return nil
 		}
 
