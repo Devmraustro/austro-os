@@ -157,7 +157,7 @@ services:
       - austro_net
 
   test:
-    image: golang:1.22-alpine
+    image: golang:1.25.13-alpine
     container_name: austro-test
     working_dir: /app
     command: >

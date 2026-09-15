@@ -7,12 +7,12 @@
 #   scripts/phase2-verify.sh
 #
 # Assumes: the AUSTRO-OS compose stack is up (postgres/redis/rabbitmq/api) and
-# the Go toolchain is available via the golang:1.22-alpine image with the
+# the Go toolchain is available via the golang:1.25.13-alpine image with the
 # pre-warmed module cache on the named volume `gomodcache`.
 set -u
 
 NET="austro-os_austro_net"
-IMG="golang:1.22-alpine"
+IMG="golang:1.25.13-alpine"
 REPO="$(pwd)"
 
 export GOFLAGS=-mod=mod
