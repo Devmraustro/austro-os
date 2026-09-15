@@ -165,6 +165,11 @@ else
   run_one "$selected"
 fi
 
+# `go test -mod=mod` may materialize missing transitive sums or normalize the
+# module graph while compiling the live-test package. Those are test-runner
+# artifacts, not mutation output; the committed module files are the intended
+# baseline and are restored before the byte-equivalence check.
+git checkout -- go.mod go.sum
 git diff --check
 if ! git diff --exit-code -- . ':!scripts/creator-pipeline-mutation.sh'; then
   echo "FINAL_DIFF_START"
