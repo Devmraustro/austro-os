@@ -164,8 +164,7 @@ func composeStub() (*composition.Runtime, error) {
 // openAIStub spins up an OpenAI-compatible endpoint returning the given label.
 func openAIStub(t *testing.T, label string) *httptest.Server {
 	t.Helper()
-	var srv *httptest.Server
-	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/chat/completions" {
 			http.NotFound(w, r)
 			return

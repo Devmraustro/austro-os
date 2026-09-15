@@ -132,13 +132,13 @@ func (h *KnowledgeHandler) scope(w http.ResponseWriter, r *http.Request, action 
 	}
 	binding, err := WorkspaceFromClaims(claims)
 	if err != nil {
-		h.record(r, claims, action, uuid.Nil, uuid.Nil, "denied", "no_workspace_context")
+		h.recordFailure(r, claims, action, uuid.Nil, uuid.Nil, "denied", "no_workspace_context")
 		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return nil, uuid.Nil, false
 	}
 	ws, err := uuid.Parse(binding)
 	if err != nil {
-		h.record(r, claims, action, uuid.Nil, uuid.Nil, "denied", "invalid_workspace_claim")
+		h.recordFailure(r, claims, action, uuid.Nil, uuid.Nil, "denied", "invalid_workspace_claim")
 		writeJSONError(w, http.StatusForbidden, "forbidden")
 		return nil, uuid.Nil, false
 	}
@@ -153,7 +153,7 @@ func (h *KnowledgeHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	var req createKnowledgeRequest
 	if !decodeJSON(w, r, &req) {
-		h.record(r, claims, "create", uuid.Nil, ws, "failed", "malformed_body")
+		h.recordFailure(r, claims, "create", uuid.Nil, ws, "failed", "malformed_body")
 		return
 	}
 
@@ -230,14 +230,14 @@ func (h *KnowledgeHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	var req updateKnowledgeRequest
 	if !decodeJSON(w, r, &req) {
-		h.record(r, claims, "update", id, ws, "failed", "malformed_body")
+		h.recordFailure(r, claims, "update", id, ws, "failed", "malformed_body")
 		return
 	}
 	if req.Kind == nil && req.Title == nil && req.Content == nil {
 		// An empty PATCH is a client mistake, not a no-op: silently returning
 		// 200 would tell the caller something was written when nothing was.
 		writeJSONError(w, http.StatusBadRequest, "at least one field must be provided")
-		h.record(r, claims, "update", id, ws, "failed", "empty_update")
+		h.recordFailure(r, claims, "update", id, ws, "failed", "empty_update")
 		return
 	}
 
@@ -246,13 +246,13 @@ func (h *KnowledgeHandler) Update(w http.ResponseWriter, r *http.Request) {
 		trimmed := strings.TrimSpace(*req.Kind)
 		if trimmed == "" {
 			writeJSONError(w, http.StatusBadRequest, "kind must not be blank")
-			h.record(r, claims, "update", id, ws, "failed", "kind_blank")
+			h.recordFailure(r, claims, "update", id, ws, "failed", "kind_blank")
 			return
 		}
 		k, err := knowledge.ValidateKind(trimmed)
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "kind must be document, campaign_rule or style_guide")
-			h.record(r, claims, "update", id, ws, "failed", "invalid_kind")
+			h.recordFailure(r, claims, "update", id, ws, "failed", "invalid_kind")
 			return
 		}
 		kind = &k
@@ -298,17 +298,17 @@ func (h *KnowledgeHandler) Search(w http.ResponseWriter, r *http.Request) {
 	}
 	var req searchKnowledgeRequest
 	if !decodeJSON(w, r, &req) {
-		h.record(r, claims, "search", uuid.Nil, ws, "failed", "malformed_body")
+		h.recordFailure(r, claims, "search", uuid.Nil, ws, "failed", "malformed_body")
 		return
 	}
 	if strings.TrimSpace(req.Query) == "" {
 		writeJSONError(w, http.StatusBadRequest, "query must not be empty")
-		h.record(r, claims, "search", uuid.Nil, ws, "failed", "empty_query")
+		h.recordFailure(r, claims, "search", uuid.Nil, ws, "failed", "empty_query")
 		return
 	}
 	if utf8.RuneCountInString(req.Query) > maxContentRunes {
 		writeJSONError(w, http.StatusBadRequest, "query is too long")
-		h.record(r, claims, "search", uuid.Nil, ws, "failed", "query_too_long")
+		h.recordFailure(r, claims, "search", uuid.Nil, ws, "failed", "query_too_long")
 		return
 	}
 
@@ -317,7 +317,7 @@ func (h *KnowledgeHandler) Search(w http.ResponseWriter, r *http.Request) {
 		k, err := knowledge.ValidateKind(strings.TrimSpace(req.Kind))
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "kind must be document, campaign_rule or style_guide")
-			h.record(r, claims, "search", uuid.Nil, ws, "failed", "invalid_kind")
+			h.recordFailure(r, claims, "search", uuid.Nil, ws, "failed", "invalid_kind")
 			return
 		}
 		kind = &k
@@ -331,7 +331,7 @@ func (h *KnowledgeHandler) Search(w http.ResponseWriter, r *http.Request) {
 		if limit < 1 || limit > knowledge.MaxSearchResults {
 			writeJSONError(w, http.StatusBadRequest,
 				"limit must be between 1 and "+strconv.Itoa(knowledge.MaxSearchResults))
-			h.record(r, claims, "search", uuid.Nil, ws, "failed", "invalid_limit")
+			h.recordFailure(r, claims, "search", uuid.Nil, ws, "failed", "invalid_limit")
 			return
 		}
 	}
@@ -365,13 +365,13 @@ func (h *KnowledgeHandler) kind(w http.ResponseWriter, r *http.Request, claims *
 			return knowledge.KindDocument, true
 		}
 		writeJSONError(w, http.StatusBadRequest, "kind must not be blank")
-		h.record(r, claims, action, id, ws, "failed", "kind_blank")
+		h.recordFailure(r, claims, action, id, ws, "failed", "kind_blank")
 		return "", false
 	}
 	k, err := knowledge.ValidateKind(trimmed)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "kind must be document, campaign_rule or style_guide")
-		h.record(r, claims, action, id, ws, "failed", "invalid_kind")
+		h.recordFailure(r, claims, action, id, ws, "failed", "invalid_kind")
 		return "", false
 	}
 	return k, true
@@ -384,12 +384,12 @@ func checkContentLength(w http.ResponseWriter, r *http.Request, claims *auth.Cla
 	action string, id uuid.UUID, h *KnowledgeHandler, title, content string) error {
 	if utf8.RuneCountInString(title) > maxTitleRunes {
 		writeJSONError(w, http.StatusBadRequest, "title is too long")
-		h.record(r, claims, action, id, ws, "failed", "title_too_long")
+		h.recordFailure(r, claims, action, id, ws, "failed", "title_too_long")
 		return errors.New("title too long")
 	}
 	if len(content) > knowledge.MaxContentLength {
 		writeJSONError(w, http.StatusBadRequest, "content exceeds the maximum length")
-		h.record(r, claims, action, id, ws, "failed", "content_too_large")
+		h.recordFailure(r, claims, action, id, ws, "failed", "content_too_large")
 		return errors.New("content too large")
 	}
 	return nil
@@ -407,7 +407,7 @@ func (h *KnowledgeHandler) docID(w http.ResponseWriter, r *http.Request, claims 
 	id, err := uuid.Parse(raw)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "malformed knowledge document id")
-		h.record(r, claims, action, uuid.Nil, ws, "failed", "malformed_id")
+		h.recordFailure(r, claims, action, uuid.Nil, ws, "failed", "malformed_id")
 		return uuid.Nil, false
 	}
 	return id, true
@@ -432,13 +432,13 @@ func (h *KnowledgeHandler) parseQuery(w http.ResponseWriter, r *http.Request,
 	values, err := url.ParseQuery(r.URL.RawQuery)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "malformed query string")
-		h.record(r, claims, "list", uuid.Nil, ws, "failed", "malformed_query")
+		h.recordFailure(r, claims, "list", uuid.Nil, ws, "failed", "malformed_query")
 		return q, false
 	}
 	for key := range values {
 		if !known[key] {
 			writeJSONError(w, http.StatusBadRequest, "unsupported query parameter: "+key)
-			h.record(r, claims, "list", uuid.Nil, ws, "failed", "unknown_parameter")
+			h.recordFailure(r, claims, "list", uuid.Nil, ws, "failed", "unknown_parameter")
 			return q, false
 		}
 	}
@@ -446,7 +446,7 @@ func (h *KnowledgeHandler) parseQuery(w http.ResponseWriter, r *http.Request,
 		k, err := knowledge.ValidateKind(strings.TrimSpace(raw))
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "kind must be document, campaign_rule or style_guide")
-			h.record(r, claims, "list", uuid.Nil, ws, "failed", "invalid_kind")
+			h.recordFailure(r, claims, "list", uuid.Nil, ws, "failed", "invalid_kind")
 			return q, false
 		}
 		q.Kind = &k
@@ -459,7 +459,7 @@ func (h *KnowledgeHandler) parseQuery(w http.ResponseWriter, r *http.Request,
 		// the caller did not ask for.
 		if err != nil || n <= 0 {
 			writeJSONError(w, http.StatusBadRequest, "limit must be a positive integer")
-			h.record(r, claims, "list", uuid.Nil, ws, "failed", "invalid_limit")
+			h.recordFailure(r, claims, "list", uuid.Nil, ws, "failed", "invalid_limit")
 			return q, false
 		}
 		q.Limit = n
@@ -468,7 +468,7 @@ func (h *KnowledgeHandler) parseQuery(w http.ResponseWriter, r *http.Request,
 		c, err := knowledge.DecodeCursor(raw)
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "cursor is not valid")
-			h.record(r, claims, "list", uuid.Nil, ws, "failed", "invalid_cursor")
+			h.recordFailure(r, claims, "list", uuid.Nil, ws, "failed", "invalid_cursor")
 			return q, false
 		}
 		q.Before = c
@@ -488,22 +488,34 @@ func (h *KnowledgeHandler) fail(w http.ResponseWriter, r *http.Request, claims *
 		// 404 rather than 403: the identifier is the document, not the
 		// workspace, so answering 403 would confirm to another tenant that the
 		// document exists.
-		h.record(r, claims, action, id, ws, "failed", "not_found")
+		h.recordFailure(r, claims, action, id, ws, "failed", "not_found")
 		writeJSONError(w, http.StatusNotFound, "knowledge document not found")
 	case errors.Is(err, knowledge.ErrWorkspaceMismatch):
-		h.record(r, claims, action, id, ws, "denied", "workspace_mismatch")
+		h.recordFailure(r, claims, action, id, ws, "denied", "workspace_mismatch")
 		writeJSONError(w, http.StatusForbidden, "forbidden")
 	case errors.Is(err, knowledge.ErrInvalidInput),
 		errors.Is(err, knowledge.ErrInvalidKind),
 		errors.Is(err, knowledge.ErrTooLarge),
 		errors.Is(err, knowledge.ErrInvalidCursor):
-		h.record(r, claims, action, id, ws, "failed", "invalid_request")
+		h.recordFailure(r, claims, action, id, ws, "failed", "invalid_request")
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 	default:
 		logger.NewEntry("knowledge-handler-error").SetLevel("error").
 			With("action", action).WithError(err).Log()
-		h.record(r, claims, action, id, ws, "failed", "internal_error")
+		h.recordFailure(r, claims, action, id, ws, "failed", "internal_error")
 		writeJSONError(w, http.StatusInternalServerError, "internal error")
+	}
+}
+
+// recordFailure preserves the original client-facing failure while making
+// failures to persist the failure audit event visible to operators. The primary
+// request has already failed, so there is no safe success response to change;
+// dropping the persistence error would only hide an audit-chain gap.
+func (h *KnowledgeHandler) recordFailure(r *http.Request, claims *auth.Claims, action string,
+	docID, ws uuid.UUID, outcome, detail string) {
+	if err := h.record(r, claims, action, docID, ws, outcome, detail); err != nil {
+		logger.NewEntry("knowledge-audit-failure-recording-failed").SetLevel("error").
+			With("event_type", "knowledge."+action).WithError(err).Log()
 	}
 }
 

@@ -1,6 +1,7 @@
 package knowledge
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -133,11 +134,11 @@ func TestListPageIsBoundedAndOrdered(t *testing.T) {
 	store := newFakeStore()
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for i := 0; i < 7; i++ {
-		_, err := store.Upsert(nil, docAt(ws, base.Add(time.Duration(i)*time.Minute)))
+		_, err := store.Upsert(context.TODO(), docAt(ws, base.Add(time.Duration(i)*time.Minute)))
 		require.NoError(t, err)
 	}
 
-	page, err := store.ListPage(nil, ws, ListQuery{Limit: 3})
+	page, err := store.ListPage(context.TODO(), ws, ListQuery{Limit: 3})
 	require.NoError(t, err)
 	require.Len(t, page.Documents, 3, "a page must never exceed the requested limit")
 	require.Equal(t, 3, page.Limit)
@@ -164,7 +165,7 @@ func TestListPageCursorCoversEveryDocumentExactlyOnce(t *testing.T) {
 	// a tie actually lands on a boundary.
 	for i := 0; i < total; i++ {
 		at := base.Add(time.Duration(i/2) * time.Minute)
-		_, err := store.Upsert(nil, docAt(ws, at))
+		_, err := store.Upsert(context.TODO(), docAt(ws, at))
 		require.NoError(t, err)
 	}
 
@@ -177,7 +178,7 @@ func TestListPageCursorCoversEveryDocumentExactlyOnce(t *testing.T) {
 			require.NoError(t, err)
 			q.Before = c
 		}
-		page, err := store.ListPage(nil, ws, q)
+		page, err := store.ListPage(context.TODO(), ws, q)
 		require.NoError(t, err)
 		if len(page.Documents) == 0 {
 			break
@@ -206,7 +207,7 @@ func TestListPageKindFilter(t *testing.T) {
 	mk := func(kind Kind, at time.Time) {
 		d := docAt(ws, at)
 		d.Kind = kind
-		_, err := store.Upsert(nil, d)
+		_, err := store.Upsert(context.TODO(), d)
 		require.NoError(t, err)
 	}
 	mk(KindDocument, base)
@@ -215,23 +216,23 @@ func TestListPageKindFilter(t *testing.T) {
 	mk(KindCampaignRule, base.Add(3*time.Minute))
 
 	kind := KindStyleGuide
-	page, err := store.ListPage(nil, ws, ListQuery{Kind: &kind, Limit: 50})
+	page, err := store.ListPage(context.TODO(), ws, ListQuery{Kind: &kind, Limit: 50})
 	require.NoError(t, err)
 	require.Len(t, page.Documents, 1)
 	require.Equal(t, KindStyleGuide, page.Documents[0].Kind)
 
-	page, err = store.ListPage(nil, ws, ListQuery{Limit: 50})
+	page, err = store.ListPage(context.TODO(), ws, ListQuery{Limit: 50})
 	require.NoError(t, err)
 	require.Len(t, page.Documents, 4, "an unfiltered listing returns every kind")
 }
 
 func TestListPageRequiresWorkspace(t *testing.T) {
 	store := newFakeStore()
-	_, err := store.Upsert(nil, docAt(uuid.New(), time.Now().UTC()))
+	_, err := store.Upsert(context.TODO(), docAt(uuid.New(), time.Now().UTC()))
 	require.NoError(t, err)
 
 	// A different workspace sees nothing at all.
-	page, err := store.ListPage(nil, uuid.New(), ListQuery{Limit: 50})
+	page, err := store.ListPage(context.TODO(), uuid.New(), ListQuery{Limit: 50})
 	require.NoError(t, err)
 	require.Empty(t, page.Documents)
 	require.Empty(t, page.NextCursor)
@@ -240,7 +241,7 @@ func TestListPageRequiresWorkspace(t *testing.T) {
 func TestServiceListPageRejectsNoWorkspace(t *testing.T) {
 	store := newFakeStore()
 	svc := NewService(store, &fakeEmbedder{}, nil, nil, 0)
-	_, err := svc.ListPage(nil, uuid.Nil, ListQuery{})
+	_, err := svc.ListPage(context.TODO(), uuid.Nil, ListQuery{})
 	require.ErrorIs(t, err, ErrWorkspaceMismatch,
 		"a listing with no workspace must be refused rather than run unscoped")
 }
@@ -248,7 +249,7 @@ func TestServiceListPageRejectsNoWorkspace(t *testing.T) {
 func TestServiceListPageNormalizesBeforeTheStore(t *testing.T) {
 	store := newFakeStore()
 	svc := NewService(store, &fakeEmbedder{}, nil, nil, 0)
-	page, err := svc.ListPage(nil, uuid.New(), ListQuery{Limit: 100000})
+	page, err := svc.ListPage(context.TODO(), uuid.New(), ListQuery{Limit: 100000})
 	require.NoError(t, err)
 	require.Equal(t, MaxPageSize, page.Limit,
 		"the ceiling must be applied even when the store would have accepted more")
