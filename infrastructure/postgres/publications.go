@@ -57,7 +57,7 @@ func (s *PublicationStore) Create(ctx context.Context, p *publish.Publication) (
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		RETURNING id, created_at, updated_at`,
 		p.WorkspaceID, nullableUUID(p.GoalID), nullableUUID(p.TaskID), p.Title, p.Body,
-		p.Platform, string(p.Status), p.ContentHash, nullableString(p.IdempotencyKey), p.CreatedAt, p.UpdatedAt).Scan(&id, &createdAt, &updatedAt)
+		p.Platform, string(p.Status), p.ContentHash, nullablePublicationString(p.IdempotencyKey), p.CreatedAt, p.UpdatedAt).Scan(&id, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -165,8 +165,8 @@ func (s *PublicationStore) Update(ctx context.Context, workspaceID uuid.UUID, p 
 		       failure_reason = $4, approved_by = $5, approved_at = $6,
 		       rejected_by = $7, rejected_at = $8, published_at = $9, published_by = $10, updated_at = $11
 		WHERE id = $12 AND workspace_id = $13`,
-		string(p.Status), nullableString(p.IdempotencyKey), nullableString(p.ExternalReference),
-		nullableString(p.FailureReason), nullableStringP(p.ApprovedBy), nullableTime(p.ApprovedAt),
+		string(p.Status), nullablePublicationString(p.IdempotencyKey), nullablePublicationString(p.ExternalReference),
+		nullablePublicationString(p.FailureReason), nullableStringP(p.ApprovedBy), nullableTime(p.ApprovedAt),
 		nullableStringP(p.RejectedBy), nullableTime(p.RejectedAt), nullableTime(p.PublishedAt), nullableStringP(p.PublishedBy),
 		p.UpdatedAt, p.ID, workspaceID)
 	if err != nil {
@@ -246,8 +246,8 @@ func scanPublication(r rowScannerP) (*publish.Publication, error) {
 	return &p, nil
 }
 
-// nullableString converts an optional string value to a SQL NULL when empty.
-func nullableString(s string) sql.NullString {
+// nullablePublicationString converts an optional string value to a SQL NULL when empty.
+func nullablePublicationString(s string) sql.NullString {
 	if s == "" {
 		return sql.NullString{}
 	}
