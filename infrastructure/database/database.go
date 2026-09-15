@@ -459,6 +459,14 @@ func migratePipelines(db *sql.DB) error {
 		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pipelines_retry_count_valid') THEN
 			ALTER TABLE pipelines ADD CONSTRAINT pipelines_retry_count_valid CHECK (retry_count >= 0);
 		END IF;
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pipelines_stage_status_valid') THEN
+			ALTER TABLE pipelines ADD CONSTRAINT pipelines_stage_status_valid CHECK (
+				status = 'failed' OR
+				(stage = 'research' AND status = 'created') OR
+				(stage IN ('script', 'publish') AND status = 'active') OR
+				(stage = 'review' AND status IN ('awaiting_approval', 'approved')) OR
+				(stage = 'complete' AND status = 'done'));
+		END IF;
 		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pipelines_task_fk') THEN
 			ALTER TABLE pipelines ADD CONSTRAINT pipelines_task_fk FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE SET NULL;
 		END IF;
