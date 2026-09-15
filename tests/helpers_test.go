@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"os"
 	"sync"
-	"testing"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/redis/go-redis/v9"
