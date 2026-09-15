@@ -103,11 +103,21 @@ func (w *Worker) Stop() {
 // CloseBrokerConnection force-closes the current broker connection so the
 // supervisor immediately reconnects and re-registers the consumer. Exposed for
 // operational reconnection and for tests that exercise the recovery path.
+func logCloseError(component string, err error) {
+	logger.NewEntry("worker-close-error").
+		SetLevel("error").
+		With("component", component).
+		WithError(err).
+		Log()
+}
+
 func (w *Worker) CloseBrokerConnection() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.connection != nil {
-		w.connection.Close()
+		if err := w.connection.Close(); err != nil {
+			logCloseError("connection", err)
+		}
 	}
 }
 
@@ -119,23 +129,31 @@ func (w *Worker) dial() error {
 
 	ch, err := conn.Channel()
 	if err != nil {
-		conn.Close()
+		if closeErr := conn.Close(); closeErr != nil {
+			logCloseError("connection-after-channel-failure", closeErr)
+		}
 		return fmt.Errorf("failed to open channel: %w", err)
 	}
 
 	if _, err := ch.QueueDeclare(w.config.QueueName, true, false, false, false, nil); err != nil {
-		conn.Close()
+		if closeErr := conn.Close(); closeErr != nil {
+			logCloseError("connection-after-queue-failure", closeErr)
+		}
 		return fmt.Errorf("failed to declare queue: %w", err)
 	}
 
 	if err := ch.Qos(1, 0, false); err != nil {
-		conn.Close()
+		if closeErr := conn.Close(); closeErr != nil {
+			logCloseError("connection-after-qos-failure", closeErr)
+		}
 		return fmt.Errorf("failed to set QoS: %w", err)
 	}
 
 	msgs, err := ch.Consume(w.config.QueueName, "", false, false, false, false, nil)
 	if err != nil {
-		conn.Close()
+		if closeErr := conn.Close(); closeErr != nil {
+			logCloseError("connection-after-consumer-failure", closeErr)
+		}
 		return fmt.Errorf("failed to register consumer: %w", err)
 	}
 
@@ -228,10 +246,14 @@ func (w *Worker) dropConnection() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.channel != nil {
-		w.channel.Close()
+		if err := w.channel.Close(); err != nil {
+			logCloseError("channel", err)
+		}
 	}
 	if w.connection != nil {
-		w.connection.Close()
+		if err := w.connection.Close(); err != nil {
+			logCloseError("connection", err)
+		}
 	}
 	w.channel = nil
 	w.connection = nil

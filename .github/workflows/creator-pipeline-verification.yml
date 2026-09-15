@@ -163,7 +163,7 @@ jobs:
         run: |
           set -euo pipefail
           set +e
-          go run honnef.co/go/tools/cmd/staticcheck@2024.1.1 ./... > /tmp/staticcheck.log 2>&1
+          go run honnef.co/go/tools/cmd/staticcheck@2026.1 ./... > /tmp/staticcheck.log 2>&1
           status=$?
           set -e
           cat /tmp/staticcheck.log

@@ -109,8 +109,8 @@ run_worker_ack() {
   mutate_and_expect_failure \
     "successful worker delivery is negatively acknowledged and requeued" \
     internal/worker/worker.go \
-    $'\tmsg.Ack(false)\n\n\tduration := time.Since(start)' \
-    $'\tmsg.Nack(false, true)\n\n\tduration := time.Since(start)' \
+    $'\tif err := msg.Ack(false); err != nil {\n\t\tlogSettlementError("ack", msg, err)\n\t\treturn\n\t}\n\n\tduration := time.Since(start)' \
+    $'\tif err := msg.Nack(false, true); err != nil {\n\t\tlogSettlementError("nack", msg, err)\n\t}\n\treturn\n\n\tduration := time.Since(start)' \
     go test ./internal/worker -run '^TestProcessMessageSettling$' -count=1
 }
 
