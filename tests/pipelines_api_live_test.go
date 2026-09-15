@@ -18,17 +18,17 @@ import (
 )
 
 type pipelineLiveResponse struct {
-	ID                 string  `json:"id"`
-	WorkspaceID        string  `json:"workspace_id"`
-	Stage              string  `json:"stage"`
-	Status             string  `json:"status"`
-	ResearchReference  string  `json:"research_reference"`
-	ScriptReference    string  `json:"script_reference"`
-	ReviewReference    string  `json:"review_reference"`
-	PublicationID      *string `json:"publication_id"`
-	FailureReason      string  `json:"failure_reason"`
-	RetryCount         int     `json:"retry_count"`
-	ApprovedBy         string  `json:"approved_by"`
+	ID                string  `json:"id"`
+	WorkspaceID       string  `json:"workspace_id"`
+	Stage             string  `json:"stage"`
+	Status            string  `json:"status"`
+	ResearchReference string  `json:"research_reference"`
+	ScriptReference   string  `json:"script_reference"`
+	ReviewReference   string  `json:"review_reference"`
+	PublicationID     *string `json:"publication_id"`
+	FailureReason     string  `json:"failure_reason"`
+	RetryCount        int     `json:"retry_count"`
+	ApprovedBy        string  `json:"approved_by"`
 }
 
 type pipelinePageLiveResponse struct {
@@ -47,9 +47,15 @@ func pipelineLiveJSON(t *testing.T, method, path string, body any, token, key st
 	}
 	req, err := http.NewRequest(method, getEnv().apiURL+path, payload)
 	require.NoError(t, err)
-	if body != nil { req.Header.Set("Content-Type", "application/json") }
-	if token != "" { req.Header.Set("Authorization", "Bearer "+token) }
-	if key != "" { req.Header.Set("Idempotency-Key", key) }
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if key != "" {
+		req.Header.Set("Idempotency-Key", key)
+	}
 	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
 	require.NoError(t, err)
 	defer resp.Body.Close()
@@ -61,7 +67,7 @@ func pipelineLiveJSON(t *testing.T, method, path string, body any, token, key st
 func pipelineLiveTokens(t *testing.T, adminA, memberA, adminB *auth.UserRecord) (string, string, string) {
 	t.Helper()
 	svc := rbacJWT(&config.Config{
-		JWTSecret: envOrDefault("AUSTRO_JWT_SECRET", "change-me-in-production"),
+		JWTSecret:        envOrDefault("AUSTRO_JWT_SECRET", "change-me-in-production"),
 		JWTRefreshSecret: envOrDefault("AUSTRO_JWT_REFRESH_SECRET", "change-me-in-production"),
 	})
 	mint := func(u *auth.UserRecord) string {
@@ -106,9 +112,13 @@ func TestCreatorPipelineAPILiveJourneyIsolationAndApproval(t *testing.T) {
 	// stops at the review/approval handoff. There is no client-controlled stage.
 	require.Eventually(t, func() bool {
 		status, raw := pipelineLiveJSON(t, http.MethodGet, "/pipelines/"+created.ID, nil, memberToken, "")
-		if status != http.StatusOK { return false }
+		if status != http.StatusOK {
+			return false
+		}
 		var current pipelineLiveResponse
-		if json.Unmarshal(raw, &current) != nil { return false }
+		if json.Unmarshal(raw, &current) != nil {
+			return false
+		}
 		created = current
 		return current.Stage == "review" && current.Status == "awaiting_approval"
 	}, 90*time.Second, time.Second, "pipeline must reach the persisted human approval handoff")
@@ -132,9 +142,13 @@ func TestCreatorPipelineAPILiveJourneyIsolationAndApproval(t *testing.T) {
 	// progress or expose a publish/complete mutation.
 	require.Eventually(t, func() bool {
 		status, raw := pipelineLiveJSON(t, http.MethodGet, "/pipelines/"+created.ID, nil, memberToken, "")
-		if status != http.StatusOK { return false }
+		if status != http.StatusOK {
+			return false
+		}
 		var current pipelineLiveResponse
-		if json.Unmarshal(raw, &current) != nil { return false }
+		if json.Unmarshal(raw, &current) != nil {
+			return false
+		}
 		created = current
 		return current.Stage == "complete" && current.Status == "done"
 	}, 90*time.Second, time.Second, "approved pipeline must complete through the worker")
@@ -155,7 +169,9 @@ func TestCreatorPipelineAPILiveJourneyIsolationAndApproval(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		_, _ = adminDB.Exec(`DELETE FROM pipelines WHERE id=$1`, created.ID)
-		if created.PublicationID != nil { _, _ = adminDB.Exec(`DELETE FROM publications WHERE id=$1`, *created.PublicationID) }
+		if created.PublicationID != nil {
+			_, _ = adminDB.Exec(`DELETE FROM publications WHERE id=$1`, *created.PublicationID)
+		}
 		_ = adminDB.Close()
 	})
 }
@@ -167,7 +183,9 @@ func TestCreatorUIIsARealPipelineSurface(t *testing.T) {
 	app, err := os.ReadFile(filepath.Join(root, "internal", "webui", "static", "app.js"))
 	require.NoError(t, err)
 	require.Contains(t, string(index), `id="pipelines-card"`)
-	for _, route := range []string{"/pipelines", "/approve", "/retry"} { require.Contains(t, string(app), route) }
+	for _, route := range []string{"/pipelines", "/approve", "/retry"} {
+		require.Contains(t, string(app), route)
+	}
 	require.Contains(t, string(app), "worker progress will appear from the server")
 	require.NotContains(t, string(index), "Set stage")
 }
