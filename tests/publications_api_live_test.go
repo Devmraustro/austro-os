@@ -163,7 +163,3 @@ func TestPublishingUIIsARealLifecycleSurface(t *testing.T) {
 	require.Contains(t, js, `headers["Idempotency-Key"]`)
 	require.NotContains(t, page, "Publishing approval queue")
 }
-EOF
-
-git diff --check; git status --short | tail -20```
-,
