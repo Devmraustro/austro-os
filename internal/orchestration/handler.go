@@ -20,16 +20,24 @@ func (h *Handler) AdvanceFromEvent(ctx context.Context, workspaceID, pipelineID 
 		ctx = WithTrace(ctx, traceID, spanID)
 	}
 	next, err := NextStage(currentStage)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	updated, err := h.svc.Advance(ctx, workspaceID, pipelineID, currentStage, next)
-	if !errors.Is(err, ErrConsecutiveAdvance) { return updated, err }
+	if !errors.Is(err, ErrConsecutiveAdvance) {
+		return updated, err
+	}
 	// The prior delivery may have committed its state and lost only the next
 	// message. Republish the persisted follower rather than acknowledging a
 	// missing event or re-running stage work.
 	current, lookupErr := h.svc.Get(ctx, workspaceID, pipelineID)
-	if lookupErr != nil { return nil, err }
+	if lookupErr != nil {
+		return nil, err
+	}
 	if current.Status != StatusFailed && IsAfter(current.Stage, currentStage) {
-		if publishErr := h.svc.RepublishCurrentEvent(ctx, current); publishErr != nil { return current, publishErr }
+		if publishErr := h.svc.RepublishCurrentEvent(ctx, current); publishErr != nil {
+			return current, publishErr
+		}
 		return current, nil
 	}
 	return updated, err
