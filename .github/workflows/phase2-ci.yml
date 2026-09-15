@@ -38,35 +38,14 @@ jobs:
           if [ -s /tmp/gofmt-files.filtered ]; then
             echo "The following files are not gofmt-clean:"
             cat /tmp/gofmt-files.filtered
-            mkdir -p /tmp/gofmt-fixed
             while IFS= read -r file; do
               echo "::error file=$file::file is not gofmt-clean"
-              gofmt -w "$file"
-              mkdir -p "/tmp/gofmt-fixed/$(dirname "$file")"
-              cp "$file" "/tmp/gofmt-fixed/$file"
-              encoded=$(base64 -w0 "$file")
-              offset=0
-              chunk=0
-              while [ "$offset" -lt "${#encoded}" ]; do
-                part=${encoded:$offset:3000}
-                echo "::notice file=$file,line=$((chunk + 1))::GOFMT_CHUNK:$chunk:$part"
-                offset=$((offset + 3000))
-                chunk=$((chunk + 1))
-              done
             done < /tmp/gofmt-files.filtered
-            tar -czf /tmp/gofmt-fixed.tar.gz -C /tmp/gofmt-fixed .
             { echo '### gofmt failures'; echo; cat /tmp/gofmt-files.filtered; } >> "$GITHUB_STEP_SUMMARY"
             echo "Run: gofmt -w <file>"
             exit 1
           fi
           echo "PASS: tree is gofmt-clean"
-
-      - name: Upload temporary gofmt output
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: temporary-gofmt-output
-          path: /tmp/gofmt-fixed.tar.gz
 
       - name: Build all packages
         run: go build ./...

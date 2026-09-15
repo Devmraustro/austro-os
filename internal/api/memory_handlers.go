@@ -43,8 +43,8 @@ func (h *MemoryHandler) SetAuditSink(sink audit.Sink) *MemoryHandler {
 }
 
 type memoryWriteRequest struct {
-	Value       *string `json:"value"`
-	TTLSeconds  *int64  `json:"ttl_seconds"`
+	Value      *string `json:"value"`
+	TTLSeconds *int64  `json:"ttl_seconds"`
 }
 
 type memoryResponse struct {

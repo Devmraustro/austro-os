@@ -23,7 +23,7 @@ type failingMemoryAudit struct {
 	err error
 }
 
-func (f failingMemoryAudit) Record(context.Context, AuditRecord) {}
+func (f failingMemoryAudit) Record(context.Context, AuditRecord)            {}
 func (f failingMemoryAudit) RecordError(context.Context, AuditRecord) error { return f.err }
 
 func TestBankRejectsInvalidLayersAndNamespaceCollisions(t *testing.T) {
