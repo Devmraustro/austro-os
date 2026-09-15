@@ -108,7 +108,7 @@ type Rule struct {
 // for the later Phase 3 steps that implement them, and remain denied until an
 // explicit rule plus a registered route both exist.
 func Rules() []Rule {
-	return []Rule{
+	rules := []Rule{
 		// /api/me: an authenticated principal's own safe profile. No database
 		// workspace is accessed, so no binding is required.
 		{
@@ -262,6 +262,56 @@ func Rules() []Rule {
 			Scope:           ScopeSelf,
 			Principle:       "Principle 10 - Privacy by Design",
 		},
+
+		// Memory is a key-based, workspace-scoped surface. The layer and key
+		// are resource segments, not workspace selectors; the workspace comes
+		// from the verified identity and the Bank derives the Redis partition.
+		{
+			Action:          "GET",
+			ResourcePattern: "/memory/{layer}/{key}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
+		{
+			Action:          "PUT",
+			ResourcePattern: "/memory/{layer}/{key}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 9 - Security by Design",
+		},
+	}
+	rules = append(rules, publicationRules()...)
+	return append(rules, pipelineRules()...)
+}
+
+// pipelineRules keeps the Creator contract explicit. Members may create/read
+// and recover their workspace's pipelines; only an admin may open the human
+// review handoff.
+func pipelineRules() []Rule {
+	return []Rule{
+		{Action: "POST", ResourcePattern: "/pipelines", Roles: []Role{RoleWorkspaceAdmin, RoleWorkspaceMember}, Scope: ScopeSelf, Principle: "Principle 1 - Vision First"},
+		{Action: "GET", ResourcePattern: "/pipelines", Roles: []Role{RoleWorkspaceAdmin, RoleWorkspaceMember}, Scope: ScopeSelf, Principle: "Principle 13 - Observability"},
+		{Action: "GET", ResourcePattern: "/pipelines/{id}", Roles: []Role{RoleWorkspaceAdmin, RoleWorkspaceMember}, Scope: ScopeSelf, Principle: "Principle 10 - Privacy by Design"},
+		{Action: "POST", ResourcePattern: "/pipelines/{id}/approve", Roles: []Role{RoleWorkspaceAdmin}, Scope: ScopeSelf, Principle: "Principle 11 - Human Oversight"},
+		{Action: "POST", ResourcePattern: "/pipelines/{id}/retry", Roles: []Role{RoleWorkspaceAdmin, RoleWorkspaceMember}, Scope: ScopeSelf, Principle: "Principle 13 - Observability"},
+	}
+}
+
+// publicationRules is the explicit tenant Publishing contract. Members may
+// draft, read and submit; only workspace admins may make the human approval,
+// rejection and release decisions. Founders have no workspace context and are
+// intentionally absent from every publication rule.
+func publicationRules() []Rule {
+	return []Rule{
+		{Action: "POST", ResourcePattern: "/publications", Roles: []Role{RoleWorkspaceAdmin, RoleWorkspaceMember}, Scope: ScopeSelf, Principle: "Principle 1 - Vision First"},
+		{Action: "GET", ResourcePattern: "/publications", Roles: []Role{RoleWorkspaceAdmin, RoleWorkspaceMember}, Scope: ScopeSelf, Principle: "Principle 10 - Privacy by Design"},
+		{Action: "GET", ResourcePattern: "/publications/{id}", Roles: []Role{RoleWorkspaceAdmin, RoleWorkspaceMember}, Scope: ScopeSelf, Principle: "Principle 10 - Privacy by Design"},
+		{Action: "POST", ResourcePattern: "/publications/{id}/submit", Roles: []Role{RoleWorkspaceAdmin, RoleWorkspaceMember}, Scope: ScopeSelf, Principle: "Principle 11 - Human Oversight"},
+		{Action: "POST", ResourcePattern: "/publications/{id}/approve", Roles: []Role{RoleWorkspaceAdmin}, Scope: ScopeSelf, Principle: "Principle 11 - Human Oversight"},
+		{Action: "POST", ResourcePattern: "/publications/{id}/reject", Roles: []Role{RoleWorkspaceAdmin}, Scope: ScopeSelf, Principle: "Principle 11 - Human Oversight"},
+		{Action: "POST", ResourcePattern: "/publications/{id}/publish", Roles: []Role{RoleWorkspaceAdmin}, Scope: ScopeSelf, Principle: "Principle 11 - Human Oversight"},
+		{Action: "POST", ResourcePattern: "/publications/{id}/retry", Roles: []Role{RoleWorkspaceAdmin}, Scope: ScopeSelf, Principle: "Principle 11 - Human Oversight"},
 	}
 }
 
@@ -271,7 +321,7 @@ func Rules() []Rule {
 // administration surface (GET/POST /workspaces, GET /workspaces/{id}) is
 // registered by the server, so its rules are seeded here.
 func ImplementedRules() []Rule {
-	return []Rule{
+	rules := []Rule{
 		{
 			Action:          "GET",
 			ResourcePattern: "/api/me",
@@ -454,7 +504,24 @@ func ImplementedRules() []Rule {
 			Scope:           ScopeSelf,
 			Principle:       "Principle 10 - Privacy by Design",
 		},
+
+		{
+			Action:          "GET",
+			ResourcePattern: "/memory/{layer}/{key}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
+		{
+			Action:          "PUT",
+			ResourcePattern: "/memory/{layer}/{key}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 9 - Security by Design",
+		},
 	}
+	rules = append(rules, publicationRules()...)
+	return append(rules, pipelineRules()...)
 }
 
 // PermissionsForRole returns the explicit permissions (HTTP action -> route
@@ -477,18 +544,20 @@ func PermissionsForRole(r Role) map[string][]string {
 		return map[string][]string{
 			"GET": {"/api/me", "/workspaces/{id}", "/workspaces/{id}/audit/events",
 				"/tasks", "/tasks/{id}",
-				"/knowledge", "/knowledge/{id}"},
-			"POST":   {"/tasks", "/tasks/{id}/transition", "/knowledge", "/knowledge/search"},
+				"/knowledge", "/knowledge/{id}", "/memory/{layer}/{key}", "/publications", "/publications/{id}", "/pipelines", "/pipelines/{id}"},
+			"POST":   {"/tasks", "/tasks/{id}/transition", "/knowledge", "/knowledge/search", "/publications", "/publications/{id}/submit", "/publications/{id}/approve", "/publications/{id}/reject", "/publications/{id}/publish", "/publications/{id}/retry", "/pipelines", "/pipelines/{id}/approve", "/pipelines/{id}/retry"},
 			"PATCH":  {"/tasks/{id}", "/knowledge/{id}"},
+			"PUT":    {"/memory/{layer}/{key}"},
 			"DELETE": {"/knowledge/{id}"},
 		}
 	case RoleWorkspaceMember:
 		return map[string][]string{
 			"GET": {"/api/me", "/workspaces/{id}/audit/events",
 				"/tasks", "/tasks/{id}",
-				"/knowledge", "/knowledge/{id}"},
-			"POST":   {"/tasks", "/tasks/{id}/transition", "/knowledge", "/knowledge/search"},
+				"/knowledge", "/knowledge/{id}", "/memory/{layer}/{key}", "/publications", "/publications/{id}", "/pipelines", "/pipelines/{id}"},
+			"POST":   {"/tasks", "/tasks/{id}/transition", "/knowledge", "/knowledge/search", "/publications", "/publications/{id}/submit", "/pipelines", "/pipelines/{id}/retry"},
 			"PATCH":  {"/tasks/{id}", "/knowledge/{id}"},
+			"PUT":    {"/memory/{layer}/{key}"},
 			"DELETE": {"/knowledge/{id}"},
 		}
 	default:

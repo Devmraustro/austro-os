@@ -26,17 +26,6 @@ func (a *publishAuditSink) Record(_ context.Context, rec publish.AuditRecord) {
 	a.recs = append(a.recs, rec)
 }
 
-func (a *publishAuditSink) has(eventType, outcome string) bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	for _, r := range a.recs {
-		if r.EventType == eventType && r.Outcome == outcome {
-			return true
-		}
-	}
-	return false
-}
-
 // TestPublishingServiceLifecycleIntegration runs the full queue → review →
 // approve → publish path (plus reject/cancel), verifying mandatory human
 // approval, workspace denial, invalid-transition rejection, the terminal state

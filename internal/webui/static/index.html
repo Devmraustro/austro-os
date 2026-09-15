@@ -339,6 +339,123 @@
         </p>
       </section>
 
+      <section class="card" id="publications-card">
+        <h2>Publishing approval</h2>
+        <p class="muted">
+          Drafts stay in the server-owned lifecycle: queued, review, approved,
+          then published. Workspace members can draft and submit; only a
+          workspace administrator can approve, reject or publish. Delivery
+          failures remain visible as failed records and are never shown as
+          success.
+        </p>
+        <form id="publication-create-form">
+          <label for="publication-title">Title</label>
+          <input id="publication-title" name="title" required maxlength="200">
+          <label for="publication-body">Body</label>
+          <textarea id="publication-body" name="body" rows="4" required maxlength="10000"></textarea>
+          <label for="publication-platform">Platform</label>
+          <input id="publication-platform" name="platform" value="stub" required maxlength="64">
+          <button type="submit" class="primary">Save draft</button>
+        </form>
+        <p id="publication-create-message" class="message" role="alert" hidden></p>
+        <form id="publication-form" class="filters">
+          <label for="publication-status">Status</label>
+          <select id="publication-status" name="status">
+            <option value="">Any</option>
+            <option value="queued">queued</option>
+            <option value="review">review</option>
+            <option value="approved">approved</option>
+            <option value="published">published</option>
+            <option value="failed">failed</option>
+            <option value="rejected">rejected</option>
+          </select>
+          <label for="publication-limit">Page size</label>
+          <select id="publication-limit" name="limit">
+            <option value="25">25</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+          </select>
+          <button type="submit" class="primary">Refresh</button>
+        </form>
+        <div id="publication-loading" class="muted" hidden>Loading publications…</div>
+        <div id="publication-empty" class="muted" hidden>No publications yet.</div>
+        <p id="publication-message" class="message" role="alert" hidden></p>
+        <table id="publication-table" class="table" hidden>
+          <thead><tr><th>Title</th><th>Platform</th><th>Status</th><th>Updated</th><th>Actions</th></tr></thead>
+          <tbody id="publication-body-rows"></tbody>
+        </table>
+      </section>
+
+      <section class="card" id="pipelines-card">
+        <h2>Creator pipelines</h2>
+        <p class="muted">
+          Pipelines run through the server-owned research, script, review and
+          publish lifecycle. This view never invents progress or exposes a stage
+          selector. Review output pauses for workspace-admin approval; failures
+          expose only the server's retry command and evidence.
+        </p>
+        <form id="pipeline-create-form">
+          <button type="submit" class="primary">Start pipeline</button>
+        </form>
+        <p id="pipeline-create-message" class="message" role="alert" hidden></p>
+        <form id="pipeline-form" class="filters">
+          <label for="pipeline-limit">Page size</label>
+          <select id="pipeline-limit" name="limit">
+            <option value="25">25</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+          </select>
+          <button type="submit" class="primary">Refresh</button>
+        </form>
+        <div id="pipeline-loading" class="muted" hidden>Loading pipelines…</div>
+        <div id="pipeline-empty" class="muted" hidden>No pipelines yet.</div>
+        <p id="pipeline-message" class="message" role="alert" hidden></p>
+        <table id="pipeline-table" class="table" hidden>
+          <thead><tr><th>Stage</th><th>Status</th><th>Artifacts</th><th>Updated</th><th>Actions</th></tr></thead>
+          <tbody id="pipeline-body-rows"></tbody>
+        </table>
+      </section>
+
+      <section class="card" id="memory-card">
+        <h2>Memory</h2>
+        <p class="muted">
+          Read or replace one key in your current workspace. The server derives
+          the workspace, actor and authorization scope from your session. This
+          browser surface intentionally exposes no list, search or delete control.
+        </p>
+
+        <form id="memory-form">
+          <label for="memory-layer">Layer</label>
+          <select id="memory-layer" name="layer">
+            <option value="session">session</option>
+            <option value="longterm">longterm</option>
+            <option value="workspace" selected>workspace</option>
+          </select>
+
+          <label for="memory-key">Key</label>
+          <input id="memory-key" name="key" required maxlength="256"
+                 autocomplete="off" placeholder="e.g. campaign.tone">
+
+          <label for="memory-value">Value</label>
+          <textarea id="memory-value" name="value" rows="4" maxlength="65536"
+                    placeholder="Value to store"></textarea>
+
+          <label for="memory-ttl">TTL in seconds</label>
+          <input id="memory-ttl" name="ttl_seconds" type="number" min="0"
+                 max="7776000" value="86400">
+
+          <button type="submit" class="primary">Save memory</button>
+          <button type="button" id="memory-read-btn">Read memory</button>
+        </form>
+        <p id="memory-message" class="message" role="alert" hidden></p>
+        <dl id="memory-result" class="details" hidden>
+          <dt>Server workspace</dt><dd id="memory-workspace">—</dd>
+          <dt>Stored layer</dt><dd id="memory-result-layer">—</dd>
+          <dt>Stored key</dt><dd id="memory-result-key">—</dd>
+          <dt>TTL</dt><dd id="memory-result-ttl">—</dd>
+        </dl>
+      </section>
+
       <section class="card">
         <h2>Not available in this build</h2>
         <p class="muted">
@@ -348,8 +465,6 @@
         </p>
         <ul class="list muted">
           <li>Creator pipelines and stage review</li>
-          <li>Publishing approval queue</li>
-          <li>Memory</li>
           <li>AI employees</li>
         </ul>
       </section>

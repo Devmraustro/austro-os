@@ -85,7 +85,6 @@ func TestListPageIsBoundedAndOrdered(t *testing.T) {
 	svc := NewService(store, nil, nil)
 
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	var created []*Task
 	for i := 0; i < 7; i++ {
 		tk, err := svc.Create(context.Background(), ws, "task", PriorityNormal, "")
 		require.NoError(t, err)
@@ -95,7 +94,6 @@ func TestListPageIsBoundedAndOrdered(t *testing.T) {
 		tk.UpdatedAt = tk.CreatedAt
 		_, err = store.Update(context.Background(), ws, tk)
 		require.NoError(t, err)
-		created = append(created, tk)
 	}
 	// A task in another workspace must never appear.
 	_, err := svc.Create(context.Background(), other, "elsewhere", PriorityNormal, "")

@@ -5,6 +5,7 @@ import (
 
 	"austro-os/internal/audit"
 	logger "austro-os/internal/log"
+	"austro-os/internal/memory"
 	"austro-os/internal/orchestration"
 	"austro-os/internal/publish"
 
@@ -101,4 +102,90 @@ func workspacePtr(s string) *uuid.UUID {
 		return nil
 	}
 	return &id
+}
+
+// MemorySink adapts the workspace-scoped memory audit contract to the
+// persistent append-only chain. The memory package keeps its domain port small;
+// this adapter is the production boundary that supplies actor, workspace,
+// correlation and durable failure semantics.
+type MemorySink struct {
+	store *Store
+}
+
+// NewMemorySink returns a persistent memory audit adapter.
+func NewMemorySink(store *Store) *MemorySink { return &MemorySink{store: store} }
+
+var _ memory.ErrorAuditSink = (*MemorySink)(nil)
+
+// Record preserves the existing fire-and-forget domain interface for callers
+// that do not need to surface an audit failure. HTTP memory mutations use
+// RecordError through the optional stronger interface below.
+func (s *MemorySink) Record(ctx context.Context, rec memory.AuditRecord) {
+	if err := s.RecordError(ctx, rec); err != nil {
+		logger.NewEntry("audit-memory-persist-failed").SetLevel("error").
+			With("event_type", rec.EventType).WithError(err).Log()
+	}
+}
+
+// RecordError persists one memory decision and returns failures to the Bank so
+// the HTTP write path can fail closed instead of reporting an unaudited success.
+func (s *MemorySink) RecordError(ctx context.Context, rec memory.AuditRecord) error {
+	returnError := func(err error) error {
+		if err != nil {
+			logger.NewEntry("audit-memory-persist-failed").SetLevel("error").
+				With("event_type", rec.EventType).WithError(err).Log()
+		}
+		return err
+	}
+
+	var actorID uuid.UUID
+	if rec.ActorID != "" {
+		parsed, err := uuid.Parse(rec.ActorID)
+		if err != nil {
+			return returnError(err)
+		}
+		actorID = parsed
+	}
+	return returnError(func() error {
+		var workspaceID *uuid.UUID
+		if rec.WorkspaceID != "" {
+			parsed, err := uuid.Parse(rec.WorkspaceID)
+			if err != nil {
+				return err
+			}
+			workspaceID = &parsed
+		}
+		var traceID, spanID uuid.UUID
+		if rec.TraceID != "" {
+			parsed, err := uuid.Parse(rec.TraceID)
+			if err != nil {
+				return err
+			}
+			traceID = parsed
+		}
+		if rec.SpanID != "" {
+			parsed, err := uuid.Parse(rec.SpanID)
+			if err != nil {
+				return err
+			}
+			spanID = parsed
+		}
+		_, err := s.store.Append(ctx, audit.Record{
+			EventType:   rec.EventType,
+			ActorType:   rec.ActorType,
+			ActorID:     actorID,
+			TargetType:  "memory_cell",
+			TargetID:    uuid.Nil,
+			Outcome:     rec.Outcome,
+			Principle:   rec.ConstitutionalPrinciple,
+			WorkspaceID: workspaceID,
+			TraceID:     traceID,
+			SpanID:      spanID,
+			Details: map[string]any{
+				"layer": rec.Layer,
+				"key":   rec.Key,
+			},
+		})
+		return err
+	}())
 }

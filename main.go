@@ -101,7 +101,14 @@ func main() {
 		logger.NewEntry("runtime-compose-failed").SetLevel("error").WithError(err).Log()
 		os.Exit(1)
 	}
-	_ = memory.NewBank(redis.NewMemoryStore(redisClient), logMemoryAudit{}, logMemoryEvents{})
+	memoryBank := memory.NewBank(
+		redis.NewMemoryStore(redisClient),
+		auditstore.NewMemorySink(auditStore),
+		logMemoryEvents{},
+	)
+	memoryHandler := api.NewMemoryHandler(memoryBank).SetAuditSink(auditStore)
+	publicationHandler := api.NewPublicationHandler(rt.Publish)
+	pipelineHandler := api.NewPipelineHandler(rt.Orchestration)
 
 	logger.NewEntry("austro-os-startup").
 		With("version", "1.0").
@@ -187,11 +194,15 @@ func main() {
 	handlers := map[api.Route]http.HandlerFunc{
 		{Method: http.MethodGet, Pattern: "/health/live"}: func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"status":"ok"}`))
+			if _, err := w.Write([]byte(`{"status":"ok"}`)); err != nil {
+				return
+			}
 		},
 		{Method: http.MethodGet, Pattern: "/health/ready"}: func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"ready":true}`))
+			if _, err := w.Write([]byte(`{"ready":true}`)); err != nil {
+				return
+			}
 		},
 
 		// Authentication endpoints. Login/refresh/logout/bootstrap are explicit
@@ -237,6 +248,29 @@ func main() {
 		{Method: http.MethodPatch, Pattern: "/knowledge/{id}"}:  knowledgeHandler.Update,
 		{Method: http.MethodDelete, Pattern: "/knowledge/{id}"}: knowledgeHandler.Delete,
 		{Method: http.MethodPost, Pattern: "/knowledge/search"}: knowledgeHandler.Search,
+
+		// Publishing. Lifecycle changes are named commands, never arbitrary status
+		// writes; the handler binds the workspace and actor from verified claims.
+		{Method: http.MethodPost, Pattern: "/publications"}:              publicationHandler.Create,
+		{Method: http.MethodGet, Pattern: "/publications"}:               publicationHandler.List,
+		{Method: http.MethodGet, Pattern: "/publications/{id}"}:          publicationHandler.Get,
+		{Method: http.MethodPost, Pattern: "/publications/{id}/submit"}:  publicationHandler.Submit,
+		{Method: http.MethodPost, Pattern: "/publications/{id}/approve"}: publicationHandler.Approve,
+		{Method: http.MethodPost, Pattern: "/publications/{id}/reject"}:  publicationHandler.Reject,
+		{Method: http.MethodPost, Pattern: "/publications/{id}/publish"}: publicationHandler.Publish,
+		{Method: http.MethodPost, Pattern: "/publications/{id}/retry"}:   publicationHandler.Retry,
+
+		// Creator pipelines. The worker remains the only advancement engine;
+		// HTTP exposes observation, the named human approval handoff and retry.
+		{Method: http.MethodPost, Pattern: "/pipelines"}:              pipelineHandler.Create,
+		{Method: http.MethodGet, Pattern: "/pipelines"}:               pipelineHandler.List,
+		{Method: http.MethodGet, Pattern: "/pipelines/{id}"}:          pipelineHandler.Get,
+		{Method: http.MethodPost, Pattern: "/pipelines/{id}/approve"}: pipelineHandler.Approve,
+		{Method: http.MethodPost, Pattern: "/pipelines/{id}/retry"}:   pipelineHandler.Retry,
+
+		// Memory is deliberately limited to key-based read/write operations.
+		{Method: http.MethodGet, Pattern: "/memory/{layer}/{key}"}: memoryHandler.Read,
+		{Method: http.MethodPut, Pattern: "/memory/{layer}/{key}"}: memoryHandler.Write,
 	}
 
 	// Registration is a separate function so the wiring can be exercised by a
@@ -421,19 +455,6 @@ func authzMiddleware(a *authz.Authorizer, next http.Handler, audits audit.Sink) 
 		}
 		next.ServeHTTP(w, r)
 	})
-}
-
-type logMemoryAudit struct{}
-
-func (logMemoryAudit) Record(_ context.Context, rec memory.AuditRecord) {
-	logger.NewEntry("memory-audit").
-		With("event", rec.EventType).
-		With("principle", rec.ConstitutionalPrinciple).
-		With("outcome", rec.Outcome).
-		With("workspace_id", rec.WorkspaceID).
-		With("layer", rec.Layer).
-		With("key", rec.Key).
-		Log()
 }
 
 type logMemoryEvents struct{}

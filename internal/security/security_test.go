@@ -75,8 +75,11 @@ func TestHashExternalIDDeterministicAndIrreversible(t *testing.T) {
 
 func TestThrottlerFailClosed(t *testing.T) {
 	tk := NewThrottler(0, 2) // window default, limit 2
-	if !tk.Allow("ws-a:user-1") || !tk.Allow("ws-a:user-1") {
-		t.Fatal("first two hits must be allowed")
+	if !tk.Allow("ws-a:user-1") {
+		t.Fatal("the first hit must be allowed")
+	}
+	if !tk.Allow("ws-a:user-1") {
+		t.Fatal("the second hit must be allowed")
 	}
 	if tk.Allow("ws-a:user-1") {
 		t.Fatal("third hit within window must be denied")

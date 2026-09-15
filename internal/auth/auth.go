@@ -22,8 +22,10 @@ const (
 	// Issuer and audience embedded in tokens so that a token minted by this
 	// service is rejected by any other service (and stale tokens are invalidated
 	// when the deployment is replaced).
-	TokenIssuer   = "austro-os"
-	TokenAudience = "austro-os-api"
+	// These are fixed public JWT metadata values, not credentials. The scanner's
+	// G101 heuristic matches the service identifier; no secret is embedded here.
+	TokenIssuer   = "austro-os"     // #nosec G101 -- public JWT issuer identifier.
+	TokenAudience = "austro-os-api" // #nosec G101 -- public JWT audience identifier.
 )
 
 // refreshTokenTTL is the lifetime of a refresh token. Rotation means each

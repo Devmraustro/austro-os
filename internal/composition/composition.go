@@ -147,6 +147,9 @@ func Compose(cfg *config.Config, stores Stores, sinks Sinks) (*Runtime, error) {
 		sinks.PipelineAudit,
 		pipelineEventSink{fn: sinks.PipelineEvent},
 	)
+	// Creator's publish handoff reuses the existing Publishing aggregate and
+	// service. No second publication engine is created in orchestration.
+	orchSvc.SetPublicationPort(pipelinePublicationAdapter{svc: publishSvc})
 
 	return &Runtime{
 		Config:         cfg,

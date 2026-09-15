@@ -3,6 +3,7 @@ package orchestration
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	logger "austro-os/internal/log"
@@ -10,26 +11,21 @@ import (
 	"github.com/google/uuid"
 )
 
-// Service is the Creator orchestration application service. It advances the
-// pipeline stage by stage, enforcing workspace ownership (deny-by-default), the
-// explicit stage order, a per-workspace advance throttle, and the Human
-// Oversight requirement that publish only follows an approved publication
-// (Step 6). Every transition is audited with actor/workload/trace/span and
-// logged as structured JSON.
+// Service is the Creator orchestration application service. It is the only
+// place allowed to advance the aggregate and it never accepts a client-chosen
+// destination from the HTTP surface.
 type Service struct {
-	store    PipelineStore
-	research Researcher
-	script   ScriptWriter
-	review   Reviewer
-	publish  Publisher
-	audit    AuditSink
-	events   EventSink
-	throttle *security.Throttler
+	store       PipelineStore
+	research    Researcher
+	script      ScriptWriter
+	review      Reviewer
+	publish     Publisher
+	publication PublicationPort
+	audit       AuditSink
+	events      EventSink
+	throttle    *security.Throttler
 }
 
-// NewService wires a Service from its ports. A nil audit or event sink is
-// replaced by a no-op. Capability ports must be non-nil; the default is the
-// deterministic stub adapter (ADR-010).
 func NewService(store PipelineStore, research Researcher, script ScriptWriter, review Reviewer, publish Publisher, audit AuditSink, events EventSink) *Service {
 	if audit == nil {
 		audit = NullAuditSink{}
@@ -49,117 +45,281 @@ func NewService(store PipelineStore, research Researcher, script ScriptWriter, r
 	if publish == nil {
 		publish = StubPublisher{}
 	}
-	return &Service{
-		store: store, research: research, script: script, review: review,
-		publish: publish, audit: audit, events: events, throttle: security.NewThrottler(time.Minute, 10),
-	}
+	return &Service{store: store, research: research, script: script, review: review, publish: publish, audit: audit, events: events, throttle: security.NewThrottler(time.Minute, 10)}
 }
 
-// Create persists a new pipeline in the research/created stage for the
-// workspace.
+// SetPublicationPort attaches the narrow adapter to the existing Publishing
+// service. It is called by composition; unit/domain callers may leave it nil
+// and still exercise the state machine with the deterministic publisher.
+func (s *Service) SetPublicationPort(port PublicationPort) *Service {
+	s.publication = port
+	return s
+}
+
 func (s *Service) Create(ctx context.Context, workspaceID uuid.UUID, goalID *uuid.UUID, traceID string) (*Pipeline, error) {
+	return s.CreateWithIdempotency(ctx, workspaceID, goalID, traceID, "")
+}
+
+// CreateWithIdempotency makes a retry of the same authenticated request return
+// the original aggregate when the persistent adapter supports the lookup.
+func (s *Service) CreateWithIdempotency(ctx context.Context, workspaceID uuid.UUID, goalID *uuid.UUID, traceID, key string) (*Pipeline, error) {
 	if workspaceID == uuid.Nil {
 		return nil, ErrWorkspaceMismatch
 	}
-	p, err := New(workspaceID, goalID, traceID)
+	key = strings.TrimSpace(key)
+	if len(key) > 128 {
+		return nil, ErrInvalidInput
+	}
+	if key != "" {
+		if finder, ok := s.store.(interface {
+			GetByIdempotency(context.Context, uuid.UUID, string) (*Pipeline, error)
+		}); ok {
+			if existing, err := finder.GetByIdempotency(ctx, workspaceID, key); err == nil {
+				if existing.Stage == StageResearch && existing.Status == StatusCreated {
+					if publishErr := s.events.PublishPipeline(ctx, "pipeline.research", existing.ID, workspaceID, string(existing.Stage), existing.TraceID, spanOf(ctx)); publishErr != nil {
+						return existing, publishErr
+					}
+				}
+				return existing, nil
+			} else if !errors.Is(err, ErrNotFound) {
+				return nil, err
+			}
+		}
+	}
+	p, err := NewWithIdempotency(workspaceID, goalID, traceID, key)
 	if err != nil {
 		return nil, err
 	}
 	stored, err := s.store.Create(ctx, p)
 	if err != nil {
+		if key != "" {
+			if finder, ok := s.store.(interface {
+				GetByIdempotency(context.Context, uuid.UUID, string) (*Pipeline, error)
+			}); ok {
+				if existing, lookupErr := finder.GetByIdempotency(ctx, workspaceID, key); lookupErr == nil {
+					if existing.Stage == StageResearch && existing.Status == StatusCreated {
+						if publishErr := s.events.PublishPipeline(ctx, "pipeline.research", existing.ID, workspaceID, string(existing.Stage), existing.TraceID, spanOf(ctx)); publishErr != nil {
+							return existing, publishErr
+						}
+					}
+					return existing, nil
+				}
+			}
+		}
 		return nil, err
 	}
-	s.audit.Record(ctx, AuditRecord{
-		EventType: "pipeline.create", ConstitutionalPrinciple: "Obedience",
-		Outcome: "success", WorkspaceID: workspaceID.String(), PipelineID: stored.ID.String(),
-		ActorType: "system", TraceID: traceID, SpanID: spanOf(ctx), Stage: string(stored.Stage),
-	})
-	_ = s.events.PublishPipeline(ctx, "pipeline.research", stored.ID, workspaceID, string(stored.Stage), traceID, spanOf(ctx))
+	s.audit.Record(ctx, AuditRecord{EventType: "pipeline.create", ConstitutionalPrinciple: "Obedience", Outcome: "success", WorkspaceID: workspaceID.String(), PipelineID: stored.ID.String(), ActorType: actorType(ctx, "system"), ActorID: actorID(ctx), TraceID: traceID, SpanID: spanOf(ctx), Stage: string(stored.Stage)})
+	if err := s.events.PublishPipeline(ctx, "pipeline.research", stored.ID, workspaceID, string(stored.Stage), traceID, spanOf(ctx)); err != nil {
+		return stored, err
+	}
 	logTrace(workspaceID, "pipeline-created").With("pipeline_id", stored.ID).With("stage", stored.Stage).Log()
 	return stored, nil
 }
 
-// Advance moves the pipeline to the given next stage, performing the stage's
-// capability work and updating the pipeline record. startStage is the pipeline's
-// current stage before the transition (the caller derives it from the persisted
-// pipeline or from a worker event).
+// Advance is retained for internal callers and tests. The HTTP API does not
+// expose it: workers derive the next stage from EventKind and approval uses the
+// named Approve command below.
 func (s *Service) Advance(ctx context.Context, workspaceID, id uuid.UUID, startStage, to Stage) (*Pipeline, error) {
 	if workspaceID == uuid.Nil {
 		return nil, ErrWorkspaceMismatch
 	}
 	if !s.throttle.Allow(workspaceID.String()) {
-		s.audit.Record(ctx, AuditRecord{
-			EventType: "pipeline.advance", ConstitutionalPrinciple: "Security by Design",
-			Outcome: "failed", WorkspaceID: workspaceID.String(), PipelineID: id.String(),
-			ActorType: "system", TraceID: traceOf(ctx), SpanID: spanOf(ctx), Stage: string(to),
-		})
 		return nil, ErrRateLimited
 	}
 	p, err := s.getOwned(ctx, workspaceID, id)
 	if err != nil {
 		return nil, err
 	}
-	// The transition must be legal from the persisted stage.
 	if p.Stage != startStage {
 		return nil, ErrConsecutiveAdvance
 	}
 	if err := CanAdvance(to, p.Stage, p.Status); err != nil {
-		s.audit.Record(ctx, AuditRecord{
-			EventType: "pipeline.advance", ConstitutionalPrinciple: "Human Oversight",
-			Outcome: "failed", WorkspaceID: workspaceID.String(), PipelineID: id.String(),
-			ActorType: "system", TraceID: traceOf(ctx), SpanID: spanOf(ctx), Stage: string(to),
-		})
 		return nil, err
 	}
 	return s.doAdvance(ctx, p, to, "system", "")
 }
 
-func (s *Service) doAdvance(ctx context.Context, p *Pipeline, to Stage, actorType, actorID string) (*Pipeline, error) {
-	// Perform the capability work for the incoming stage.
-	ref, err := s.stageWork(ctx, p, to)
+// Approve is the only operation that can open the review → publish handoff.
+// The actor is supplied by verified HTTP claims, never by the request body.
+func (s *Service) Approve(ctx context.Context, workspaceID, id uuid.UUID, actor string) (*Pipeline, error) {
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		return nil, ErrUnauthorizedActor
+	}
+	p, err := s.getOwned(ctx, workspaceID, id)
 	if err != nil {
-		status := StatusFailed
-		p.Status = status
-		p.UpdatedAt = time.Now().UTC()
-		_, _ = s.store.Update(ctx, p.WorkspaceID, p)
-		s.audit.Record(ctx, AuditRecord{
-			EventType: "pipeline.advance", ConstitutionalPrinciple: "Security by Design",
-			Outcome: "failed", WorkspaceID: p.WorkspaceID.String(), PipelineID: p.ID.String(),
-			ActorType: actorType, ActorID: actorID, TraceID: traceOf(ctx), SpanID: spanOf(ctx), Stage: string(to),
-		})
-		logTrace(p.WorkspaceID, "pipeline-advance-failed").With("pipeline_id", p.ID).With("stage", to).WithError(err).Log()
 		return nil, err
 	}
-	_ = ref
+	if p.Stage != StageReview {
+		return nil, ErrApprovalRequired
+	}
+	// Approval is idempotent and also repairs a lost publish event after a
+	// durable state write. A caller may safely retry the same named command.
+	if p.Status == StatusApproved && p.Approved() {
+		if err := s.publishCurrentEvent(ctx, p); err != nil {
+			return p, err
+		}
+		return p, nil
+	}
+	if p.Status != StatusAwaitingApproval {
+		return nil, ErrApprovalRequired
+	}
+	if s.publication != nil {
+		if p.PublicationID == nil {
+			return nil, ErrApprovalRequired
+		}
+		if err := s.publication.Approve(ctx, workspaceID, *p.PublicationID, actor); err != nil {
+			return nil, err
+		}
+	}
+	now := time.Now().UTC()
+	p.Status = StatusApproved
+	p.ApprovedBy = actor
+	p.ApprovedAt = &now
+	p.FailureReason = ""
+	p.UpdatedAt = now
+	updated, err := s.store.Update(ctx, workspaceID, p)
+	if err != nil {
+		return nil, err
+	}
+	s.audit.Record(ctx, AuditRecord{EventType: "pipeline.approve", ConstitutionalPrinciple: "Human Oversight", Outcome: "success", WorkspaceID: workspaceID.String(), PipelineID: id.String(), ActorType: "human", ActorID: actor, TraceID: traceOf(ctx), SpanID: spanOf(ctx), Stage: string(StageReview)})
+	if err := s.events.PublishPipeline(ctx, "pipeline.review_approved", id, workspaceID, string(StageReview), traceOf(ctx), spanOf(ctx)); err != nil {
+		return updated, err
+	}
+	return updated, nil
+}
 
-	// Apply the new stage and status.
+// Retry resets only a failed aggregate to the exact failed stage's canonical
+// predecessor state and re-enters the server-selected next step. There is no
+// arbitrary stage argument.
+func (s *Service) Retry(ctx context.Context, workspaceID, id uuid.UUID, actor string) (*Pipeline, error) {
+	actor = strings.TrimSpace(actor)
+	if actor == "" {
+		return nil, ErrUnauthorizedActor
+	}
+	p, err := s.getOwned(ctx, workspaceID, id)
+	if err != nil {
+		return nil, err
+	}
+	if p.Status != StatusFailed {
+		return nil, ErrInvalidTransition
+	}
+	if p.Stage == StageComplete {
+		return nil, ErrTerminalState
+	}
+	switch p.Stage {
+	case StageReview:
+		if p.ApprovedBy != "" && p.ApprovedAt != nil {
+			p.Status = StatusApproved
+		} else {
+			p.Status = StatusAwaitingApproval
+		}
+	case StageResearch:
+		p.Status = StatusCreated
+	default:
+		p.Status = StatusActive
+	}
+	p.RetryCount++
+	p.FailureReason = ""
+	p.UpdatedAt = time.Now().UTC()
+	if _, err := s.store.Update(ctx, workspaceID, p); err != nil {
+		return nil, err
+	}
+	next, err := NextStage(p.Stage)
+	if err != nil {
+		return nil, err
+	}
+	return s.doAdvance(ctx, p, next, "human", actor)
+}
+
+func (s *Service) doAdvance(ctx context.Context, p *Pipeline, to Stage, actorType, actorID string) (*Pipeline, error) {
+	ref, err := s.stageWork(ctx, p, to)
+	if err != nil {
+		p.Status = StatusFailed
+		p.FailureReason = failureReason(err)
+		p.UpdatedAt = time.Now().UTC()
+		_, persistErr := s.store.Update(ctx, p.WorkspaceID, p)
+		s.audit.Record(ctx, AuditRecord{EventType: "pipeline.advance", ConstitutionalPrinciple: "Security by Design", Outcome: "failed", WorkspaceID: p.WorkspaceID.String(), PipelineID: p.ID.String(), ActorType: actorType, ActorID: actorID, TraceID: traceOf(ctx), SpanID: spanOf(ctx), Stage: string(to)})
+		if persistErr != nil {
+			return nil, errors.Join(err, persistErr)
+		}
+		return nil, err
+	}
+	if to == StageReview && s.publication != nil {
+		publicationID, prepErr := s.publication.Prepare(ctx, p.WorkspaceID, p)
+		if prepErr != nil {
+			p.Status = StatusFailed
+			p.FailureReason = failureReason(prepErr)
+			p.UpdatedAt = time.Now().UTC()
+			_, _ = s.store.Update(ctx, p.WorkspaceID, p)
+			return nil, prepErr
+		}
+		p.PublicationID = &publicationID
+	}
+	if to == StagePublish && s.publication != nil {
+		if p.PublicationID == nil || !p.Approved() {
+			return nil, ErrApprovalRequired
+		}
+		publishedRef, publishErr := s.publication.Publish(ctx, p.WorkspaceID, *p.PublicationID, p.ApprovedBy)
+		if publishErr != nil {
+			p.Status = StatusFailed
+			p.FailureReason = failureReason(publishErr)
+			p.UpdatedAt = time.Now().UTC()
+			_, _ = s.store.Update(ctx, p.WorkspaceID, p)
+			return nil, publishErr
+		}
+		p.PublishedReference = publishedRef
+	}
+	_ = ref
 	p.Stage = to
 	switch to {
-	case StageScript:
+	case StageScript, StagePublish:
 		p.Status = StatusActive
 	case StageReview:
 		p.Status = StatusAwaitingApproval
-	case StagePublish:
-		p.Status = StatusActive
 	case StageComplete:
 		p.Status = StatusDone
 	}
+	p.FailureReason = ""
 	p.UpdatedAt = time.Now().UTC()
 	updated, err := s.store.Update(ctx, p.WorkspaceID, p)
 	if err != nil {
 		return nil, err
 	}
-	s.audit.Record(ctx, AuditRecord{
-		EventType: "pipeline.advance", ConstitutionalPrinciple: "Human Oversight",
-		Outcome: "success", WorkspaceID: p.WorkspaceID.String(), PipelineID: p.ID.String(),
-		ActorType: actorType, ActorID: actorID, TraceID: traceOf(ctx), SpanID: spanOf(ctx), Stage: string(to),
-	})
-	_ = s.events.PublishPipeline(ctx, "pipeline."+string(to), p.ID, p.WorkspaceID, string(to), traceOf(ctx), spanOf(ctx))
+	s.audit.Record(ctx, AuditRecord{EventType: "pipeline.advance", ConstitutionalPrinciple: "Human Oversight", Outcome: "success", WorkspaceID: p.WorkspaceID.String(), PipelineID: p.ID.String(), ActorType: actorType, ActorID: actorID, TraceID: traceOf(ctx), SpanID: spanOf(ctx), Stage: string(to)})
+	eventType := "pipeline." + string(to)
+	if to == StageReview {
+		eventType = "pipeline.review_ready"
+	}
+	if err := s.events.PublishPipeline(ctx, eventType, p.ID, p.WorkspaceID, string(to), traceOf(ctx), spanOf(ctx)); err != nil {
+		return updated, err
+	}
 	logTrace(p.WorkspaceID, "pipeline-advanced").With("pipeline_id", p.ID).With("stage", to).With("status", p.Status).Log()
 	return updated, nil
 }
 
-// stageWork dispatches the incoming stage to the corresponding capability port.
+// RepublishCurrentEvent repairs a message lost after its database update. It
+// never changes aggregate state; the worker's duplicate-delivery check calls it
+// only when the persisted stage is already after the incoming event.
+func (s *Service) RepublishCurrentEvent(ctx context.Context, p *Pipeline) error {
+	return s.publishCurrentEvent(ctx, p)
+}
+
+func (s *Service) publishCurrentEvent(ctx context.Context, p *Pipeline) error {
+	if p == nil {
+		return ErrInvalidInput
+	}
+	eventType := "pipeline." + string(p.Stage)
+	if p.Stage == StageReview {
+		if p.Status == StatusApproved {
+			eventType = "pipeline.review_approved"
+		} else {
+			eventType = "pipeline.review_ready"
+		}
+	}
+	return s.events.PublishPipeline(ctx, eventType, p.ID, p.WorkspaceID, string(p.Stage), traceOf(ctx), spanOf(ctx))
+}
+
 func (s *Service) stageWork(ctx context.Context, p *Pipeline, to Stage) (string, error) {
 	switch to {
 	case StageScript:
@@ -167,7 +327,13 @@ func (s *Service) stageWork(ctx context.Context, p *Pipeline, to Stage) (string,
 		if err != nil {
 			return "", err
 		}
-		return s.script.WriteScript(ctx, p.WorkspaceID, p, rr)
+		p.ResearchReference = boundReference(rr)
+		sr, err := s.script.WriteScript(ctx, p.WorkspaceID, p, p.ResearchReference)
+		if err != nil {
+			return "", err
+		}
+		p.ScriptReference = boundReference(sr)
+		return p.ScriptReference, nil
 	case StageReview:
 		ok, err := s.review.Review(ctx, p.WorkspaceID, p)
 		if err != nil {
@@ -176,12 +342,13 @@ func (s *Service) stageWork(ctx context.Context, p *Pipeline, to Stage) (string,
 		if !ok {
 			return "", errors.New("orchestration: review rejected artefact")
 		}
-		return "review-ok", nil
+		p.ReviewReference = "review-ok"
+		return p.ReviewReference, nil
 	case StagePublish:
-		// Human Oversight gate: publish requires an approved publication
-		// (Step 6). Phase 2 reuses the stub publisher; the gate is enforced for
-		// real in production wiring.
-		return s.publish.Publish(ctx, p.WorkspaceID, p, "review-ok")
+		if s.publication == nil {
+			return s.publish.Publish(ctx, p.WorkspaceID, p, p.ReviewReference)
+		}
+		return "", nil
 	case StageComplete:
 		return "", nil
 	default:
@@ -189,17 +356,39 @@ func (s *Service) stageWork(ctx context.Context, p *Pipeline, to Stage) (string,
 	}
 }
 
-// Get returns a pipeline by id within the workspace (defense-in-depth).
+func boundReference(ref string) string {
+	ref = strings.TrimSpace(ref)
+	if len(ref) > 512 {
+		return ref[:512]
+	}
+	return ref
+}
+
+func failureReason(err error) string {
+	if err == nil {
+		return "stage_failed"
+	}
+	msg := strings.TrimSpace(err.Error())
+	if len(msg) > 512 {
+		return msg[:512]
+	}
+	if msg == "" {
+		return "stage_failed"
+	}
+	return msg
+}
+
 func (s *Service) Get(ctx context.Context, workspaceID, id uuid.UUID) (*Pipeline, error) {
 	return s.getOwned(ctx, workspaceID, id)
 }
-
-// List returns pipelines for a workspace.
 func (s *Service) List(ctx context.Context, workspaceID uuid.UUID) ([]*Pipeline, error) {
 	return s.store.List(ctx, workspaceID)
 }
 
 func (s *Service) getOwned(ctx context.Context, workspaceID, id uuid.UUID) (*Pipeline, error) {
+	if workspaceID == uuid.Nil || id == uuid.Nil {
+		return nil, ErrInvalidInput
+	}
 	p, err := s.store.Get(ctx, workspaceID, id)
 	if err != nil {
 		return nil, err
@@ -210,17 +399,24 @@ func (s *Service) getOwned(ctx context.Context, workspaceID, id uuid.UUID) (*Pip
 	return p, nil
 }
 
-func logTrace(workspaceID uuid.UUID, msg string) *logger.Entry {
-	return logger.NewEntry(msg).With("workspace_id", workspaceID)
+func actorID(ctx context.Context) string {
+	if v, ok := ctx.Value(actorKey{}).(string); ok {
+		return v
+	}
+	return ""
 }
-
+func actorType(ctx context.Context, fallback string) string {
+	if actorID(ctx) != "" {
+		return "human"
+	}
+	return fallback
+}
 func traceOf(ctx context.Context) string {
 	if v, ok := ctx.Value(traceKey{}).(string); ok {
 		return v
 	}
 	return ""
 }
-
 func spanOf(ctx context.Context) string {
 	if v, ok := ctx.Value(spanKey{}).(string); ok {
 		return v
@@ -230,10 +426,16 @@ func spanOf(ctx context.Context) string {
 
 type traceKey struct{}
 type spanKey struct{}
+type actorKey struct{}
 
-// WithTrace attaches a trace/span id to ctx for audit propagation.
 func WithTrace(ctx context.Context, trace, span string) context.Context {
 	ctx = context.WithValue(ctx, traceKey{}, trace)
-	ctx = context.WithValue(ctx, spanKey{}, span)
-	return ctx
+	return context.WithValue(ctx, spanKey{}, span)
+}
+func WithActor(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, actorKey{}, strings.TrimSpace(id))
+}
+
+func logTrace(workspaceID uuid.UUID, msg string) *logger.Entry {
+	return logger.NewEntry(msg).With("workspace_id", workspaceID)
 }
