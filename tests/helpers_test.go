@@ -111,37 +111,6 @@ func ensureIsolationRoles(db *sql.DB, nameA, nameB string) error {
 	return nil
 }
 
-// fixtureFreshSetup verifies that a clean fixture setup produces roles with
-// all required grants. This test can be called independently to prove a
-// fresh start works as expected.
-func fixtureFreshSetup(t *testing.T) {
-	t.Helper()
-	// Use a temp DB or reset state; for now we prove the function runs without error.
-	// The ensureIsolationRoles function itself is the fixture; if it reaches here
-	// without panic/fail, the fresh setup works.
-}
-
-// fixtureRepeatedSetup verifies that running ensureIsolationRoles twice
-// (idempotently) produces the same grant state. This proves repeated setup
-// works without double-failure or state corruption.
-func fixtureRepeatedSetup(t *testing.T) {
-	t.Helper()
-}
-
-// fixtureExistingRoleRegrants verifies that an existing fixture role receives
-// the required grants again when ensureIsolationRoles is called a second time.
-// This proves the idempotent re-assertion of grants.
-func fixtureExistingRoleRegrants(t *testing.T) {
-	t.Helper()
-}
-
-// fixtureTenantIsolationEnforced verifies that after fixture setup, workspace
-// isolation is enforced via RLS. This confirms no privilege escalation across
-// workspaces A and B.
-func fixtureTenantIsolationEnforced(t *testing.T) {
-	t.Helper()
-}
-
 // connectAs dials PostgreSQL as a specific role, used to exercise the RLS
 // boundary from the perspective of that restricted principal. Only the role
 // (and its fixed test password) is changed; host/port/db are preserved.
