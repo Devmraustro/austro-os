@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mutation: [transition, rbac, workspace, route, approval, worker_ack, retry, audit, duplicate]
+        mutation: [transition, rbac, workspace, client_state, route, approval, worker_ack, retry, audit, duplicate]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

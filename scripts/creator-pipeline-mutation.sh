@@ -87,6 +87,15 @@ run_workspace() {
     go test ./internal/orchestration -run '^TestWorkspaceIsolation$' -count=1
 }
 
+run_client_state() {
+  mutate_and_expect_failure \
+    "client-controlled pipeline stage and status fields are accepted" \
+    internal/api/pipeline_handlers.go \
+    $'type createPipelineRequest struct {\n\tGoalID string `json:"goal_id"`\n}' \
+    $'type createPipelineRequest struct {\n\tGoalID string `json:"goal_id"`\n\tStage string `json:"stage"`\n\tStatus string `json:"status"`\n}' \
+    go test ./internal/api -run '^TestPipelineCreateRejectsClientControlledStageStatus$' -count=1
+}
+
 run_route() {
   mutate_and_expect_failure \
     "undocumented arbitrary pipeline PATCH route is added" \
@@ -147,6 +156,7 @@ run_one() {
     rbac) run_rbac ;;
     workspace) run_workspace ;;
     route) run_route ;;
+    client_state) run_client_state ;;
     approval) run_approval ;;
     worker_ack) run_worker_ack ;;
     retry) run_retry ;;
@@ -158,7 +168,7 @@ run_one() {
 
 selected=${MUTATION_ONLY:-all}
 if [ "$selected" = "all" ]; then
-  for mutation in transition rbac workspace route approval worker_ack retry audit duplicate; do
+  for mutation in transition rbac workspace client_state route approval worker_ack retry audit duplicate; do
     run_one "$mutation"
   done
 else
