@@ -127,6 +127,14 @@ jobs:
           status=$?
           set -e
           cat /tmp/govulncheck.log
+          if [ "$status" -ne 0 ]; then
+            while IFS= read -r line; do
+              line=${line//'%'/'%25'}
+              line=${line//$'\r'/'%0D'}
+              line=${line//$'\n'/'%0A'}
+              echo "::warning title=govulncheck::$line"
+            done < /tmp/govulncheck.log
+          fi
           exit "$status"
 
       - name: Run staticcheck
