@@ -164,26 +164,23 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
         authMessage: document.querySelector('#auth-message').textContent,
       }));
       state.responses = founderAuthResponses;
-      console.error(`BROWSER_DIAGNOSTIC founder-app ${JSON.stringify(state)}`);
-      throw error;
+      throw new Error(`BROWSER_DIAGNOSTIC founder-app ${JSON.stringify(state)}; cause: ${error.message}`);
     }
-    await expect.poll(async () => {
-      const identity = await founderPage.locator('#identity').innerText();
-      if (!identity.includes(founderUsername)) {
-        const state = await founderPage.evaluate(() => ({
-          authHidden: document.querySelector('#auth-view').hidden,
-          appHidden: document.querySelector('#app-view').hidden,
-          authMessage: document.querySelector('#auth-message').textContent,
-          identity,
-        }));
-        state.responses = founderAuthResponses;
-        console.error(`BROWSER_DIAGNOSTIC founder-identity ${JSON.stringify(state)}`);
-      }
-      return identity;
-    }, {
-      timeout: 15000,
-      message: `founder identity did not render for ${founderUsername}`,
-    }).toContain(founderUsername);
+    try {
+      await expect.poll(async () => founderPage.locator('#identity').innerText(), {
+        timeout: 15000,
+        message: `founder identity did not render for ${founderUsername}`,
+      }).toContain(founderUsername);
+    } catch (error) {
+      const state = await founderPage.evaluate(() => ({
+        authHidden: document.querySelector('#auth-view').hidden,
+        appHidden: document.querySelector('#app-view').hidden,
+        authMessage: document.querySelector('#auth-message').textContent,
+        identity: document.querySelector('#identity').textContent,
+      }));
+      state.responses = founderAuthResponses;
+      throw new Error(`BROWSER_DIAGNOSTIC founder-identity ${JSON.stringify(state)}; cause: ${error.message}`);
+    }
     console.log('BROWSER_STEP founder-authenticated');
     async function expectWorkspaceRendered(name, label) {
       try {
