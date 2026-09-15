@@ -1,8 +1,9 @@
 # Creator/Pipelines Verification Report
 
-**Date:** 2026-09-15 (Europe/Paris)  
-**Branch:** `arena/01a0a5ea-austro-os`  
-**Implementation evidence HEAD:** `48fd16936d66ee00181aa239a6da39ccd77428b1`  
+**Date:** 2026-09-15 (Europe/Paris)
+**Branch:** `arena/01a0a5ea-austro-os`
+**Verification/report HEAD:** `340e56e11dd511e00c8c93dc1d85f17e1f66fefa`
+**Implementation under verification:** unchanged from `48fd16936d66ee00181aa239a6da39ccd77428b1`; the report commit is documentation-only.
 **Final status:** `INCOMPLETE — browser evidence unavailable`
 
 This report records the remaining Creator/Pipelines verification work. Claims
@@ -13,8 +14,8 @@ The implementation was not reimplemented or refactored for this verification.
 ## 1. Mutation evidence
 
 **CI VERIFIED —** Creator/Pipelines Independent Verification runs
-`35024403890` and `35024409771` completed successfully at the implementation
-HEAD. The matrix executed every required mutation independently, with
+`35024929546` and `35024934390` completed successfully at the
+report HEAD (the latter is the latest run). The matrix executed every required mutation independently, with
 `fail-fast: false`:
 
 | Mutation | Temporary change | Expected regression | Result |
@@ -71,7 +72,7 @@ acceptance criteria.
 
 ## 3. Independent security signal
 
-**CI VERIFIED —** run `35024409771` completed the independent security job:
+**CI VERIFIED —** run `35024934390` completed the independent security job:
 
 - `gosec` v2.22.8: no high or critical findings;
 - `govulncheck` v1.1.4: passed;
@@ -119,17 +120,17 @@ production-code change.
 - persisted audit/hash-chain verification and cross-workspace RLS isolation.
 
 **CI VERIFIED —** the full live Phase 1 + Phase 2 regression completed in
-Phase 2 run `35024409602`, including the live database schema/RLS checks,
+Phase 2 run `35024934372`, including the live database schema/RLS checks,
 API/worker stack, frozen-gate check, runtime-role checks, and persistent audit
 suites.
 
 ## 5. Regression, frozen gate, and repository state
 
-**CI VERIFIED —** Phase 1 Exit Criteria run `35024409615` completed successfully
-at the implementation HEAD. **CI VERIFIED —** Phase 2 CI run `35024409602`
+**CI VERIFIED —** Phase 1 Exit Criteria run `35024934295` completed successfully
+at the report HEAD. **CI VERIFIED —** Phase 2 CI run `35024934372`
 completed successfully, including the race detector and full live regression.
-**CI VERIFIED —** Creator/Pipelines Independent Verification runs
-`35024403890` and `35024409771` completed successfully.
+**CI VERIFIED —** Creator/Pipelines Independent Verification run
+`35024934390` completed successfully.
 
 **VERIFIED BY EXECUTION —** the frozen file
 `tests/phase1_exit_criteria_test.go` has an empty diff against baseline
@@ -137,9 +138,11 @@ completed successfully, including the race detector and full live regression.
 `git diff --check` passed. **VERIFIED BY EXECUTION —** the branch was pushed
 without force-pushing or rewriting history.
 
-**VERIFIED BY EXECUTION —** at report preparation, the repository was on
-`arena/01a0a5ea-austro-os`, at implementation HEAD
-`48fd16936d66ee00181aa239a6da39ccd77428b1`, with a clean working tree.
+**VERIFIED BY EXECUTION —** after publishing this report, the repository is
+on `arena/01a0a5ea-austro-os`, at report HEAD
+`340e56e11dd511e00c8c93dc1d85f17e1f66fefa`, with a clean working tree. The
+report publication changed documentation only; no Creator/Pipelines production
+implementation changed.
 
 ## 6. Limitations and disposition
 
