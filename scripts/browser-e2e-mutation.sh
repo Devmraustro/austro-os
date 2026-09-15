@@ -17,16 +17,24 @@ cp -- "$file" "$backup"
 stop_api() {
   local pid
   pid=$(cat /tmp/austro-api.pid)
-  if kill -0 "$pid" 2>/dev/null; then
-    kill "$pid"
+  if ! kill -0 "$pid" 2>/dev/null; then
+    return 0
   fi
+  kill "$pid"
   for _ in $(seq 1 30); do
     if ! kill -0 "$pid" 2>/dev/null; then
       return 0
     fi
     sleep 1
   done
-  echo "API did not stop after SIGTERM"
+  kill -KILL "$pid"
+  for _ in $(seq 1 10); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "API did not stop after SIGTERM/SIGKILL"
   return 1
 }
 
@@ -45,6 +53,7 @@ start_api() {
 }
 
 restore() {
+  echo "restoring browser authorization source"
   cp -- "$backup" "$file"
   if ! cmp -s -- "$backup" "$file"; then
     echo "browser mutation restore failed"
@@ -70,14 +79,17 @@ if text.count(old) != 1:
 path.write_text(text.replace(old, new, 1))
 PY
 
+echo "building and starting temporarily mutated API"
 stop_api
 go build -o /tmp/austro-api .
 start_api
 
+echo "running browser test; failure is required for this mutation"
 set +e
-npm --prefix browser-e2e test -- --reporter=line
+npm --prefix browser-e2e test -- --reporter=line > /tmp/browser-e2e-mutation.log 2>&1
 status=$?
 set -e
+cat /tmp/browser-e2e-mutation.log
 if [ "$status" -eq 0 ]; then
   echo "SURVIVED: browser unauthorized approval-control mutation"
   exit 1
@@ -88,7 +100,7 @@ echo "CAUGHT: browser unauthorized approval-control mutation"
 # fresh isolated dataset for the non-mutated browser journey.
 trap - EXIT
 restore
-AUSTRO_POSTGRES_DSN="$BROWSER_E2E_OWNER_DSN" go run ./cmd/browser-e2e-setup -mode=cleanup
-AUSTRO_POSTGRES_DSN="$BROWSER_E2E_OWNER_DSN" go run ./cmd/browser-e2e-setup
+AUSTRO_POSTGRES_DSN="$AUSTRO_POSTGRES_DSN" go run ./cmd/browser-e2e-setup -mode=cleanup
+AUSTRO_POSTGRES_DSN="$AUSTRO_POSTGRES_DSN" go run ./cmd/browser-e2e-setup
 
 echo "MUTATION_SUITE_PASS: browser authorization mutation was caught and restored"
