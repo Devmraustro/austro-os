@@ -1412,8 +1412,313 @@ paths:
         - Principle 9 — Security by Design
         - Principle 10 — Privacy by Design
 
+  /publications:
+    post:
+      summary: Queue a publication draft
+      operationId: createPublication
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: false
+          schema:
+            type: string
+            maxLength: 128
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePublicationRequest'
+      responses:
+        '201':
+          description: Queued publication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Publication'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+      principles:
+        - Principle 1 — Vision First
+    get:
+      summary: List publications in the caller workspace
+      operationId: listPublications
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [queued, review, approved, published, failed, rejected, cancelled]
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        '200':
+          description: Bounded deterministic publication page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicationList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+      principles:
+        - Principle 10 — Privacy by Design
+  /publications/{id}:
+    get:
+      summary: Get one publication status
+      operationId: getPublication
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PublicationID'
+      responses:
+        '200':
+          description: Publication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Publication'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      principles:
+        - Principle 10 — Privacy by Design
+  /publications/{id}/submit:
+    post:
+      summary: Submit a queued publication for review
+      operationId: submitPublication
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PublicationID'
+      responses:
+        '200':
+          description: Publication in review
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Publication'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      principles:
+        - Principle 11 — Human Oversight
+  /publications/{id}/approve:
+    post:
+      summary: Approve a publication as a workspace admin
+      operationId: approvePublication
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PublicationID'
+      responses:
+        '200':
+          description: Approved publication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Publication'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      principles:
+        - Principle 11 — Human Oversight
+  /publications/{id}/reject:
+    post:
+      summary: Reject a publication as a workspace admin
+      operationId: rejectPublication
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PublicationID'
+      responses:
+        '200':
+          description: Rejected publication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Publication'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+      principles:
+        - Principle 11 — Human Oversight
+  /publications/{id}/publish:
+    post:
+      summary: Deliver an approved publication
+      operationId: publishPublication
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PublicationID'
+      responses:
+        '200':
+          description: Published publication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Publication'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '502':
+          description: Delivery failed; inspect publication status for the durable failure reason
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 11 — Human Oversight
+  /publications/{id}/retry:
+    post:
+      summary: Retry a failed publication delivery
+      operationId: retryPublication
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PublicationID'
+      responses:
+        '200':
+          description: Recovered and published publication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Publication'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '502':
+          description: Retry failed; the publication remains failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 11 — Human Oversight
 components:
+  parameters:
+    PublicationID:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
   schemas:
+    CreatePublicationRequest:
+      type: object
+      additionalProperties: false
+      required: [title, body, platform]
+      properties:
+        title:
+          type: string
+          maxLength: 200
+        body:
+          type: string
+          maxLength: 10000
+        platform:
+          type: string
+          maxLength: 64
+    Publication:
+      type: object
+      required: [id, workspace_id, title, body, platform, status, content_hash, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        workspace_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        body:
+          type: string
+        platform:
+          type: string
+        status:
+          type: string
+          enum: [queued, review, approved, published, failed, rejected, cancelled]
+        content_hash:
+          type: string
+        idempotency_key:
+          type: string
+        external_reference:
+          type: string
+        failure_reason:
+          type: string
+        approved_by:
+          type: string
+        approved_at:
+          type: string
+          format: date-time
+        rejected_by:
+          type: string
+        rejected_at:
+          type: string
+          format: date-time
+        published_by:
+          type: string
+        published_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    PublicationList:
+      type: object
+      required: [publications, count, limit]
+      properties:
+        publications:
+          type: array
+          items:
+            $ref: '#/components/schemas/Publication'
+        count:
+          type: integer
+        limit:
+          type: integer
     MemoryReadResponse:
       type: object
       additionalProperties: false

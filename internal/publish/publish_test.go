@@ -2,6 +2,7 @@ package publish
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -313,4 +314,43 @@ func TestValidateInput(t *testing.T) {
 
 func ctx() context.Context {
 	return context.Background()
+}
+
+type toggledPublisher struct {
+	fail bool
+}
+
+func (p *toggledPublisher) Publish(_ context.Context, publication *Publication) (string, error) {
+	if p.fail {
+		return "", errors.New("delivery unavailable")
+	}
+	return StubPublisher{}.Publish(context.Background(), publication)
+}
+
+func TestPublishFailureIsPersistedAndRetryRecovers(t *testing.T) {
+	store := newMemStore()
+	adapter := &toggledPublisher{fail: true}
+	svc := NewService(store, adapter, &countingSink{}, nil)
+	ws := validWorkspace()
+	p := basePublication(t, store, ws, "failure")
+	_, err := svc.ToReview(ctx(), ws, p.ID)
+	if err != nil { t.Fatalf("ToReview: %v", err) }
+	_, err = svc.Approve(ctx(), ws, p.ID, "alice")
+	if err != nil { t.Fatalf("Approve: %v", err) }
+	failed, err := svc.Publish(ctx(), ws, p.ID, "bob")
+	if err == nil { t.Fatal("expected publisher error") }
+	if failed == nil || failed.Status != StatusFailed || failed.FailureReason == "" {
+		t.Fatalf("expected durable failed outcome, got publication=%+v error=%v", failed, err)
+	}
+	stored, err := svc.Get(ctx(), ws, p.ID)
+	if err != nil { t.Fatalf("Get failed outcome: %v", err) }
+	if stored.Status != StatusFailed || stored.FailureReason == "" {
+		t.Fatalf("failed outcome was not persisted: %+v", stored)
+	}
+	adapter.fail = false
+	recovered, err := svc.Retry(ctx(), ws, p.ID, "bob")
+	if err != nil { t.Fatalf("Retry: %v", err) }
+	if recovered.Status != StatusPublished || recovered.ExternalReference == "" {
+		t.Fatalf("expected retry recovery, got %+v", recovered)
+	}
 }

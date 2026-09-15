@@ -20,6 +20,7 @@
 
   var ACCESS = "austro.access";
   var REFRESH = "austro.refresh";
+  var currentRole = "";
 
   function token() { return sessionStorage.getItem(ACCESS); }
   function setTokens(access, refresh) {
@@ -45,6 +46,9 @@
   function request(method, path, body, useAuth) {
     var headers = {};
     if (body !== undefined) headers["Content-Type"] = "application/json";
+    if (method === "POST" && path === "/publications" && publicationKey) {
+      headers["Idempotency-Key"] = publicationKey;
+    }
     if (useAuth && token()) headers["Authorization"] = "Bearer " + token();
     return fetch(path, {
       method: method,
@@ -113,6 +117,7 @@
   }
 
   function renderIdentity(me) {
+    currentRole = me.role || "";
     el("identity").textContent = me.username + " · " + me.role;
     var fields = {
       username: me.username,
@@ -203,6 +208,7 @@
     return authenticated("GET", "/api/me").then(function (r) {
       if (r.status !== 200 || !r.body) { signOut(false); return; }
       renderIdentity(r.body);
+      loadPublications(false);
     });
   }
 
@@ -862,6 +868,155 @@
     }).catch(function () {
       setMessage(msg, "Could not reach the API. The document was not changed.", false);
     });
+  });
+
+  /* ---------- publishing approvals ---------- */
+
+  var publicationKey = null;
+
+  function publicationQuery() {
+    var parts = ["limit=" + encodeURIComponent(el("publication-limit").value)];
+    var status = el("publication-status").value;
+    if (status) parts.push("status=" + encodeURIComponent(status));
+    return "/publications?" + parts.join("&");
+  }
+
+  function publicationButton(label, fn) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.addEventListener("click", fn);
+    return button;
+  }
+
+  function publicationAction(pub, label, path) {
+    return publicationButton(label, function () {
+      var msg = el("publication-message");
+      setMessage(msg, "", false);
+      authenticated("POST", "/publications/" + encodeURIComponent(pub.id) + path)
+        .then(function (r) {
+          if (r.status !== 200) {
+            setMessage(msg, "Action refused: " + errorMessage(r), false);
+            return;
+          }
+          setMessage(msg, "Publication is now " + (r.body && r.body.status ? r.body.status : "updated") + ".", true);
+          loadPublications(false);
+        }).catch(function () {
+          setMessage(msg, "Could not reach the API. The publication was not changed.", false);
+        });
+    });
+  }
+
+  function renderPublicationRows(publications) {
+    var body = el("publication-body-rows");
+    body.innerHTML = "";
+    for (var i = 0; i < publications.length; i++) {
+      (function (pub) {
+        var row = document.createElement("tr");
+        var title = document.createElement("td");
+        title.textContent = pub.title;
+        row.appendChild(title);
+        var platform = document.createElement("td");
+        platform.textContent = pub.platform;
+        row.appendChild(platform);
+        var status = document.createElement("td");
+        status.textContent = pub.status;
+        if (pub.status === "failed") {
+          status.title = pub.failure_reason || "delivery failed";
+          status.className = "bad";
+        }
+        row.appendChild(status);
+        var updated = document.createElement("td");
+        updated.textContent = pub.updated_at ? String(pub.updated_at).replace("T", " ").slice(0, 19) : "—";
+        row.appendChild(updated);
+        var actions = document.createElement("td");
+        if (pub.status === "queued") {
+          actions.appendChild(publicationAction(pub, "Submit", "/submit"));
+        } else if (pub.status === "review" && currentRole === "workspace_admin") {
+          actions.appendChild(publicationAction(pub, "Approve", "/approve"));
+          actions.appendChild(document.createTextNode(" "));
+          actions.appendChild(publicationAction(pub, "Reject", "/reject"));
+        } else if (pub.status === "approved" && currentRole === "workspace_admin") {
+          actions.appendChild(publicationAction(pub, "Publish", "/publish"));
+        } else if (pub.status === "failed") {
+          if (currentRole === "workspace_admin") {
+            actions.appendChild(publicationAction(pub, "Retry", "/retry"));
+            actions.appendChild(document.createTextNode(" "));
+          }
+          var failed = document.createElement("span");
+          failed.className = "muted";
+          failed.textContent = pub.failure_reason || "delivery failed";
+          actions.appendChild(failed);
+        } else {
+          actions.appendChild(document.createTextNode("—"));
+        }
+        row.appendChild(actions);
+        body.appendChild(row);
+      })(publications[i]);
+    }
+  }
+
+  function loadPublications() {
+    var loading = el("publication-loading");
+    var table = el("publication-table");
+    var empty = el("publication-empty");
+    loading.hidden = false;
+    return authenticated("GET", publicationQuery()).then(function (r) {
+      loading.hidden = true;
+      if (r.status === 403) {
+        table.hidden = true;
+        empty.hidden = true;
+        setMessage(el("publication-message"), "Publishing requires a workspace identity.", false);
+        return;
+      }
+      if (r.status !== 200 || !r.body) {
+        table.hidden = true;
+        setMessage(el("publication-message"), "Could not load publications: " + errorMessage(r), false);
+        return;
+      }
+      var publications = r.body.publications || [];
+      renderPublicationRows(publications);
+      table.hidden = publications.length === 0;
+      empty.hidden = publications.length !== 0;
+      setMessage(el("publication-message"), "", true);
+    }).catch(function () {
+      loading.hidden = true;
+      setMessage(el("publication-message"), "Could not reach the API.", false);
+    });
+  }
+
+  el("publication-create-form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var btn = ev.target.querySelector("button[type=submit]");
+    var msg = el("publication-create-message");
+    setMessage(msg, "", false);
+    btn.disabled = true;
+    var key = publicationKey || (window.crypto && window.crypto.randomUUID ? window.crypto.randomUUID() : String(Date.now()));
+    publicationKey = key;
+    authenticated("POST", "/publications", {
+      title: el("publication-title").value,
+      body: el("publication-body").value,
+      platform: el("publication-platform").value
+    }).then(function (r) {
+      btn.disabled = false;
+      if (r.status !== 201 || !r.body) {
+        setMessage(msg, "Draft was not saved: " + errorMessage(r), false);
+        return;
+      }
+      publicationKey = null;
+      el("publication-create-form").reset();
+      el("publication-platform").value = "stub";
+      setMessage(msg, "Draft saved. Submit it for review when ready.", true);
+      loadPublications(false);
+    }).catch(function () {
+      btn.disabled = false;
+      setMessage(msg, "Could not reach the API. The draft was not confirmed.", false);
+    });
+  });
+
+  el("publication-form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    loadPublications(false);
   });
 
   /* ---------- memory ---------- */

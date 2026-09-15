@@ -105,6 +105,7 @@ func Bootstrap(owner *sql.DB, topo *Topology) error {
 		{"migrate-audit-events", func() error { return migrateAuditEvents(owner) }},
 		{"migrate-tasks", func() error { return migrateTasks(owner) }},
 		{"migrate-knowledge", func() error { return migrateKnowledge(owner) }},
+		{"migrate-publications", func() error { return migratePublications(owner) }},
 		{"enable-rls", func() error { return enableRLS(owner) }},
 		// Roles before policies: CREATE POLICY ... TO <role> requires the role
 		// to exist, so provisioning them afterwards fails the policy step.
@@ -322,11 +323,15 @@ func createTables(db *sql.DB) error {
 		platform TEXT NOT NULL,
 		status TEXT NOT NULL,
 		content_hash TEXT NOT NULL,
+		idempotency_key TEXT,
+		external_reference TEXT,
+		failure_reason TEXT,
 		approved_by TEXT,
 		approved_at TIMESTAMP,
 		rejected_by TEXT,
 		rejected_at TIMESTAMP,
 		published_at TIMESTAMP,
+		published_by TEXT,
 		created_at TIMESTAMP DEFAULT NOW(),
 		updated_at TIMESTAMP DEFAULT NOW()
 	);
@@ -550,6 +555,34 @@ func migrateKnowledge(db *sql.DB) error {
 	`
 	if _, err := db.Exec(migration); err != nil {
 		return fmt.Errorf("migrate knowledge: %w", err)
+	}
+	return nil
+}
+
+// migratePublications adds the delivery outcome and idempotency fields to the
+// existing publication aggregate. It is deliberately additive so deployments
+// that already have Phase 2 data can roll forward without a destructive reset.
+func migratePublications(db *sql.DB) error {
+	migration := `
+	ALTER TABLE publications ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
+	ALTER TABLE publications ADD COLUMN IF NOT EXISTS external_reference TEXT;
+	ALTER TABLE publications ADD COLUMN IF NOT EXISTS failure_reason TEXT;
+	ALTER TABLE publications ADD COLUMN IF NOT EXISTS published_by TEXT;
+	DO $$
+	BEGIN
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'publications_status_valid') THEN
+			ALTER TABLE publications ADD CONSTRAINT publications_status_valid CHECK (status IN (
+				'queued', 'review', 'approved', 'published', 'failed', 'rejected', 'cancelled'));
+		END IF;
+	END$$;
+	CREATE UNIQUE INDEX IF NOT EXISTS uq_publications_workspace_idempotency
+		ON publications(workspace_id, idempotency_key)
+		WHERE idempotency_key IS NOT NULL;
+	CREATE INDEX IF NOT EXISTS idx_publications_workspace_created
+		ON publications(workspace_id, created_at DESC, id DESC);
+	`
+	if _, err := db.Exec(migration); err != nil {
+		return fmt.Errorf("migrate publications: %w", err)
 	}
 	return nil
 }

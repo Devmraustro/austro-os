@@ -107,6 +107,7 @@ func main() {
 		logMemoryEvents{},
 	)
 	memoryHandler := api.NewMemoryHandler(memoryBank).SetAuditSink(auditStore)
+	publicationHandler := api.NewPublicationHandler(rt.Publish)
 
 	logger.NewEntry("austro-os-startup").
 		With("version", "1.0").
@@ -242,6 +243,17 @@ func main() {
 		{Method: http.MethodPatch, Pattern: "/knowledge/{id}"}:  knowledgeHandler.Update,
 		{Method: http.MethodDelete, Pattern: "/knowledge/{id}"}: knowledgeHandler.Delete,
 		{Method: http.MethodPost, Pattern: "/knowledge/search"}: knowledgeHandler.Search,
+
+		// Publishing. Lifecycle changes are named commands, never arbitrary status
+		// writes; the handler binds the workspace and actor from verified claims.
+		{Method: http.MethodPost, Pattern: "/publications"}:                    publicationHandler.Create,
+		{Method: http.MethodGet, Pattern: "/publications"}:                     publicationHandler.List,
+		{Method: http.MethodGet, Pattern: "/publications/{id}"}:                publicationHandler.Get,
+		{Method: http.MethodPost, Pattern: "/publications/{id}/submit"}:       publicationHandler.Submit,
+		{Method: http.MethodPost, Pattern: "/publications/{id}/approve"}:       publicationHandler.Approve,
+		{Method: http.MethodPost, Pattern: "/publications/{id}/reject"}:        publicationHandler.Reject,
+		{Method: http.MethodPost, Pattern: "/publications/{id}/publish"}:       publicationHandler.Publish,
+		{Method: http.MethodPost, Pattern: "/publications/{id}/retry"}:         publicationHandler.Retry,
 
 		// Memory is deliberately limited to key-based read/write operations.
 		{Method: http.MethodGet, Pattern: "/memory/{layer}/{key}"}: memoryHandler.Read,

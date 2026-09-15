@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"austro-os/internal/composition"
 	"austro-os/internal/event"
@@ -21,13 +22,38 @@ type pipelineEventDetails struct {
 	Stage string `json:"stage"`
 }
 
+type publicationEventDetails struct {
+	Event string `json:"event"`
+}
+
 // newHandler returns the worker event handler for the composed runtime. It
 // advances creator pipelines from pipeline.* events (the message-driven
 // orchestration loop, ADR-010) and acknowledges everything else; publication
-// events are processed synchronously by the publishing service, so the worker
-// only observes them.
+// events are processed synchronously by the publishing service; the worker
+// validates and observes their durable lifecycle messages without redelivering.
 func newHandler(rt *composition.Runtime) func(*event.UniversalEnvelope) error {
 	return func(env *event.UniversalEnvelope) error {
+		if env.TargetType == "publication" {
+			// Publishing delivery is synchronous in the existing publish.Service:
+			// this queue message is the durable lifecycle observation emitted only
+			// after the state write. The worker must nevertheless parse and validate
+			// publication messages instead of blindly acknowledging every unknown
+			// target; malformed or unscoped messages are permanent failures.
+			var d publicationEventDetails
+			if err := json.Unmarshal(env.Details, &d); err != nil {
+				return worker.PermanentErrorf("decode publication event details: %v", err)
+			}
+			if !strings.HasPrefix(d.Event, "publication.") {
+				return worker.PermanentErrorf("publication event carries invalid event %q", d.Event)
+			}
+			if _, err := uuid.Parse(env.WorkspaceID); err != nil || env.TargetID == uuid.Nil {
+				return worker.PermanentErrorf("publication event is missing a valid workspace or publication id")
+			}
+			logger.NewEntry("worker-publication-observed").
+				With("event", d.Event).With("publication_id", env.TargetID).
+				With("outcome", env.Outcome).Log()
+			return nil
+		}
 		if env.TargetType != "pipeline" {
 			logger.NewEntry("worker-event-ack").
 				With("event_type", string(env.EventType)).

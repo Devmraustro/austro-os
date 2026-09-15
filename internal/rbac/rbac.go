@@ -108,7 +108,7 @@ type Rule struct {
 // for the later Phase 3 steps that implement them, and remain denied until an
 // explicit rule plus a registered route both exist.
 func Rules() []Rule {
-	return []Rule{
+	rules := []Rule{
 		// /api/me: an authenticated principal's own safe profile. No database
 		// workspace is accessed, so no binding is required.
 		{
@@ -281,6 +281,24 @@ func Rules() []Rule {
 			Principle:       "Principle 9 - Security by Design",
 		},
 	}
+	return append(rules, publicationRules()...)
+}
+
+// publicationRules is the explicit tenant Publishing contract. Members may
+// draft, read and submit; only workspace admins may make the human approval,
+// rejection and release decisions. Founders have no workspace context and are
+// intentionally absent from every publication rule.
+func publicationRules() []Rule {
+	return []Rule{
+		{Action: "POST", ResourcePattern: "/publications", Roles: []Role{RoleWorkspaceAdmin, RoleWorkspaceMember}, Scope: ScopeSelf, Principle: "Principle 1 - Vision First"},
+		{Action: "GET", ResourcePattern: "/publications", Roles: []Role{RoleWorkspaceAdmin, RoleWorkspaceMember}, Scope: ScopeSelf, Principle: "Principle 10 - Privacy by Design"},
+		{Action: "GET", ResourcePattern: "/publications/{id}", Roles: []Role{RoleWorkspaceAdmin, RoleWorkspaceMember}, Scope: ScopeSelf, Principle: "Principle 10 - Privacy by Design"},
+		{Action: "POST", ResourcePattern: "/publications/{id}/submit", Roles: []Role{RoleWorkspaceAdmin, RoleWorkspaceMember}, Scope: ScopeSelf, Principle: "Principle 11 - Human Oversight"},
+		{Action: "POST", ResourcePattern: "/publications/{id}/approve", Roles: []Role{RoleWorkspaceAdmin}, Scope: ScopeSelf, Principle: "Principle 11 - Human Oversight"},
+		{Action: "POST", ResourcePattern: "/publications/{id}/reject", Roles: []Role{RoleWorkspaceAdmin}, Scope: ScopeSelf, Principle: "Principle 11 - Human Oversight"},
+		{Action: "POST", ResourcePattern: "/publications/{id}/publish", Roles: []Role{RoleWorkspaceAdmin}, Scope: ScopeSelf, Principle: "Principle 11 - Human Oversight"},
+		{Action: "POST", ResourcePattern: "/publications/{id}/retry", Roles: []Role{RoleWorkspaceAdmin}, Scope: ScopeSelf, Principle: "Principle 11 - Human Oversight"},
+	}
 }
 
 // ImplementedRules returns the rules for routes actually registered by the
@@ -289,7 +307,7 @@ func Rules() []Rule {
 // administration surface (GET/POST /workspaces, GET /workspaces/{id}) is
 // registered by the server, so its rules are seeded here.
 func ImplementedRules() []Rule {
-	return []Rule{
+	rules := []Rule{
 		{
 			Action:          "GET",
 			ResourcePattern: "/api/me",
@@ -488,6 +506,7 @@ func ImplementedRules() []Rule {
 			Principle:       "Principle 9 - Security by Design",
 		},
 	}
+	return append(rules, publicationRules()...)
 }
 
 // PermissionsForRole returns the explicit permissions (HTTP action -> route
@@ -510,8 +529,8 @@ func PermissionsForRole(r Role) map[string][]string {
 		return map[string][]string{
 			"GET": {"/api/me", "/workspaces/{id}", "/workspaces/{id}/audit/events",
 				"/tasks", "/tasks/{id}",
-				"/knowledge", "/knowledge/{id}", "/memory/{layer}/{key}"},
-			"POST":   {"/tasks", "/tasks/{id}/transition", "/knowledge", "/knowledge/search"},
+				"/knowledge", "/knowledge/{id}", "/memory/{layer}/{key}", "/publications", "/publications/{id}"},
+			"POST":   {"/tasks", "/tasks/{id}/transition", "/knowledge", "/knowledge/search", "/publications", "/publications/{id}/submit", "/publications/{id}/approve", "/publications/{id}/reject", "/publications/{id}/publish", "/publications/{id}/retry"},
 			"PATCH":  {"/tasks/{id}", "/knowledge/{id}"},
 			"PUT":    {"/memory/{layer}/{key}"},
 			"DELETE": {"/knowledge/{id}"},
@@ -520,8 +539,8 @@ func PermissionsForRole(r Role) map[string][]string {
 		return map[string][]string{
 			"GET": {"/api/me", "/workspaces/{id}/audit/events",
 				"/tasks", "/tasks/{id}",
-				"/knowledge", "/knowledge/{id}", "/memory/{layer}/{key}"},
-			"POST":   {"/tasks", "/tasks/{id}/transition", "/knowledge", "/knowledge/search"},
+				"/knowledge", "/knowledge/{id}", "/memory/{layer}/{key}", "/publications", "/publications/{id}"},
+			"POST":   {"/tasks", "/tasks/{id}/transition", "/knowledge", "/knowledge/search", "/publications", "/publications/{id}/submit"},
 			"PATCH":  {"/tasks/{id}", "/knowledge/{id}"},
 			"PUT":    {"/memory/{layer}/{key}"},
 			"DELETE": {"/knowledge/{id}"},

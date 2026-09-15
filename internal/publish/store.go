@@ -17,8 +17,9 @@ type PublicationStore interface {
 	Get(ctx context.Context, workspaceID, id uuid.UUID) (*Publication, error)
 	// List returns publications in a workspace, optionally filtered by status.
 	List(ctx context.Context, workspaceID uuid.UUID, status *Status) ([]*Publication, error)
-	// Update persists field/status changes for a publication owned by the
+	// Update persists field/status/delivery changes for a publication owned by the
 	// workspace.
+	// Implementations must keep the write workspace-bound and atomic.
 	Update(ctx context.Context, workspaceID uuid.UUID, p *Publication) (*Publication, error)
 }
 

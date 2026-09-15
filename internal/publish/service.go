@@ -38,8 +38,37 @@ func NewService(store PublicationStore, pub Publisher, audit AuditSink, events E
 	return &Service{store: store, pub: pub, audit: audit, events: events, throttle: security.NewThrottler(time.Minute, 10)}
 }
 
-// Create persists a new queued publication for the workspace.
+// Create persists a new queued publication for the workspace. The no-key form
+// remains useful to domain callers; HTTP callers should use CreateWithIdempotency.
 func (s *Service) Create(ctx context.Context, workspaceID uuid.UUID, goalID, taskID *uuid.UUID, title, body, platform string) (*Publication, error) {
+	return s.create(ctx, workspaceID, goalID, taskID, title, body, platform, "")
+}
+
+// CreateWithIdempotency persists a publication under a caller-supplied key.
+// When the concrete store supports lookup, a repeated key returns the original
+// aggregate instead of creating a second publication. The database also has a
+// unique workspace/key constraint as a final race-safe backstop.
+func (s *Service) CreateWithIdempotency(ctx context.Context, workspaceID uuid.UUID, goalID, taskID *uuid.UUID, title, body, platform, key string) (*Publication, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return s.Create(ctx, workspaceID, goalID, taskID, title, body, platform)
+	}
+	if len(key) > 128 {
+		return nil, ErrInvalidInput
+	}
+	if finder, ok := s.store.(interface {
+		GetByIdempotency(context.Context, uuid.UUID, string) (*Publication, error)
+	}); ok {
+		if existing, err := finder.GetByIdempotency(ctx, workspaceID, key); err == nil {
+			return existing, nil
+		} else if err != ErrNotFound {
+			return nil, err
+		}
+	}
+	return s.create(ctx, workspaceID, goalID, taskID, title, body, platform, key)
+}
+
+func (s *Service) create(ctx context.Context, workspaceID uuid.UUID, goalID, taskID *uuid.UUID, title, body, platform, idempotencyKey string) (*Publication, error) {
 	if workspaceID == uuid.Nil {
 		return nil, ErrWorkspaceMismatch
 	}
@@ -47,23 +76,36 @@ func (s *Service) Create(ctx context.Context, workspaceID uuid.UUID, goalID, tas
 	if err != nil {
 		s.audit.Record(ctx, AuditRecord{
 			EventType: "publication.create", ConstitutionalPrinciple: "Vision First",
-			Outcome: "failed", WorkspaceID: workspaceID.String(), ActorType: "system",
+			Outcome: "failed", WorkspaceID: workspaceID.String(), ActorType: actorType(ctx, "system"), ActorID: actorID(ctx),
 		})
 		return nil, err
 	}
+	p.IdempotencyKey = idempotencyKey
 	id := p.ID
 	stored, err := s.store.Create(ctx, p)
 	if err != nil {
+		// A concurrent request may have won the unique key race. Resolve it to
+		// the already-created aggregate rather than leaking a database error or
+		// creating a second delivery record.
+		if idempotencyKey != "" {
+			if finder, ok := s.store.(interface {
+				GetByIdempotency(context.Context, uuid.UUID, string) (*Publication, error)
+			}); ok {
+				if existing, lookupErr := finder.GetByIdempotency(ctx, workspaceID, idempotencyKey); lookupErr == nil {
+					return existing, nil
+				}
+			}
+		}
 		s.audit.Record(ctx, AuditRecord{
 			EventType: "publication.create", ConstitutionalPrinciple: "Vision First",
-			Outcome: "failed", WorkspaceID: workspaceID.String(), PublicationID: id.String(), ActorType: "system",
+			Outcome: "failed", WorkspaceID: workspaceID.String(), PublicationID: id.String(), ActorType: actorType(ctx, "system"), ActorID: actorID(ctx),
 		})
 		return nil, err
 	}
 	p = stored
 	s.audit.Record(ctx, AuditRecord{
 		EventType: "publication.create", ConstitutionalPrinciple: "Vision First",
-		Outcome: "success", WorkspaceID: workspaceID.String(), PublicationID: p.ID.String(), ActorType: "system",
+		Outcome: "success", WorkspaceID: workspaceID.String(), PublicationID: p.ID.String(), ActorType: actorType(ctx, "system"), ActorID: actorID(ctx),
 	})
 	_ = s.events.Publish(ctx, "publication.created", p.ID, workspaceID, traceOf(ctx), spanOf(ctx))
 	log(workspaceID, "publication-created").With("publication_id", p.ID).With("status", p.Status).Log()
@@ -72,7 +114,7 @@ func (s *Service) Create(ctx context.Context, workspaceID uuid.UUID, goalID, tas
 
 // ToReview moves a queued publication into review.
 func (s *Service) ToReview(ctx context.Context, workspaceID, id uuid.UUID) (*Publication, error) {
-	return s.transition(ctx, workspaceID, id, StatusReview, "system", "")
+	return s.transition(ctx, workspaceID, id, StatusReview, actorType(ctx, "human"), actorID(ctx))
 }
 
 // Approve records mandatory human approval (review → approved). A publication
@@ -161,20 +203,27 @@ func (s *Service) Publish(ctx context.Context, workspaceID, id uuid.UUID, humanA
 		})
 		return nil, ErrApprovalRequired
 	}
-	if _, err := s.store.Update(ctx, workspaceID, p); err != nil {
-		return nil, err
-	}
 	ref, err := s.pub.Publish(ctx, p)
 	if err != nil {
+		// Delivery failure is a domain result, not a successful acknowledgement.
+		// Persist it before returning the adapter error so operators and the UI
+		// can distinguish approved from failed delivery after a restart.
+		p.FailureReason = failureReason(err)
+		failed, persistErr := s.apply(ctx, workspaceID, p, StatusFailed, "human", humanActor)
 		s.audit.Record(ctx, AuditRecord{
 			EventType: "publication.publish", ConstitutionalPrinciple: "Security by Design",
 			Outcome: "failed", WorkspaceID: workspaceID.String(), PublicationID: id.String(),
 			ActorType: "human", ActorID: humanActor, TraceID: traceOf(ctx), SpanID: spanOf(ctx),
 		})
-		return nil, err
+		if persistErr != nil {
+			return nil, persistErr
+		}
+		return failed, err
 	}
 	now := time.Now().UTC()
 	p.PublishedAt = &now
+	p.PublishedBy = &humanActor
+	p.ExternalReference = ref
 	updated, err := s.apply(ctx, workspaceID, p, StatusPublished, "human", humanActor)
 	if updated != nil {
 		// Minimal disclosure: never emit a raw external/platform reference;
@@ -184,6 +233,44 @@ func (s *Service) Publish(ctx context.Context, workspaceID, id uuid.UUID, humanA
 			With("platform", updated.Platform).With("ref", security.RedactSecret(ref)).With("ref_digest", digest).Log()
 	}
 	return updated, err
+}
+
+// Retry re-attempts a failed delivery while preserving the recorded human
+// approval. It is the only recovery path out of FAILED; callers cannot turn it
+// into an arbitrary status update. A failed retry remains FAILED with a new,
+// bounded failure reason.
+func (s *Service) Retry(ctx context.Context, workspaceID, id uuid.UUID, humanActor string) (*Publication, error) {
+	if strings.TrimSpace(humanActor) == "" {
+		return nil, ErrUnauthorizedPublisher
+	}
+	if !s.throttle.Allow(workspaceID.String()) {
+		return nil, ErrRateLimited
+	}
+	p, err := s.getOwned(ctx, workspaceID, id)
+	if err != nil { return nil, err }
+	if p.Status != StatusFailed { return nil, ErrInvalidTransition }
+	if p.ApprovedBy == nil || p.ApprovedAt == nil { return nil, ErrApprovalRequired }
+
+	// Publisher adapters intentionally accept only approved aggregates. Retry
+	// keeps FAILED durable in the store but uses the approved state for this
+	// in-memory delivery attempt; no client can observe or set this state.
+	p.Status = StatusApproved
+	ref, err := s.pub.Publish(ctx, p)
+	if err != nil {
+		p.Status = StatusFailed
+		p.FailureReason = failureReason(err)
+		p.UpdatedAt = time.Now().UTC()
+		failed, persistErr := s.store.Update(ctx, workspaceID, p)
+		s.audit.Record(ctx, AuditRecord{EventType: "publication.retry", ConstitutionalPrinciple: "Human Oversight", Outcome: "failed", WorkspaceID: workspaceID.String(), PublicationID: id.String(), ActorType: "human", ActorID: humanActor, TraceID: traceOf(ctx), SpanID: spanOf(ctx)})
+		if persistErr != nil { return nil, persistErr }
+		return failed, err
+	}
+	p.FailureReason = ""
+	p.ExternalReference = ref
+	now := time.Now().UTC()
+	p.PublishedAt = &now
+	p.PublishedBy = &humanActor
+	return s.apply(ctx, workspaceID, p, StatusPublished, "human", humanActor)
 }
 
 // Cancel cancels a queued or in-review publication.
@@ -253,6 +340,42 @@ func (s *Service) getOwned(ctx context.Context, workspaceID, id uuid.UUID) (*Pub
 // HasApproval reports whether a recorded human approval is present.
 func (p *Publication) HasApproval() bool {
 	return p.Status == StatusApproved && p.ApprovedBy != nil && p.ApprovedAt != nil
+}
+
+func actorID(ctx context.Context) string {
+	if v, ok := ctx.Value(actorKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
+func actorType(ctx context.Context, fallback string) string {
+	if actorID(ctx) != "" {
+		return "human"
+	}
+	return fallback
+}
+
+// WithActor attaches the verified caller to a domain context. The handler is
+// the only layer allowed to obtain this value from a token.
+func WithActor(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, actorKey{}, strings.TrimSpace(id))
+}
+
+type actorKey struct{}
+
+func failureReason(err error) string {
+	if err == nil {
+		return "delivery_failed"
+	}
+	reason := strings.TrimSpace(err.Error())
+	if reason == "" {
+		return "delivery_failed"
+	}
+	if len(reason) > 512 {
+		return reason[:512]
+	}
+	return reason
 }
 
 func log(workspaceID uuid.UUID, msg string) *logger.Entry {

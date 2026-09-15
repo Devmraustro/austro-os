@@ -83,6 +83,17 @@ func Routes() []Route {
 		{http.MethodDelete, "/knowledge/{id}"},
 		{http.MethodPost, "/knowledge/search"},
 
+		// Publishing is server-authoritative: clients can create/read and name
+		// lifecycle commands, but cannot PATCH an arbitrary status.
+		{http.MethodPost, "/publications"},
+		{http.MethodGet, "/publications"},
+		{http.MethodGet, "/publications/{id}"},
+		{http.MethodPost, "/publications/{id}/submit"},
+		{http.MethodPost, "/publications/{id}/approve"},
+		{http.MethodPost, "/publications/{id}/reject"},
+		{http.MethodPost, "/publications/{id}/publish"},
+		{http.MethodPost, "/publications/{id}/retry"},
+
 		// Memory is intentionally key-based. There is no list, search or delete
 		// operation in the HTTP contract.
 		{http.MethodGet, "/memory/{layer}/{key}"},
