@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -253,6 +254,15 @@ func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	priority := task.Priority("")
 	if req.Priority != nil {
+		// On update an explicit-but-empty priority is refused rather than
+		// defaulted. Defaulting here would silently reset the priority of any
+		// task patched with "priority": "", and an absent field -- not an empty
+		// one -- is how a caller says "leave it alone".
+		if strings.TrimSpace(*req.Priority) == "" {
+			writeJSONError(w, http.StatusBadRequest, "priority must not be blank")
+			h.record(r, claims, "update-task", id, ws, "failed", "priority_blank")
+			return
+		}
 		p, ok := optionalPriority(w, *req.Priority)
 		if !ok {
 			h.record(r, claims, "update-task", id, ws, "failed", "invalid_priority")
@@ -401,7 +411,11 @@ func (h *TaskHandler) record(r *http.Request, claims *auth.Claims, action string
 		return
 	}
 	rec := audit.Record{
-		EventType:  "task." + strings.TrimPrefix(action, "task-"),
+		// The action names read "create-task", "transition-task" and so on; the
+		// audit event type is the verb alone, so "task.create" rather than
+		// "task.create-task". Deriving it here keeps the two spellings from
+		// drifting apart across call sites.
+		EventType:  "task." + strings.TrimSuffix(action, "-task"),
 		ActorType:  "user",
 		ActorID:    parseActorID(claims.ID),
 		TargetType: "task",
@@ -432,7 +446,17 @@ func (h *TaskHandler) record(r *http.Request, claims *auth.Claims, action string
 func parseTaskQuery(w http.ResponseWriter, r *http.Request) (task.ListQuery, bool) {
 	var q task.ListQuery
 	known := map[string]bool{"status": true, "limit": true, "cursor": true}
-	values := r.URL.Query()
+	// Parsed explicitly rather than through r.URL.Query(). That method swallows
+	// the parse error and returns whatever it managed to read, and since Go 1.17
+	// url.ParseQuery rejects ";" as a separator -- so a query string containing
+	// one had the offending pair silently dropped and the request served as
+	// though the parameter had never been sent. A caller whose cursor was
+	// mangled would get the first page back and believe it had paged forward.
+	values, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "malformed query string")
+		return q, false
+	}
 	for key := range values {
 		if !known[key] {
 			writeJSONError(w, http.StatusBadRequest, "unsupported query parameter: "+key)
@@ -479,12 +503,17 @@ func taskIDFromPath(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
 	return id, true
 }
 
-// optionalPriority validates a priority that may be omitted. Empty means "leave
-// it alone", which the service also treats as no change.
+// optionalPriority validates a priority that may be omitted.
+//
+// An omitted priority becomes normal rather than being passed through empty. The
+// domain requires a valid priority on create, so forwarding "" would turn an
+// optional field into a mandatory one and contradict both the OpenAPI contract
+// and the column default. On update an empty value still means "leave it
+// alone", which is what the service does with it.
 func optionalPriority(w http.ResponseWriter, raw string) (task.Priority, bool) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
-		return task.Priority(""), true
+		return task.PriorityNormal, true
 	}
 	p := task.Priority(trimmed)
 	if !task.ValidPriority(p) {
