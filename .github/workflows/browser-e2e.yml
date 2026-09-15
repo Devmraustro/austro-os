@@ -13,10 +13,54 @@ jobs:
     name: Real Chromium Creator/Pipelines E2E
     runs-on: ubuntu-latest
     timeout-minutes: 45
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: austro
+          POSTGRES_PASSWORD: austro
+          POSTGRES_DB: austro
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U austro -d austro" --health-interval 5s
+          --health-timeout 5s --health-retries 12
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s
+          --health-timeout 3s --health-retries 12
+
+      rabbitmq:
+        image: rabbitmq:3-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: austro
+          RABBITMQ_DEFAULT_PASS: austro
+          RABBITMQ_DEFAULT_VHOST: /
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping" --health-interval 5s
+          --health-timeout 5s --health-retries 12
+
     env:
       GOFLAGS: -mod=mod
       GOTOOLCHAIN: local
       GOPROXY: https://proxy.golang.org,direct
+      AUSTRO_ENV: development
+      AUSTRO_SERVER_ADDR: ":8080"
+      AUSTRO_POSTGRES_DSN: postgres://austro:austro@127.0.0.1:5432/austro?sslmode=disable
+      AUSTRO_POSTGRES_RUNTIME_DSN: postgres://austro_app:austro-runtime-pw@127.0.0.1:5432/austro?sslmode=disable
+      AUSTRO_REDIS_ADDR: 127.0.0.1:6379
+      AUSTRO_RABBITMQ_URL: amqp://austro:austro@127.0.0.1:5672
+      AUSTRO_JWT_SECRET: austro-dev-jwt-secret-key-min-32-chars
+      AUSTRO_JWT_REFRESH_SECRET: austro-dev-jwt-refresh-secret-min-32-chars
+      AUSTRO_AI_BACKEND: stub
+      AUSTRO_PUBLISH_BACKEND: stub
       BROWSER_E2E_BASE_URL: http://127.0.0.1:8080
 
     steps:
@@ -40,51 +84,34 @@ jobs:
         working-directory: browser-e2e
         run: npm ci --ignore-scripts
 
-      - name: Create isolated CI credentials
+      - name: Create isolated CI browser credentials
         shell: bash
         run: |
           set -euo pipefail
-          pg_password=$(openssl rand -hex 24)
-          runtime_password=$(openssl rand -hex 24)
-          redis_password=$(openssl rand -hex 24)
-          rabbit_password=$(openssl rand -hex 24)
           founder_password=$(openssl rand -hex 24)
           browser_password=$(openssl rand -hex 24)
           founder_username="browser-founder-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           browser_env_file="$RUNNER_TEMP/browser-e2e.env"
 
-          cat > .env <<EOF
-          AUSTRO_POSTGRES_PASSWORD=$pg_password
-          AUSTRO_POSTGRES_RUNTIME_PASSWORD=$runtime_password
-          AUSTRO_REDIS_PASSWORD=$redis_password
-          AUSTRO_RABBITMQ_USER=browser_e2e
-          AUSTRO_RABBITMQ_PASSWORD=$rabbit_password
-          AUSTRO_FOUNDER_USERNAME=$founder_username
-          AUSTRO_FOUNDER_PASSWORD=$founder_password
-          AUSTRO_AI_BACKEND=stub
-          AUSTRO_PUBLISH_BACKEND=stub
-          EOF
-          chmod 600 .env
-
-          echo "BROWSER_E2E_OWNER_DSN=postgres://austro:$pg_password@127.0.0.1:5432/austro?sslmode=disable" >> "$GITHUB_ENV"
+          echo "AUSTRO_FOUNDER_USERNAME=$founder_username" >> "$GITHUB_ENV"
+          echo "AUSTRO_FOUNDER_PASSWORD=$founder_password" >> "$GITHUB_ENV"
           echo "BROWSER_E2E_ENV_FILE=$browser_env_file" >> "$GITHUB_ENV"
           echo "BROWSER_E2E_FOUNDER_USERNAME=$founder_username" >> "$GITHUB_ENV"
           echo "BROWSER_E2E_FOUNDER_PASSWORD=$founder_password" >> "$GITHUB_ENV"
           echo "BROWSER_E2E_PASSWORD=$browser_password" >> "$GITHUB_ENV"
 
-          echo "::add-mask::$pg_password"
-          echo "::add-mask::$runtime_password"
-          echo "::add-mask::$redis_password"
-          echo "::add-mask::$rabbit_password"
           echo "::add-mask::$founder_password"
           echo "::add-mask::$browser_password"
 
-      - name: Start complete PostgreSQL, Redis, RabbitMQ, API, and worker stack
+      - name: Build and start real API and worker
         shell: bash
         run: |
           set -euo pipefail
-          docker compose -f docker-compose.yml -f docker-compose.browser-e2e.yml up -d --build postgres redis rabbitmq api worker
+          go build -o /tmp/austro-api .
+          go build -o /tmp/austro-worker ./cmd/worker
 
+          nohup /tmp/austro-api > /tmp/austro-api.log 2>&1 &
+          echo $! > /tmp/austro-api.pid
           api_ready=0
           for _ in $(seq 1 60); do
             if curl --fail --silent --show-error http://127.0.0.1:8080/health/live >/dev/null && \
@@ -96,14 +123,16 @@ jobs:
           done
           if [ "$api_ready" -ne 1 ]; then
             echo "API did not become ready"
-            docker compose -f docker-compose.yml -f docker-compose.browser-e2e.yml logs --no-color --tail=120 api
+            tail -n 160 /tmp/austro-api.log
             exit 1
           fi
 
+          nohup /tmp/austro-worker > /tmp/austro-worker.log 2>&1 &
+          echo $! > /tmp/austro-worker.pid
           worker_ready=0
           for _ in $(seq 1 60); do
-            if docker compose -f docker-compose.yml -f docker-compose.browser-e2e.yml ps --status running --services | grep -qx worker && \
-               docker compose -f docker-compose.yml -f docker-compose.browser-e2e.yml logs --no-color worker 2>/dev/null | grep -q '"message":"worker-started"'; then
+            if kill -0 "$(cat /tmp/austro-worker.pid)" 2>/dev/null && \
+               grep -q '"message":"worker-started"' /tmp/austro-worker.log; then
               worker_ready=1
               break
             fi
@@ -111,15 +140,15 @@ jobs:
           done
           if [ "$worker_ready" -ne 1 ]; then
             echo "worker did not report readiness"
-            docker compose -f docker-compose.yml -f docker-compose.browser-e2e.yml logs --no-color --tail=120 worker
+            tail -n 160 /tmp/austro-worker.log
             exit 1
           fi
-          echo "complete browser E2E stack is ready"
+          echo "real API and worker are ready"
 
       - name: Provision isolated browser identities and workspaces
         run: |
           set -euo pipefail
-          AUSTRO_POSTGRES_DSN="$BROWSER_E2E_OWNER_DSN" go run ./cmd/browser-e2e-setup
+          go run ./cmd/browser-e2e-setup
           cat "$BROWSER_E2E_ENV_FILE" >> "$GITHUB_ENV"
 
       - name: Install headless Chromium and system dependencies
@@ -175,15 +204,21 @@ jobs:
         run: |
           set -euo pipefail
           if [ -f "$BROWSER_E2E_ENV_FILE" ]; then
-            AUSTRO_POSTGRES_DSN="$BROWSER_E2E_OWNER_DSN" go run ./cmd/browser-e2e-setup -mode=cleanup
+            go run ./cmd/browser-e2e-setup -mode=cleanup
           else
             echo "browser E2E setup did not create an environment file"
           fi
 
-      - name: Stop complete browser E2E stack
+      - name: Stop API and worker processes
         if: always()
         shell: bash
         run: |
           set -euo pipefail
-          docker compose -f docker-compose.yml -f docker-compose.browser-e2e.yml down -v --remove-orphans
-          rm -f .env
+          for pid_file in /tmp/austro-api.pid /tmp/austro-worker.pid; do
+            if [ -f "$pid_file" ]; then
+              pid=$(cat "$pid_file")
+              if kill -0 "$pid" 2>/dev/null; then
+                kill "$pid"
+              fi
+            fi
+          done

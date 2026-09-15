@@ -1,9 +1,6 @@
 const { test, expect } = require('@playwright/test');
 const { execFileSync } = require('node:child_process');
-const path = require('node:path');
-
-const repoRoot = path.resolve(__dirname, '..');
-const composeFiles = ['-f', 'docker-compose.yml', '-f', 'docker-compose.browser-e2e.yml'];
+const { readFileSync } = require('node:fs');
 
 function env(name) {
   const value = process.env[name];
@@ -81,12 +78,16 @@ async function waitForAPI(page) {
   }).toBe(true);
 }
 
-function compose(action) {
-  return execFileSync('docker', ['compose', ...composeFiles, ...action], {
-    cwd: repoRoot,
+function stopAPI() {
+  const pid = Number(readFileSync('/tmp/austro-api.pid', 'utf8').trim());
+  process.kill(pid, 'SIGTERM');
+}
+
+function startAPI() {
+  execFileSync('bash', ['-c', 'nohup /tmp/austro-api > /tmp/austro-api.log 2>&1 & echo $! > /tmp/austro-api.pid'], {
     env: process.env,
     stdio: 'ignore',
-    timeout: 60000,
+    timeout: 30000,
   });
 }
 
@@ -208,13 +209,13 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
     // stack.
     let apiStopped = false;
     try {
-      compose(['stop', 'api']);
+      stopAPI();
       apiStopped = true;
       await adminPage.locator('#pipeline-form button[type="submit"]').click();
       await expect(adminPage.locator('#pipeline-message')).toContainText('Could not reach the API.');
     } finally {
       if (apiStopped) {
-        compose(['start', 'api']);
+        startAPI();
         await waitForAPI(adminPage);
       }
     }

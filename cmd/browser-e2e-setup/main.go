@@ -101,9 +101,9 @@ func setup(ctx context.Context, db *sql.DB, envFile string) {
 		"BROWSER_E2E_WORKSPACE_B":      workspaceB.ID.String(),
 		"BROWSER_E2E_WORKSPACE_A_NAME": workspaceA.Name,
 		"BROWSER_E2E_WORKSPACE_B_NAME": workspaceB.Name,
-		"BROWSER_E2E_ADMIN_A":           users[0].username,
-		"BROWSER_E2E_MEMBER_A":          users[1].username,
-		"BROWSER_E2E_ADMIN_B":           users[2].username,
+		"BROWSER_E2E_ADMIN_A":          users[0].username,
+		"BROWSER_E2E_MEMBER_A":         users[1].username,
+		"BROWSER_E2E_ADMIN_B":          users[2].username,
 	})
 	fmt.Println("browser E2E data prepared")
 }

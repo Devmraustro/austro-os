@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Proves the real browser authorization assertion is sensitive to a critical
 # UI authorization regression. The mutation is temporary, the browser test is
-# required to fail under it, the exact source is restored, and the API image is
+# required to fail under it, the exact source is restored, and the API binary is
 # rebuilt from the restored source before the script returns.
 set -euo pipefail
 
@@ -14,13 +14,45 @@ new='if (pipeline.status === "awaiting_approval" && (currentRole === "workspace_
 backup=$(mktemp)
 cp -- "$file" "$backup"
 
+stop_api() {
+  local pid
+  pid=$(cat /tmp/austro-api.pid)
+  if kill -0 "$pid" 2>/dev/null; then
+    kill "$pid"
+  fi
+  for _ in $(seq 1 30); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "API did not stop after SIGTERM"
+  return 1
+}
+
+start_api() {
+  nohup /tmp/austro-api > /tmp/austro-api.log 2>&1 &
+  echo $! > /tmp/austro-api.pid
+  for _ in $(seq 1 60); do
+    if curl --fail --silent --show-error http://127.0.0.1:8080/health/ready >/dev/null; then
+      return 0
+    fi
+    sleep 2
+  done
+  echo "API did not become ready"
+  tail -n 120 /tmp/austro-api.log
+  return 1
+}
+
 restore() {
   cp -- "$backup" "$file"
   if ! cmp -s -- "$backup" "$file"; then
     echo "browser mutation restore failed"
     exit 1
   fi
-  docker compose -f docker-compose.yml -f docker-compose.browser-e2e.yml up -d --build api
+  stop_api
+  go build -o /tmp/austro-api .
+  start_api
   rm -f -- "$backup"
 }
 trap restore EXIT
@@ -38,17 +70,9 @@ if text.count(old) != 1:
 path.write_text(text.replace(old, new, 1))
 PY
 
-docker compose -f docker-compose.yml -f docker-compose.browser-e2e.yml up -d --build api
-for _ in $(seq 1 60); do
-  if curl --fail --silent --show-error http://127.0.0.1:8080/health/ready >/dev/null; then
-    break
-  fi
-  sleep 2
-done
-if ! curl --fail --silent --show-error http://127.0.0.1:8080/health/ready >/dev/null; then
-  echo "mutated API did not become ready"
-  exit 1
-fi
+stop_api
+go build -o /tmp/austro-api .
+start_api
 
 set +e
 npm --prefix browser-e2e test -- --reporter=line
