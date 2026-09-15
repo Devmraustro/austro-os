@@ -281,7 +281,21 @@ func Rules() []Rule {
 			Principle:       "Principle 9 - Security by Design",
 		},
 	}
-	return append(rules, publicationRules()...)
+	rules = append(rules, publicationRules()...)
+	return append(rules, pipelineRules()...)
+}
+
+// pipelineRules keeps the Creator contract explicit. Members may create/read
+// and recover their workspace's pipelines; only an admin may open the human
+// review handoff.
+func pipelineRules() []Rule {
+	return []Rule{
+		{Action: "POST", ResourcePattern: "/pipelines", Roles: []Role{RoleWorkspaceAdmin, RoleWorkspaceMember}, Scope: ScopeSelf, Principle: "Principle 1 - Vision First"},
+		{Action: "GET", ResourcePattern: "/pipelines", Roles: []Role{RoleWorkspaceAdmin, RoleWorkspaceMember}, Scope: ScopeSelf, Principle: "Principle 13 - Observability"},
+		{Action: "GET", ResourcePattern: "/pipelines/{id}", Roles: []Role{RoleWorkspaceAdmin, RoleWorkspaceMember}, Scope: ScopeSelf, Principle: "Principle 10 - Privacy by Design"},
+		{Action: "POST", ResourcePattern: "/pipelines/{id}/approve", Roles: []Role{RoleWorkspaceAdmin}, Scope: ScopeSelf, Principle: "Principle 11 - Human Oversight"},
+		{Action: "POST", ResourcePattern: "/pipelines/{id}/retry", Roles: []Role{RoleWorkspaceAdmin, RoleWorkspaceMember}, Scope: ScopeSelf, Principle: "Principle 13 - Observability"},
+	}
 }
 
 // publicationRules is the explicit tenant Publishing contract. Members may
@@ -506,7 +520,8 @@ func ImplementedRules() []Rule {
 			Principle:       "Principle 9 - Security by Design",
 		},
 	}
-	return append(rules, publicationRules()...)
+	rules = append(rules, publicationRules()...)
+	return append(rules, pipelineRules()...)
 }
 
 // PermissionsForRole returns the explicit permissions (HTTP action -> route
@@ -529,8 +544,8 @@ func PermissionsForRole(r Role) map[string][]string {
 		return map[string][]string{
 			"GET": {"/api/me", "/workspaces/{id}", "/workspaces/{id}/audit/events",
 				"/tasks", "/tasks/{id}",
-				"/knowledge", "/knowledge/{id}", "/memory/{layer}/{key}", "/publications", "/publications/{id}"},
-			"POST":   {"/tasks", "/tasks/{id}/transition", "/knowledge", "/knowledge/search", "/publications", "/publications/{id}/submit", "/publications/{id}/approve", "/publications/{id}/reject", "/publications/{id}/publish", "/publications/{id}/retry"},
+				"/knowledge", "/knowledge/{id}", "/memory/{layer}/{key}", "/publications", "/publications/{id}", "/pipelines", "/pipelines/{id}"},
+			"POST":   {"/tasks", "/tasks/{id}/transition", "/knowledge", "/knowledge/search", "/publications", "/publications/{id}/submit", "/publications/{id}/approve", "/publications/{id}/reject", "/publications/{id}/publish", "/publications/{id}/retry", "/pipelines", "/pipelines/{id}/approve", "/pipelines/{id}/retry"},
 			"PATCH":  {"/tasks/{id}", "/knowledge/{id}"},
 			"PUT":    {"/memory/{layer}/{key}"},
 			"DELETE": {"/knowledge/{id}"},
@@ -539,8 +554,8 @@ func PermissionsForRole(r Role) map[string][]string {
 		return map[string][]string{
 			"GET": {"/api/me", "/workspaces/{id}/audit/events",
 				"/tasks", "/tasks/{id}",
-				"/knowledge", "/knowledge/{id}", "/memory/{layer}/{key}", "/publications", "/publications/{id}"},
-			"POST":   {"/tasks", "/tasks/{id}/transition", "/knowledge", "/knowledge/search", "/publications", "/publications/{id}/submit"},
+				"/knowledge", "/knowledge/{id}", "/memory/{layer}/{key}", "/publications", "/publications/{id}", "/pipelines", "/pipelines/{id}"},
+			"POST":   {"/tasks", "/tasks/{id}/transition", "/knowledge", "/knowledge/search", "/publications", "/publications/{id}/submit", "/pipelines", "/pipelines/{id}/retry"},
 			"PATCH":  {"/tasks/{id}", "/knowledge/{id}"},
 			"PUT":    {"/memory/{layer}/{key}"},
 			"DELETE": {"/knowledge/{id}"},

@@ -1274,6 +1274,216 @@ paths:
         - Principle 10 — Privacy by Design
         - Principle 9 — Security by Design
 
+  /pipelines:
+    post:
+      summary: Start a Creator pipeline
+      description: |
+        Creates the server-owned research → script → review pipeline and emits
+        the internal research event. The worker, not the client, advances stages.
+        Idempotency-Key is optional and scoped to the authenticated workspace.
+      operationId: createPipeline
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema:
+            type: string
+            maxLength: 128
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePipelineRequest'
+      responses:
+        '201':
+          description: Pipeline created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pipeline'
+        '400':
+          description: Invalid body, goal id or idempotency key
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: Event dispatch failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 1 — Vision First
+        - Principle 9 — Security by Design
+    get:
+      summary: List Creator pipelines
+      description: Bounded, newest-first workspace-scoped pipeline observations.
+      operationId: listPipelines
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 100
+      responses:
+        '200':
+          description: Pipelines
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PipelinePage'
+        '400':
+          description: Malformed or unsupported query
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 10 — Privacy by Design
+        - Principle 13 — Observability
+  /pipelines/{id}:
+    get:
+      summary: Inspect a Creator pipeline
+      operationId: getPipeline
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Pipeline state and persisted stage artifacts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pipeline'
+        '400':
+          description: Invalid pipeline id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Pipeline not found in this workspace
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 10 — Privacy by Design
+  /pipelines/{id}/approve:
+    post:
+      summary: Approve the reviewed pipeline output
+      description: Opens the publish handoff only after the persisted review stage; only workspace_admin may approve.
+      operationId: approvePipeline
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Pipeline approved; the publish worker event was emitted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pipeline'
+        '400':
+          description: Invalid pipeline id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Workspace admin is required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Pipeline is not awaiting approval or changed concurrently
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 11 — Human Oversight
+  /pipelines/{id}/retry:
+    post:
+      summary: Retry a failed pipeline stage
+      description: Re-enters only the canonical next stage for a failed aggregate; no stage may be supplied by the caller.
+      operationId: retryPipeline
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Retry accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pipeline'
+        '400':
+          description: Invalid pipeline id or lifecycle state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Pipeline is not failed or changed concurrently
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 13 — Observability
   /memory/{layer}/{key}:
     get:
       summary: Read one memory cell
@@ -1645,6 +1855,82 @@ components:
         type: string
         format: uuid
   schemas:
+    CreatePipelineRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        goal_id:
+          type: string
+          format: uuid
+    Pipeline:
+      type: object
+      required: [id, workspace_id, stage, status, retry_count, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        workspace_id:
+          type: string
+          format: uuid
+        goal_id:
+          type: string
+          format: uuid
+        stage:
+          type: string
+          enum: [research, script, review, publish, complete]
+        status:
+          type: string
+          enum: [created, active, awaiting_approval, approved, done, failed]
+        task_id:
+          type: string
+          format: uuid
+        publication_id:
+          type: string
+          format: uuid
+        research_reference:
+          type: string
+          maxLength: 512
+        script_reference:
+          type: string
+          maxLength: 512
+        review_reference:
+          type: string
+          maxLength: 512
+        published_reference:
+          type: string
+          maxLength: 512
+        failure_reason:
+          type: string
+          maxLength: 512
+        retry_count:
+          type: integer
+          minimum: 0
+        approved_by:
+          type: string
+        approved_at:
+          type: string
+          format: date-time
+        trace_id:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    PipelinePage:
+      type: object
+      required: [pipelines, count, limit]
+      properties:
+        pipelines:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/Pipeline'
+        count:
+          type: integer
+        limit:
+          type: integer
     CreatePublicationRequest:
       type: object
       additionalProperties: false

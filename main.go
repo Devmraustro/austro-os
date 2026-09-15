@@ -108,6 +108,7 @@ func main() {
 	)
 	memoryHandler := api.NewMemoryHandler(memoryBank).SetAuditSink(auditStore)
 	publicationHandler := api.NewPublicationHandler(rt.Publish)
+	pipelineHandler := api.NewPipelineHandler(rt.Orchestration)
 
 	logger.NewEntry("austro-os-startup").
 		With("version", "1.0").
@@ -254,6 +255,14 @@ func main() {
 		{Method: http.MethodPost, Pattern: "/publications/{id}/reject"}:  publicationHandler.Reject,
 		{Method: http.MethodPost, Pattern: "/publications/{id}/publish"}: publicationHandler.Publish,
 		{Method: http.MethodPost, Pattern: "/publications/{id}/retry"}:   publicationHandler.Retry,
+
+		// Creator pipelines. The worker remains the only advancement engine;
+		// HTTP exposes observation, the named human approval handoff and retry.
+		{Method: http.MethodPost, Pattern: "/pipelines"}:                 pipelineHandler.Create,
+		{Method: http.MethodGet, Pattern: "/pipelines"}:                  pipelineHandler.List,
+		{Method: http.MethodGet, Pattern: "/pipelines/{id}"}:             pipelineHandler.Get,
+		{Method: http.MethodPost, Pattern: "/pipelines/{id}/approve"}:    pipelineHandler.Approve,
+		{Method: http.MethodPost, Pattern: "/pipelines/{id}/retry"}:      pipelineHandler.Retry,
 
 		// Memory is deliberately limited to key-based read/write operations.
 		{Method: http.MethodGet, Pattern: "/memory/{layer}/{key}"}: memoryHandler.Read,

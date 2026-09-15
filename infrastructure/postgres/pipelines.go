@@ -7,188 +7,98 @@ import (
 	"time"
 
 	"austro-os/internal/orchestration"
-
 	"github.com/google/uuid"
 )
 
-// PipelineStore is the concrete Postgres adapter for the
-// orchestration.PipelineStore port. Each operation runs inside a transaction
-// that first binds app.current_workspace on that connection so row-level
-// security genuinely constrains the operation. Explicit workspace_id guards are
-// kept as defense-in-depth.
-type PipelineStore struct {
-	db *sql.DB
-}
+type PipelineStore struct { db *sql.DB }
+func NewPipelineStore(db *sql.DB) *PipelineStore { return &PipelineStore{db: db} }
 
-// NewPipelineStore returns a Postgres-backed implementation of
-// orchestration.PipelineStore.
-func NewPipelineStore(db *sql.DB) *PipelineStore {
-	return &PipelineStore{db: db}
-}
-
-// beginTx opens an exclusive transaction and binds the workspace context on it
-// so RLS resolves correctly for the whole operation.
 func (s *PipelineStore) beginTx(ctx context.Context, workspaceID uuid.UUID) (*sql.Tx, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := tx.ExecContext(ctx,
-		"SELECT set_config('app.current_workspace', $1, true)",
-		workspaceID.String()); err != nil {
-		_ = tx.Rollback()
-		return nil, err
+	if err != nil { return nil, err }
+	if _, err := tx.ExecContext(ctx, "SELECT set_config('app.current_workspace', $1, true)", workspaceID.String()); err != nil {
+		_ = tx.Rollback(); return nil, err
 	}
 	return tx, nil
 }
 
 func (s *PipelineStore) Create(ctx context.Context, p *orchestration.Pipeline) (*orchestration.Pipeline, error) {
-	tx, err := s.beginTx(ctx, p.WorkspaceID)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-
-	var id uuid.UUID
-	var createdAt, updatedAt time.Time
+	tx, err := s.beginTx(ctx, p.WorkspaceID); if err != nil { return nil, err }; defer tx.Rollback()
+	var id uuid.UUID; var createdAt, updatedAt time.Time; var version int64
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO pipelines (workspace_id, goal_id, stage, status, task_id, publication_id,
-		                      trace_id, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		RETURNING id, created_at, updated_at`,
-		p.WorkspaceID, nullableUUID(p.GoalID), string(p.Stage), string(p.Status),
-		nullableUUID(p.TaskID), nullableUUID(p.PublicationID), nullIfEmpty(p.TraceID),
-		p.CreatedAt, p.UpdatedAt).Scan(&id, &createdAt, &updatedAt)
-	if err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	p.ID = id
-	p.CreatedAt = createdAt
-	p.UpdatedAt = updatedAt
+		  research_reference, script_reference, review_reference, published_reference, failure_reason,
+		  retry_count, idempotency_key, approved_by, approved_at, version, trace_id, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+		RETURNING id, created_at, updated_at, version`,
+		p.WorkspaceID, nullableUUID(p.GoalID), string(p.Stage), string(p.Status), nullableUUID(p.TaskID), nullableUUID(p.PublicationID),
+		nullablePipelineString(p.ResearchReference), nullablePipelineString(p.ScriptReference), nullablePipelineString(p.ReviewReference), nullablePipelineString(p.PublishedReference), nullablePipelineString(p.FailureReason),
+		p.RetryCount, nullablePipelineString(p.IdempotencyKey), nullablePipelineString(p.ApprovedBy), nullableTime(p.ApprovedAt), p.Version, nullIfEmpty(p.TraceID), p.CreatedAt, p.UpdatedAt).Scan(&id, &createdAt, &updatedAt, &version)
+	if err != nil { return nil, err }
+	if err := tx.Commit(); err != nil { return nil, err }
+	p.ID, p.CreatedAt, p.UpdatedAt, p.Version = id, createdAt, updatedAt, version
 	return p, nil
+}
+
+func (s *PipelineStore) GetByIdempotency(ctx context.Context, workspaceID uuid.UUID, key string) (*orchestration.Pipeline, error) {
+	tx, err := s.beginTx(ctx, workspaceID); if err != nil { return nil, err }; defer tx.Rollback()
+	p, err := scanPipeline(tx.QueryRowContext(ctx, pipelineSelect+" WHERE workspace_id = $1 AND idempotency_key = $2", workspaceID, key))
+	if err != nil { return nil, err }
+	if err := tx.Commit(); err != nil { return nil, err }; return p, nil
 }
 
 func (s *PipelineStore) Get(ctx context.Context, workspaceID, id uuid.UUID) (*orchestration.Pipeline, error) {
-	tx, err := s.beginTx(ctx, workspaceID)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-
-	p, err := scanPipeline(tx.QueryRowContext(ctx, `
-		SELECT id, workspace_id, goal_id, stage, status, task_id, publication_id,
-		       trace_id, created_at, updated_at
-		FROM pipelines WHERE id = $1 AND workspace_id = $2`, id, workspaceID))
-	if err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	return p, nil
+	tx, err := s.beginTx(ctx, workspaceID); if err != nil { return nil, err }; defer tx.Rollback()
+	p, err := scanPipeline(tx.QueryRowContext(ctx, pipelineSelect+" WHERE id = $1 AND workspace_id = $2", id, workspaceID))
+	if err != nil { return nil, err }
+	if err := tx.Commit(); err != nil { return nil, err }; return p, nil
 }
 
 func (s *PipelineStore) List(ctx context.Context, workspaceID uuid.UUID) ([]*orchestration.Pipeline, error) {
-	tx, err := s.beginTx(ctx, workspaceID)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-
-	rows, err := tx.QueryContext(ctx, `
-		SELECT id, workspace_id, goal_id, stage, status, task_id, publication_id,
-		       trace_id, created_at, updated_at
-		FROM pipelines WHERE workspace_id = $1`, workspaceID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []*orchestration.Pipeline
-	for rows.Next() {
-		p, err := scanPipeline(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, p)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	return out, nil
+	tx, err := s.beginTx(ctx, workspaceID); if err != nil { return nil, err }; defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, pipelineSelect+" WHERE workspace_id = $1 ORDER BY created_at DESC, id DESC LIMIT 100", workspaceID)
+	if err != nil { return nil, err }; defer rows.Close()
+	out := make([]*orchestration.Pipeline, 0, 100)
+	for rows.Next() { p, scanErr := scanPipeline(rows); if scanErr != nil { return nil, scanErr }; out = append(out, p) }
+	if err := rows.Err(); err != nil { return nil, err }
+	if err := tx.Commit(); err != nil { return nil, err }; return out, nil
 }
 
 func (s *PipelineStore) Update(ctx context.Context, workspaceID uuid.UUID, p *orchestration.Pipeline) (*orchestration.Pipeline, error) {
-	tx, err := s.beginTx(ctx, workspaceID)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-
+	tx, err := s.beginTx(ctx, workspaceID); if err != nil { return nil, err }; defer tx.Rollback()
+	previousVersion := p.Version
+	if previousVersion < 1 { previousVersion = 1 }
 	p.UpdatedAt = time.Now().UTC()
-	_, err = tx.ExecContext(ctx, `
-		UPDATE pipelines SET stage = $1, status = $2, task_id = $3, publication_id = $4,
-		       trace_id = $5, updated_at = $6
-		WHERE id = $7 AND workspace_id = $8`,
-		string(p.Stage), string(p.Status), nullableUUID(p.TaskID), nullableUUID(p.PublicationID),
-		nullIfEmpty(p.TraceID), p.UpdatedAt, p.ID, workspaceID)
-	if err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	return p, nil
+	result, err := tx.ExecContext(ctx, `
+		UPDATE pipelines SET stage=$1,status=$2,task_id=$3,publication_id=$4,
+		 research_reference=$5,script_reference=$6,review_reference=$7,published_reference=$8,
+		 failure_reason=$9,retry_count=$10,idempotency_key=$11,approved_by=$12,approved_at=$13,
+		 trace_id=$14,updated_at=$15,version=version+1
+		WHERE id=$16 AND workspace_id=$17 AND version=$18`,
+		string(p.Stage), string(p.Status), nullableUUID(p.TaskID), nullableUUID(p.PublicationID), nullablePipelineString(p.ResearchReference), nullablePipelineString(p.ScriptReference), nullablePipelineString(p.ReviewReference), nullablePipelineString(p.PublishedReference), nullablePipelineString(p.FailureReason), p.RetryCount, nullablePipelineString(p.IdempotencyKey), nullablePipelineString(p.ApprovedBy), nullableTime(p.ApprovedAt), nullIfEmpty(p.TraceID), p.UpdatedAt, p.ID, workspaceID, previousVersion)
+	if err != nil { return nil, err }
+	affected, err := result.RowsAffected(); if err != nil { return nil, err }
+	if affected != 1 { return nil, orchestration.ErrConcurrentUpdate }
+	p.Version = previousVersion + 1
+	if err := tx.Commit(); err != nil { return nil, err }; return p, nil
 }
 
-type rowScannerPipe interface {
-	Scan(dest ...interface{}) error
-}
+const pipelineSelect = `SELECT id, workspace_id, goal_id, stage, status, task_id, publication_id,
+ research_reference, script_reference, review_reference, published_reference, failure_reason,
+ retry_count, idempotency_key, approved_by, approved_at, version, trace_id, created_at, updated_at FROM pipelines`
 
+type rowScannerPipe interface { Scan(dest ...interface{}) error }
 func scanPipeline(r rowScannerPipe) (*orchestration.Pipeline, error) {
-	var p orchestration.Pipeline
-	var id, wsID uuid.UUID
-	var goalID, taskID, publicationID uuid.NullUUID
-	var stage, status, traceID string
-	var createdAt, updatedAt time.Time
-	if err := r.Scan(&id, &wsID, &goalID, &stage, &status, &taskID, &publicationID,
-		&traceID, &createdAt, &updatedAt); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, orchestration.ErrNotFound
-		}
-		return nil, err
+	var p orchestration.Pipeline; var id, wsID uuid.UUID; var goalID, taskID, publicationID uuid.NullUUID
+	var stage, status string; var researchRef, scriptRef, reviewRef, publishedRef, failure, key, approvedBy, traceID sql.NullString
+	var approvedAt sql.NullTime; var retry int; var version int64; var createdAt, updatedAt time.Time
+	if err := r.Scan(&id,&wsID,&goalID,&stage,&status,&taskID,&publicationID,&researchRef,&scriptRef,&reviewRef,&publishedRef,&failure,&retry,&key,&approvedBy,&approvedAt,&version,&traceID,&createdAt,&updatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) { return nil, orchestration.ErrNotFound }; return nil, err
 	}
-	p.ID = id
-	p.WorkspaceID = wsID
-	if goalID.Valid {
-		g := goalID.UUID
-		p.GoalID = &g
-	}
-	if taskID.Valid {
-		t := taskID.UUID
-		p.TaskID = &t
-	}
-	if publicationID.Valid {
-		pc := publicationID.UUID
-		p.PublicationID = &pc
-	}
-	p.Stage = orchestration.Stage(stage)
-	p.Status = orchestration.PipelineStatus(status)
-	p.TraceID = traceID
-	p.CreatedAt = createdAt
-	p.UpdatedAt = updatedAt
+	p.ID=id; p.WorkspaceID=wsID; p.Stage=orchestration.Stage(stage); p.Status=orchestration.PipelineStatus(status); p.RetryCount=retry; p.Version=version; p.CreatedAt=createdAt; p.UpdatedAt=updatedAt
+	if goalID.Valid { v:=goalID.UUID; p.GoalID=&v }; if taskID.Valid { v:=taskID.UUID; p.TaskID=&v }; if publicationID.Valid { v:=publicationID.UUID; p.PublicationID=&v }
+	if researchRef.Valid { p.ResearchReference=researchRef.String }; if scriptRef.Valid { p.ScriptReference=scriptRef.String }; if reviewRef.Valid { p.ReviewReference=reviewRef.String }; if publishedRef.Valid { p.PublishedReference=publishedRef.String }; if failure.Valid { p.FailureReason=failure.String }; if key.Valid { p.IdempotencyKey=key.String }; if approvedBy.Valid { p.ApprovedBy=approvedBy.String }; if approvedAt.Valid { v:=approvedAt.Time; p.ApprovedAt=&v }; if traceID.Valid { p.TraceID=traceID.String }
 	return &p, nil
 }
 
-// nullIfEmpty returns nil for an empty string so it maps to a NULL trace_id.
-func nullIfEmpty(s string) interface{} {
-	if s == "" {
-		return nil
-	}
-	return s
-}
+func nullablePipelineString(v string) interface{} { if v == "" { return nil }; return v }

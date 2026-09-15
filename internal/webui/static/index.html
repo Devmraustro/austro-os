@@ -386,6 +386,36 @@
         </table>
       </section>
 
+      <section class="card" id="pipelines-card">
+        <h2>Creator pipelines</h2>
+        <p class="muted">
+          Pipelines run through the server-owned research, script, review and
+          publish lifecycle. This view never invents progress or exposes a stage
+          selector. Review output pauses for workspace-admin approval; failures
+          expose only the server's retry command and evidence.
+        </p>
+        <form id="pipeline-create-form">
+          <button type="submit" class="primary">Start pipeline</button>
+        </form>
+        <p id="pipeline-create-message" class="message" role="alert" hidden></p>
+        <form id="pipeline-form" class="filters">
+          <label for="pipeline-limit">Page size</label>
+          <select id="pipeline-limit" name="limit">
+            <option value="25">25</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+          </select>
+          <button type="submit" class="primary">Refresh</button>
+        </form>
+        <div id="pipeline-loading" class="muted" hidden>Loading pipelines…</div>
+        <div id="pipeline-empty" class="muted" hidden>No pipelines yet.</div>
+        <p id="pipeline-message" class="message" role="alert" hidden></p>
+        <table id="pipeline-table" class="table" hidden>
+          <thead><tr><th>Stage</th><th>Status</th><th>Artifacts</th><th>Updated</th><th>Actions</th></tr></thead>
+          <tbody id="pipeline-body-rows"></tbody>
+        </table>
+      </section>
+
       <section class="card" id="memory-card">
         <h2>Memory</h2>
         <p class="muted">

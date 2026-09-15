@@ -106,6 +106,7 @@ func Bootstrap(owner *sql.DB, topo *Topology) error {
 		{"migrate-tasks", func() error { return migrateTasks(owner) }},
 		{"migrate-knowledge", func() error { return migrateKnowledge(owner) }},
 		{"migrate-publications", func() error { return migratePublications(owner) }},
+		{"migrate-pipelines", func() error { return migratePipelines(owner) }},
 		{"enable-rls", func() error { return enableRLS(owner) }},
 		// Roles before policies: CREATE POLICY ... TO <role> requires the role
 		// to exist, so provisioning them afterwards fails the policy step.
@@ -347,6 +348,16 @@ func createTables(db *sql.DB) error {
 		status TEXT NOT NULL,
 		task_id UUID,
 		publication_id UUID,
+		research_reference TEXT,
+		script_reference TEXT,
+		review_reference TEXT,
+		published_reference TEXT,
+		failure_reason TEXT,
+		retry_count INTEGER NOT NULL DEFAULT 0,
+		idempotency_key TEXT,
+		approved_by TEXT,
+		approved_at TIMESTAMP,
+		version BIGINT NOT NULL DEFAULT 1,
 		trace_id TEXT,
 		created_at TIMESTAMP DEFAULT NOW(),
 		updated_at TIMESTAMP DEFAULT NOW()
@@ -354,6 +365,8 @@ func createTables(db *sql.DB) error {
 
 	CREATE INDEX IF NOT EXISTS idx_pipelines_workspace ON pipelines(workspace_id);
 	CREATE INDEX IF NOT EXISTS idx_pipelines_status ON pipelines(workspace_id, status);
+	CREATE INDEX IF NOT EXISTS idx_pipelines_workspace_created ON pipelines(workspace_id, created_at DESC, id DESC);
+	CREATE UNIQUE INDEX IF NOT EXISTS uq_pipelines_workspace_idempotency ON pipelines(workspace_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
 
 	CREATE TABLE IF NOT EXISTS users (
 		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -413,6 +426,49 @@ func migrateUsers(db *sql.DB) error {
 		// A constraint add can only fail if pre-existing rows violate the new
 		// invariant; surface it loudly rather than silently weakening the model.
 		return fmt.Errorf("migrate users: %w", err)
+	}
+	return nil
+}
+
+// migratePipelines upgrades the Creator aggregate with persisted stage outputs,
+// approval evidence, failure evidence and a race-safe create key. The checks
+// duplicate domain validation deliberately: direct SQL must not be able to
+// create an aggregate the worker cannot safely interpret.
+func migratePipelines(db *sql.DB) error {
+	migration := `
+	ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS research_reference TEXT;
+	ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS script_reference TEXT;
+	ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS review_reference TEXT;
+	ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS published_reference TEXT;
+	ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS failure_reason TEXT;
+	ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
+	ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS approved_by TEXT;
+	ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP;
+	ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 1;
+	CREATE INDEX IF NOT EXISTS idx_pipelines_workspace_created ON pipelines(workspace_id, created_at DESC, id DESC);
+	CREATE UNIQUE INDEX IF NOT EXISTS uq_pipelines_workspace_idempotency ON pipelines(workspace_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
+	DO $$
+	BEGIN
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pipelines_stage_valid') THEN
+			ALTER TABLE pipelines ADD CONSTRAINT pipelines_stage_valid CHECK (stage IN ('research', 'script', 'review', 'publish', 'complete'));
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pipelines_status_valid') THEN
+			ALTER TABLE pipelines ADD CONSTRAINT pipelines_status_valid CHECK (status IN ('created', 'active', 'awaiting_approval', 'approved', 'done', 'failed'));
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pipelines_retry_count_valid') THEN
+			ALTER TABLE pipelines ADD CONSTRAINT pipelines_retry_count_valid CHECK (retry_count >= 0);
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pipelines_task_fk') THEN
+			ALTER TABLE pipelines ADD CONSTRAINT pipelines_task_fk FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE SET NULL;
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'pipelines_publication_fk') THEN
+			ALTER TABLE pipelines ADD CONSTRAINT pipelines_publication_fk FOREIGN KEY (publication_id) REFERENCES publications(id) ON DELETE SET NULL;
+		END IF;
+	END$$;
+	`
+	if _, err := db.Exec(migration); err != nil {
+		return fmt.Errorf("migrate pipelines: %w", err)
 	}
 	return nil
 }

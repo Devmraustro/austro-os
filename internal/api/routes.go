@@ -94,6 +94,14 @@ func Routes() []Route {
 		{http.MethodPost, "/publications/{id}/publish"},
 		{http.MethodPost, "/publications/{id}/retry"},
 
+		// Creator pipelines. Lifecycle advancement is internal/event-driven;
+		// these named commands expose observation, approval and recovery only.
+		{http.MethodPost, "/pipelines"},
+		{http.MethodGet, "/pipelines"},
+		{http.MethodGet, "/pipelines/{id}"},
+		{http.MethodPost, "/pipelines/{id}/approve"},
+		{http.MethodPost, "/pipelines/{id}/retry"},
+
 		// Memory is intentionally key-based. There is no list, search or delete
 		// operation in the HTTP contract.
 		{http.MethodGet, "/memory/{layer}/{key}"},

@@ -74,12 +74,22 @@ func newHandler(rt *composition.Runtime) func(*event.UniversalEnvelope) error {
 		if !orchestration.ValidStage(stage) {
 			return worker.PermanentErrorf("pipeline event carries unknown stage %q", d.Stage)
 		}
+		eventStage, recognized := orchestration.EventKind(d.Event)
+		if !recognized || eventStage != stage {
+			return worker.PermanentErrorf("pipeline event name %q does not match stage %q", d.Event, d.Stage)
+		}
 		workspaceID, err := uuid.Parse(env.WorkspaceID)
 		if err != nil {
 			return worker.PermanentErrorf("pipeline event carries invalid workspace id: %v", err)
 		}
 		if env.TargetID == uuid.Nil {
 			return worker.PermanentErrorf("pipeline event missing pipeline id")
+		}
+		// Review readiness is deliberately an acknowledgement-only notification.
+		// It cannot advance a pipeline past the human gate. Complete is likewise
+		// a terminal observation, not another command.
+		if d.Event == "pipeline.review_ready" || d.Event == "pipeline.complete" {
+			return nil
 		}
 
 		_, err = rt.Handler.AdvanceFromEvent(
@@ -90,14 +100,20 @@ func newHandler(rt *composition.Runtime) func(*event.UniversalEnvelope) error {
 			env.TraceID.String(),
 			env.SpanID.String(),
 		)
-		if errors.Is(err, orchestration.ErrTerminalState) {
-			// A complete pipeline has no follower; acknowledge and stop.
-			logger.NewEntry("worker-pipeline-complete").With("pipeline_id", env.TargetID).Log()
-			return nil
-		}
 		if err != nil {
-			// Advancement failed against a live dependency, so it may well
-			// succeed on redelivery; leave it retryable.
+			// A redelivered event is harmless after its stage has already been
+			// durably advanced. A failed aggregate, however, stays retryable and
+			// must not be silently acknowledged.
+			current, lookupErr := rt.Orchestration.Get(context.Background(), workspaceID, env.TargetID)
+			if lookupErr == nil && current.Status == orchestration.StatusDone {
+				return nil
+			}
+			if lookupErr == nil && current.Stage != stage && orchestration.IsAfter(current.Stage, stage) {
+				return nil
+			}
+			if errors.Is(err, orchestration.ErrTerminalState) && lookupErr == nil && current.Status != orchestration.StatusFailed {
+				return nil
+			}
 			logger.NewEntry("worker-pipeline-advance-error").
 				SetLevel("error").
 				With("pipeline_id", env.TargetID).

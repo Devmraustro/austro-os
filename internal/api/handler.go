@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 
@@ -355,7 +356,8 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst interface{}) bool {
 	// after the object we parsed is accepted, which lets a request smuggle
 	// content past anything that inspects only the parsed object and makes the
 	// accepted body differ from the one the client claims to have sent.
-	if dec.More() {
+	var extra interface{}
+	if err := dec.Decode(&extra); err != io.EOF {
 		writeJSONError(w, http.StatusBadRequest, "invalid request body")
 		return false
 	}
