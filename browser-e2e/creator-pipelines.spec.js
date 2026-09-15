@@ -132,6 +132,12 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
   const memberPage = await memberContext.newPage();
   const otherWorkspacePage = await otherWorkspaceContext.newPage();
   const stalePage = await staleContext.newPage();
+  const founderAuthResponses = [];
+  founderPage.on('response', (response) => {
+    if (response.url().includes('/api/auth/login') || response.url().endsWith('/api/me')) {
+      founderAuthResponses.push({ path: new URL(response.url()).pathname, status: response.status() });
+    }
+  });
 
   try {
     // LOGIN → DASHBOARD → WORKSPACE. The first bad login exercises the real
@@ -148,7 +154,23 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
     await founderPage.locator('#password').fill(founderPassword);
     await founderPage.locator('#login-btn').click();
     await expect(founderPage.locator('#app-view')).toBeVisible();
-    await expect(founderPage.locator('#identity')).toContainText(founderUsername);
+    await expect.poll(async () => {
+      const identity = await founderPage.locator('#identity').innerText();
+      if (!identity.includes(founderUsername)) {
+        const state = await founderPage.evaluate(() => ({
+          authHidden: document.querySelector('#auth-view').hidden,
+          appHidden: document.querySelector('#app-view').hidden,
+          authMessage: document.querySelector('#auth-message').textContent,
+          identity,
+        }));
+        state.responses = founderAuthResponses;
+        console.error(`BROWSER_DIAGNOSTIC founder-identity ${JSON.stringify(state)}`);
+      }
+      return identity;
+    }, {
+      timeout: 15000,
+      message: `founder identity did not render for ${founderUsername}`,
+    }).toContain(founderUsername);
     async function expectWorkspaceRendered(name, label) {
       try {
         await expect.poll(() => founderPage.locator('#workspace-list').innerText(), {
