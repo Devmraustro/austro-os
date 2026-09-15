@@ -247,9 +247,15 @@ func (s *Service) Retry(ctx context.Context, workspaceID, id uuid.UUID, humanAct
 		return nil, ErrRateLimited
 	}
 	p, err := s.getOwned(ctx, workspaceID, id)
-	if err != nil { return nil, err }
-	if p.Status != StatusFailed { return nil, ErrInvalidTransition }
-	if p.ApprovedBy == nil || p.ApprovedAt == nil { return nil, ErrApprovalRequired }
+	if err != nil {
+		return nil, err
+	}
+	if p.Status != StatusFailed {
+		return nil, ErrInvalidTransition
+	}
+	if p.ApprovedBy == nil || p.ApprovedAt == nil {
+		return nil, ErrApprovalRequired
+	}
 
 	// Publisher adapters intentionally accept only approved aggregates. Retry
 	// keeps FAILED durable in the store but uses the approved state for this
@@ -262,7 +268,9 @@ func (s *Service) Retry(ctx context.Context, workspaceID, id uuid.UUID, humanAct
 		p.UpdatedAt = time.Now().UTC()
 		failed, persistErr := s.store.Update(ctx, workspaceID, p)
 		s.audit.Record(ctx, AuditRecord{EventType: "publication.retry", ConstitutionalPrinciple: "Human Oversight", Outcome: "failed", WorkspaceID: workspaceID.String(), PublicationID: id.String(), ActorType: "human", ActorID: humanActor, TraceID: traceOf(ctx), SpanID: spanOf(ctx)})
-		if persistErr != nil { return nil, persistErr }
+		if persistErr != nil {
+			return nil, persistErr
+		}
 		return failed, err
 	}
 	p.FailureReason = ""

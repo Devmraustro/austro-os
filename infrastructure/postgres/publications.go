@@ -73,15 +73,21 @@ func (s *PublicationStore) Create(ctx context.Context, p *publish.Publication) (
 // GetByIdempotency resolves a create retry inside the caller's workspace.
 func (s *PublicationStore) GetByIdempotency(ctx context.Context, workspaceID uuid.UUID, key string) (*publish.Publication, error) {
 	tx, err := s.beginTx(ctx, workspaceID)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer tx.Rollback()
 	p, err := scanPublication(tx.QueryRowContext(ctx, `
 		SELECT id, workspace_id, goal_id, task_id, title, body, platform, status, content_hash,
 		       idempotency_key, external_reference, failure_reason, approved_by, approved_at,
 		       rejected_by, rejected_at, published_at, published_by, created_at, updated_at
 		FROM publications WHERE workspace_id = $1 AND idempotency_key = $2`, workspaceID, key))
-	if err != nil { return nil, err }
-	if err := tx.Commit(); err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
 	return p, nil
 }
 
@@ -208,9 +214,15 @@ func scanPublication(r rowScannerP) (*publish.Publication, error) {
 	p.Platform = platform
 	p.Status = publish.Status(status)
 	p.ContentHash = contentHash
-	if idempotencyKey.Valid { p.IdempotencyKey = idempotencyKey.String }
-	if externalReference.Valid { p.ExternalReference = externalReference.String }
-	if failureReason.Valid { p.FailureReason = failureReason.String }
+	if idempotencyKey.Valid {
+		p.IdempotencyKey = idempotencyKey.String
+	}
+	if externalReference.Valid {
+		p.ExternalReference = externalReference.String
+	}
+	if failureReason.Valid {
+		p.FailureReason = failureReason.String
+	}
 	if approvedBy.Valid {
 		p.ApprovedBy = &approvedBy.String
 	}
@@ -226,7 +238,9 @@ func scanPublication(r rowScannerP) (*publish.Publication, error) {
 	if publishedAt.Valid {
 		p.PublishedAt = &publishedAt.Time
 	}
-	if publishedBy.Valid { p.PublishedBy = &publishedBy.String }
+	if publishedBy.Valid {
+		p.PublishedBy = &publishedBy.String
+	}
 	p.CreatedAt = createdAt
 	p.UpdatedAt = updatedAt
 	return &p, nil
@@ -234,7 +248,9 @@ func scanPublication(r rowScannerP) (*publish.Publication, error) {
 
 // nullableString converts an optional string value to a SQL NULL when empty.
 func nullableString(s string) sql.NullString {
-	if s == "" { return sql.NullString{} }
+	if s == "" {
+		return sql.NullString{}
+	}
 	return sql.NullString{String: s, Valid: true}
 }
 

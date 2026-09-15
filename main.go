@@ -246,14 +246,14 @@ func main() {
 
 		// Publishing. Lifecycle changes are named commands, never arbitrary status
 		// writes; the handler binds the workspace and actor from verified claims.
-		{Method: http.MethodPost, Pattern: "/publications"}:                    publicationHandler.Create,
-		{Method: http.MethodGet, Pattern: "/publications"}:                     publicationHandler.List,
-		{Method: http.MethodGet, Pattern: "/publications/{id}"}:                publicationHandler.Get,
-		{Method: http.MethodPost, Pattern: "/publications/{id}/submit"}:       publicationHandler.Submit,
-		{Method: http.MethodPost, Pattern: "/publications/{id}/approve"}:       publicationHandler.Approve,
-		{Method: http.MethodPost, Pattern: "/publications/{id}/reject"}:        publicationHandler.Reject,
-		{Method: http.MethodPost, Pattern: "/publications/{id}/publish"}:       publicationHandler.Publish,
-		{Method: http.MethodPost, Pattern: "/publications/{id}/retry"}:         publicationHandler.Retry,
+		{Method: http.MethodPost, Pattern: "/publications"}:              publicationHandler.Create,
+		{Method: http.MethodGet, Pattern: "/publications"}:               publicationHandler.List,
+		{Method: http.MethodGet, Pattern: "/publications/{id}"}:          publicationHandler.Get,
+		{Method: http.MethodPost, Pattern: "/publications/{id}/submit"}:  publicationHandler.Submit,
+		{Method: http.MethodPost, Pattern: "/publications/{id}/approve"}: publicationHandler.Approve,
+		{Method: http.MethodPost, Pattern: "/publications/{id}/reject"}:  publicationHandler.Reject,
+		{Method: http.MethodPost, Pattern: "/publications/{id}/publish"}: publicationHandler.Publish,
+		{Method: http.MethodPost, Pattern: "/publications/{id}/retry"}:   publicationHandler.Retry,
 
 		// Memory is deliberately limited to key-based read/write operations.
 		{Method: http.MethodGet, Pattern: "/memory/{layer}/{key}"}: memoryHandler.Read,

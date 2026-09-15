@@ -15,7 +15,9 @@ func TestWorkerValidatesPublicationLifecycleEvents(t *testing.T) {
 	workspaceID := uuid.New()
 	publicationID := uuid.New()
 	details, err := json.Marshal(publicationEventDetails{Event: "publication.failed"})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	env := &event.UniversalEnvelope{
 		WorkspaceID: workspaceID.String(),
 		TargetType:  "publication",

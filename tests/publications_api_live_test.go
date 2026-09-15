@@ -29,8 +29,8 @@ type publicationLiveResponse struct {
 
 type publicationListLiveResponse struct {
 	Publications []publicationLiveResponse `json:"publications"`
-	Count        int                      `json:"count"`
-	Limit        int                      `json:"limit"`
+	Count        int                       `json:"count"`
+	Limit        int                       `json:"limit"`
 }
 
 func publicationJSON(t *testing.T, method, path string, body any, token, idempotencyKey string) (int, []byte) {
