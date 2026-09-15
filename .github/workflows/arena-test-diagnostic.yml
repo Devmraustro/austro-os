@@ -13,8 +13,6 @@ jobs:
       - name: Run unit tests
         run: |
           if ! go test ./internal/... ./cmd/... ./infrastructure/... . -count=1 > test.log 2>&1; then
-            while IFS= read -r line; do
-              echo "::error file=test::$line"
-            done < test.log
+            awk '/FAIL|Error Trace|expected|panic|not equal|--- FAIL/ { print "::error file=test::" $0 }' test.log
             exit 1
           fi
