@@ -1,0 +1,74 @@
+name: Creator/Pipelines Independent Verification
+
+on:
+  push:
+    branches: [arena/01a0a5ea-austro-os]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  mutation:
+    name: Creator/Pipelines mutation tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+
+      - name: Run security-critical mutation suite
+        env:
+          GOFLAGS: -mod=mod
+          GOTOOLCHAIN: local
+          GOPROXY: https://proxy.golang.org,direct
+        run: |
+          chmod +x scripts/creator-pipeline-mutation.sh
+          scripts/creator-pipeline-mutation.sh
+
+  independent-security:
+    name: Independent Go security tooling
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache: true
+
+      - name: Run gosec
+        env:
+          GOFLAGS: -mod=mod
+          GOTOOLCHAIN: local
+          GOPROXY: https://proxy.golang.org,direct
+        run: |
+          set -euo pipefail
+          go run github.com/securego/gosec/v2/cmd/gosec@v2.22.8 -fmt text ./...
+
+      - name: Run govulncheck
+        env:
+          GOFLAGS: -mod=mod
+          GOTOOLCHAIN: local
+          GOPROXY: https://proxy.golang.org,direct
+        run: |
+          set -euo pipefail
+          go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+
+      - name: Run staticcheck
+        env:
+          GOFLAGS: -mod=mod
+          GOTOOLCHAIN: local
+          GOPROXY: https://proxy.golang.org,direct
+        run: |
+          set -euo pipefail
+          go run honnef.co/go/tools/cmd/staticcheck@2024.1.1 ./...
