@@ -164,6 +164,7 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
         authMessage: document.querySelector('#auth-message').textContent,
       }));
       state.responses = founderAuthResponses;
+      process.stderr.write(`BROWSER_DIAGNOSTIC founder-app ${JSON.stringify(state)}; cause: ${error.message}\n`);
       throw new Error(`BROWSER_DIAGNOSTIC founder-app ${JSON.stringify(state)}; cause: ${error.message}`);
     }
     try {
@@ -179,6 +180,7 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
         identity: document.querySelector('#identity').textContent,
       }));
       state.responses = founderAuthResponses;
+      process.stderr.write(`BROWSER_DIAGNOSTIC founder-identity ${JSON.stringify(state)}; cause: ${error.message}\n`);
       throw new Error(`BROWSER_DIAGNOSTIC founder-identity ${JSON.stringify(state)}; cause: ${error.message}`);
     }
     console.log('BROWSER_STEP founder-authenticated');
