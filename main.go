@@ -432,19 +432,6 @@ func authzMiddleware(a *authz.Authorizer, next http.Handler, audits audit.Sink) 
 	})
 }
 
-type logMemoryAudit struct{}
-
-func (logMemoryAudit) Record(_ context.Context, rec memory.AuditRecord) {
-	logger.NewEntry("memory-audit").
-		With("event", rec.EventType).
-		With("principle", rec.ConstitutionalPrinciple).
-		With("outcome", rec.Outcome).
-		With("workspace_id", rec.WorkspaceID).
-		With("layer", rec.Layer).
-		With("key", rec.Key).
-		Log()
-}
-
 type logMemoryEvents struct{}
 
 func (logMemoryEvents) Publish(_ context.Context, eventType string, workspaceID uuid.UUID, layer, key, traceID, spanID string) error {
