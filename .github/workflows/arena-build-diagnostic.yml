@@ -1,0 +1,14 @@
+name: Arena temporary build diagnostic
+on:
+  push:
+    branches: [arena/01a0a5ea-austro-os]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - name: Build packages
+        run: go build ./...
