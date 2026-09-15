@@ -17,7 +17,7 @@ mutate_and_expect_failure() {
   log=$(mktemp)
   cp -- "$file" "$backup"
 
-  python3 - "$file" "$old" "$new" <<'PY'
+  if ! python3 - "$file" "$old" "$new" <<'PY'
 import pathlib
 import sys
 
@@ -30,6 +30,12 @@ if count != 1:
     raise SystemExit(f"mutation target in {path} matched {count} times, want exactly once")
 path.write_text(text.replace(old, new, 1))
 PY
+  then
+    echo "MUTATION TARGET FAILED: $name"
+    cp -- "$backup" "$file"
+    rm -f -- "$backup" "$log"
+    exit 1
+  fi
 
   echo "=== mutation: $name ==="
   if "$@" >"$log" 2>&1; then
