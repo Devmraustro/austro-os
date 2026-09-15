@@ -16,6 +16,7 @@ mutate_and_expect_failure() {
   backup=$(mktemp)
   log=$(mktemp)
   cp -- "$file" "$backup"
+  echo "BEGIN mutation: $name"
 
   if ! python3 - "$file" "$old" "$new" <<'PY'
 import pathlib
