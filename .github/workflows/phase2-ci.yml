@@ -38,6 +38,9 @@ jobs:
           if [ -s /tmp/gofmt-files.filtered ]; then
             echo "The following files are not gofmt-clean:"
             cat /tmp/gofmt-files.filtered
+            while IFS= read -r file; do
+              echo "::error file=$file::file is not gofmt-clean"
+            done < /tmp/gofmt-files.filtered
             { echo '### gofmt failures'; echo; cat /tmp/gofmt-files.filtered; } >> "$GITHUB_STEP_SUMMARY"
             echo "Run: gofmt -w <file>"
             exit 1
