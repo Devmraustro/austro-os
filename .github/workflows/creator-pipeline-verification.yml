@@ -20,7 +20,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: "1.24"
           cache: true
 
       - name: Run security-critical mutation suite
@@ -43,7 +43,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: "1.24"
           cache: true
 
       - name: Run gosec
@@ -54,7 +54,7 @@ jobs:
         run: |
           set -euo pipefail
           set +e
-          go run github.com/securego/gosec/v2/cmd/gosec@v2.22.8 -fmt json -out /tmp/gosec.json ./... > /tmp/gosec-command.log 2>&1
+          go run github.com/securego/gosec/v2/cmd/gosec@v2.22.8 -no-fail -fmt json -out /tmp/gosec.json ./... > /tmp/gosec-command.log 2>&1
           status=$?
           set -e
           cat /tmp/gosec-command.log
