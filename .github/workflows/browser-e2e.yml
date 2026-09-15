@@ -1,0 +1,189 @@
+name: AUSTRO OS Real Browser E2E
+
+on:
+  push:
+    branches: [arena/01a0a5ea-austro-os]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  browser-e2e:
+    name: Real Chromium Creator/Pipelines E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GOFLAGS: -mod=mod
+      GOTOOLCHAIN: local
+      GOPROXY: https://proxy.golang.org,direct
+      BROWSER_E2E_BASE_URL: http://127.0.0.1:8080
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.13"
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.3"
+          cache: npm
+          cache-dependency-path: browser-e2e/package-lock.json
+
+      - name: Install browser test package
+        working-directory: browser-e2e
+        run: npm ci --ignore-scripts
+
+      - name: Create isolated CI credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          pg_password=$(openssl rand -hex 24)
+          runtime_password=$(openssl rand -hex 24)
+          redis_password=$(openssl rand -hex 24)
+          rabbit_password=$(openssl rand -hex 24)
+          founder_password=$(openssl rand -hex 24)
+          browser_password=$(openssl rand -hex 24)
+          founder_username="browser-founder-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          browser_env_file="$RUNNER_TEMP/browser-e2e.env"
+
+          cat > .env <<EOF
+          AUSTRO_POSTGRES_PASSWORD=$pg_password
+          AUSTRO_POSTGRES_RUNTIME_PASSWORD=$runtime_password
+          AUSTRO_REDIS_PASSWORD=$redis_password
+          AUSTRO_RABBITMQ_USER=browser_e2e
+          AUSTRO_RABBITMQ_PASSWORD=$rabbit_password
+          AUSTRO_FOUNDER_USERNAME=$founder_username
+          AUSTRO_FOUNDER_PASSWORD=$founder_password
+          AUSTRO_AI_BACKEND=stub
+          AUSTRO_PUBLISH_BACKEND=stub
+          EOF
+          chmod 600 .env
+
+          echo "BROWSER_E2E_OWNER_DSN=postgres://austro:$pg_password@127.0.0.1:5432/austro?sslmode=disable" >> "$GITHUB_ENV"
+          echo "BROWSER_E2E_ENV_FILE=$browser_env_file" >> "$GITHUB_ENV"
+          echo "BROWSER_E2E_FOUNDER_USERNAME=$founder_username" >> "$GITHUB_ENV"
+          echo "BROWSER_E2E_FOUNDER_PASSWORD=$founder_password" >> "$GITHUB_ENV"
+          echo "BROWSER_E2E_PASSWORD=$browser_password" >> "$GITHUB_ENV"
+
+          echo "::add-mask::$pg_password"
+          echo "::add-mask::$runtime_password"
+          echo "::add-mask::$redis_password"
+          echo "::add-mask::$rabbit_password"
+          echo "::add-mask::$founder_password"
+          echo "::add-mask::$browser_password"
+
+      - name: Start complete PostgreSQL, Redis, RabbitMQ, API, and worker stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose -f docker-compose.yml -f docker-compose.browser-e2e.yml up -d --build postgres redis rabbitmq api worker
+
+          api_ready=0
+          for _ in $(seq 1 60); do
+            if curl --fail --silent --show-error http://127.0.0.1:8080/health/live >/dev/null && \
+               curl --fail --silent --show-error http://127.0.0.1:8080/health/ready >/dev/null; then
+              api_ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$api_ready" -ne 1 ]; then
+            echo "API did not become ready"
+            docker compose -f docker-compose.yml -f docker-compose.browser-e2e.yml logs --no-color --tail=120 api
+            exit 1
+          fi
+
+          worker_ready=0
+          for _ in $(seq 1 60); do
+            if docker compose -f docker-compose.yml -f docker-compose.browser-e2e.yml ps --status running --services | grep -qx worker && \
+               docker compose -f docker-compose.yml -f docker-compose.browser-e2e.yml logs --no-color worker 2>/dev/null | grep -q '"message":"worker-started"'; then
+              worker_ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$worker_ready" -ne 1 ]; then
+            echo "worker did not report readiness"
+            docker compose -f docker-compose.yml -f docker-compose.browser-e2e.yml logs --no-color --tail=120 worker
+            exit 1
+          fi
+          echo "complete browser E2E stack is ready"
+
+      - name: Provision isolated browser identities and workspaces
+        run: |
+          set -euo pipefail
+          AUSTRO_POSTGRES_DSN="$BROWSER_E2E_OWNER_DSN" go run ./cmd/browser-e2e-setup
+          cat "$BROWSER_E2E_ENV_FILE" >> "$GITHUB_ENV"
+
+      - name: Install headless Chromium and system dependencies
+        working-directory: browser-e2e
+        run: timeout 900 npm exec playwright -- install --with-deps chromium
+
+      - name: Prove browser authorization assertion with a temporary mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/browser-e2e-mutation.sh
+          scripts/browser-e2e-mutation.sh
+
+      - name: Publish fresh browser E2E data identifiers
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat "$BROWSER_E2E_ENV_FILE" >> "$GITHUB_ENV"
+
+      - name: Fail if the browser selector matches zero tests
+        working-directory: browser-e2e
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm exec playwright -- test --list --reporter=line | tee /tmp/browser-e2e-test-list.log
+          if ! grep -Eq 'Total: [1-9][0-9]* test' /tmp/browser-e2e-test-list.log; then
+            echo "browser selector matched zero tests"
+            exit 1
+          fi
+
+      - name: Execute real Chromium DOM journey
+        working-directory: browser-e2e
+        shell: bash
+        run: |
+          set -o pipefail
+          npm test -- --reporter=line 2>&1 | tee /tmp/browser-e2e.log
+
+      - name: Upload browser screenshots, traces, videos, and report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: austro-browser-e2e-failure-${{ github.run_id }}
+          path: |
+            browser-e2e/test-results/
+            browser-e2e/playwright-report/
+            /tmp/browser-e2e.log
+            /tmp/browser-e2e-test-list.log
+          if-no-files-found: warn
+
+      - name: Clean isolated browser data
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f "$BROWSER_E2E_ENV_FILE" ]; then
+            AUSTRO_POSTGRES_DSN="$BROWSER_E2E_OWNER_DSN" go run ./cmd/browser-e2e-setup -mode=cleanup
+          else
+            echo "browser E2E setup did not create an environment file"
+          fi
+
+      - name: Stop complete browser E2E stack
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose -f docker-compose.yml -f docker-compose.browser-e2e.yml down -v --remove-orphans
+          rm -f .env
