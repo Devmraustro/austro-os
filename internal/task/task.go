@@ -19,14 +19,14 @@ import (
 
 // Sentinels reported by the task boundary.
 var (
-	ErrInvalidInput       = errors.New("task: invalid input")
-	ErrNotFound           = errors.New("task: not found")
-	ErrWorkspaceMismatch  = errors.New("task: workspace mismatch")
-	ErrInvalidTransition  = errors.New("task: invalid status transition")
-	ErrTerminalState      = errors.New("task: task is in a terminal state")
-	ErrPriority           = errors.New("task: invalid priority")
-	ErrStatus             = errors.New("task: invalid status")
-	ErrAssigneeType       = errors.New("task: invalid assignee type")
+	ErrInvalidInput      = errors.New("task: invalid input")
+	ErrNotFound          = errors.New("task: not found")
+	ErrWorkspaceMismatch = errors.New("task: workspace mismatch")
+	ErrInvalidTransition = errors.New("task: invalid status transition")
+	ErrTerminalState     = errors.New("task: task is in a terminal state")
+	ErrPriority          = errors.New("task: invalid priority")
+	ErrStatus            = errors.New("task: invalid status")
+	ErrAssigneeType      = errors.New("task: invalid assignee type")
 )
 
 // Status is a task lifecycle stage. Statuses are stored as text (schema is
@@ -34,14 +34,14 @@ var (
 type Status string
 
 const (
-	StatusBacklog   Status = "backlog"
-	StatusPlanned   Status = "planned"
+	StatusBacklog    Status = "backlog"
+	StatusPlanned    Status = "planned"
 	StatusInProgress Status = "in_progress"
-	StatusInReview  Status = "in_review"
-	StatusCompleted Status = "completed"
-	StatusCancelled Status = "cancelled"
-	StatusRejected  Status = "rejected"
-	StatusFailed    Status = "failed"
+	StatusInReview   Status = "in_review"
+	StatusCompleted  Status = "completed"
+	StatusCancelled  Status = "cancelled"
+	StatusRejected   Status = "rejected"
+	StatusFailed     Status = "failed"
 )
 
 // Priority is a task scheduling priority.

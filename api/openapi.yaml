@@ -270,7 +270,6 @@ paths:
       principles:
         - Principle 1 — Vision First
         - Principle 9 — Security by Design
-  /workspaces:
     post:
       summary: Create workspace
       description: |
@@ -382,124 +381,357 @@ paths:
       principles:
         - Principle 9 — Security by Design
         - Principle 10 — Privacy by Design
-  /departments:
-    get:
-      summary: List departments
-      description: List departments in a workspace
-      operationId: listDepartments
-      security:
-        - bearerAuth: []
-      responses:
-        '200':
-          description: List of departments
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/Department'
-      principles:
-        - Principle 9 — Security by Design
-  /departments:
-    post:
-      summary: Create department
-      description: Create a department in a workspace
-      operationId: createDepartment
-      security:
-        - bearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                name:
-                  type: string
-                workspaceId:
-                  type: string
-                  format: uuid
-      responses:
-        '201':
-          description: Department created
-      principles:
-        - Principle 5 — Modular Design
-  /teams:
-    get:
-      summary: List teams
-      description: List teams in a department
-      operationId: listTeams
-      security:
-        - bearerAuth: []
-      responses:
-        '200':
-          description: List of teams
-      principles:
-        - Principle 9 — Security by Design
-  /ai-employees:
-    get:
-      summary: List AI employees
-      description: List AI employees in a team
-      operationId: listAIEmployees
-      security:
-        - bearerAuth: []
-      responses:
-        '200':
-          description: List of AI employees
-      principles:
-        - Principle 9 — Security by Design
   /audit/events:
-    post:
-      summary: Create audit event
-      description: Create a new audit event with hash chain and digital signature
-      operationId: createAuditEvent
-      security:
-        - bearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required:
-                - eventType
-                - actorType
-                - targetType
-                - constitutionalPrinciple
-              properties:
-                eventType:
-                  type: string
-                actorType:
-                  type: string
-                actorId:
-                  type: string
-                targetType:
-                  type: string
-                targetId:
-                  type: string
-                outcome:
-                  type: string
-                constitutionalPrinciple:
-                  type: string
-                traceId:
-                  type: string
-                spanId:
-                  type: string
-      responses:
-        '201':
-          description: Audit event created
-      principles:
-        - Principle 13 — Observability
-        - Principle 18 — Founder Authority
-  /audit/events/{traceId}:
     get:
-      summary: List audit events by trace
-      description: Retrieve audit events for a given trace ID
-      operationId: listEventsByTrace
+      summary: List audit events (organization scope)
+      description: |
+        A bounded, newest-first page of the append-only audit chain across the
+        whole organization. Founder only: this read is served from the
+        administrative database role, the only principal audit_org_policy names,
+        so no other role can hold it without creating a cross-tenant read the
+        database itself would not refuse.
+
+        The response omits the chain hash, the digital signature, and the
+        free-form outcome_details and permissions_checked columns. Those are
+        internal, and the JSONB pair is unbounded writer-controlled text, which
+        is exactly where a caller's input or an error string would land.
+
+        Pagination is by seq, which is unique and monotonic, so the ordering is
+        total and a cursor can neither skip nor repeat a row. limit is clamped
+        to 200. Unknown query parameters are rejected rather than ignored, so a
+        misspelled filter cannot silently return an unfiltered page.
+      operationId: listAuditEventsOrg
       security:
         - bearerAuth: []
       parameters:
-        - name: traceId
+        - name: event_type
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: outcome
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: actor_type
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 200
+            default: 50
+        - name: before_seq
+          in: query
+          required: false
+          description: Pagination cursor. Returns only events with a lower seq.
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+      responses:
+        '200':
+          description: One page of audit events, newest first
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditPage'
+        '400':
+          description: Malformed or unsupported filter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Caller is not the founder
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 11 — Human Oversight
+        - Principle 9 — Security by Design
+  /audit/verification:
+    get:
+      summary: Verify the audit hash chain
+      description: |
+        Re-reads the persisted chain and recomputes every link, reporting
+        whether it is intact and how many events were checked. The check is
+        independent of anything the writer remembers, so it detects an edit made
+        behind the application's back.
+
+        Founder only, and expensive by nature: it reads the whole table, because
+        a bounded proof of a hash chain is not a thing. It is meant to be run
+        deliberately, not polled.
+      operationId: verifyAuditChain
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Result of the whole-chain integrity check
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditVerification'
+        '401':
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Caller is not the founder
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 11 — Human Oversight
+        - Principle 9 — Security by Design
+  /workspaces/{id}/audit/events:
+    get:
+      summary: List audit events for one workspace
+      description: |
+        A bounded, newest-first audit page for a single workspace.
+
+        A founder may name any workspace. A workspace_admin or workspace_member
+        is confined to the workspace in their verified token: the path id must
+        equal it, and the read runs on the unprivileged runtime connection with
+        app.current_workspace bound, so audit_workspace_policy enforces the
+        boundary in PostgreSQL rather than in the handler. A diverging path is
+        refused, not silently rewritten.
+      operationId: listAuditEventsForWorkspace
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: event_type
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: outcome
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: actor_type
+          in: query
+          required: false
+          schema:
+            type: string
+            maxLength: 64
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 200
+            default: 50
+        - name: before_seq
+          in: query
+          required: false
+          description: Pagination cursor. Returns only events with a lower seq.
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+      responses:
+        '200':
+          description: One page of audit events, newest first
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditPage'
+        '400':
+          description: Malformed id or filter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Caller may not read this workspace's audit history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 10 — Privacy by Design
+        - Principle 11 — Human Oversight
+  /tasks:
+    post:
+      summary: Create a task
+      description: |
+        Creates a task in the caller's own workspace.
+
+        The workspace is never taken from the request: it comes from the verified
+        token, and the store binds it as app.current_workspace so
+        workspace_isolation_policy confines the insert in PostgreSQL. A new task
+        is always `backlog`; there is no status field here, because letting a
+        caller choose the initial state would bypass the lifecycle.
+
+        A founder has no workspace and is therefore refused. That is deliberate:
+        users_founder_no_workspace makes the absence a database invariant, and
+        granting a cross-workspace write would be a privilege the model does not
+        define.
+      operationId: createTask
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTaskRequest'
+      responses:
+        '201':
+          description: Task created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '400':
+          description: Missing or oversized title, oversized description, or unknown priority
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Caller has no workspace context
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 1 — Vision First
+        - Principle 9 — Security by Design
+    get:
+      summary: List tasks
+      description: |
+        A bounded, newest-first page of the caller's tasks.
+
+        Ordering is (created_at, id) descending. created_at alone would not be a
+        total order -- two tasks created within the same microsecond would tie --
+        so the primary key breaks the tie and the page boundary is never
+        arbitrary. Pagination is keyset rather than offset, so a concurrent
+        insert cannot shift rows under the reader and cause a page to be skipped
+        or repeated.
+
+        The page size is clamped to 200 rather than rejected, and an unrecognized
+        query parameter is refused rather than ignored: a misspelled filter
+        should not silently return an unfiltered page that looks like it worked.
+      operationId: listTasks
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Restrict to one lifecycle stage.
+          schema:
+            type: string
+            enum:
+              - backlog
+              - planned
+              - in_progress
+              - in_review
+              - completed
+              - cancelled
+              - rejected
+              - failed
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 200
+            default: 50
+        - name: cursor
+          in: query
+          required: false
+          description: |
+            Keyset cursor from a previous page's next_cursor. Only tasks sorting
+            strictly after it are returned. A cursor this API did not issue is
+            rejected rather than treated as "start over".
+          schema:
+            type: string
+      responses:
+        '200':
+          description: One page of tasks
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskPage'
+        '400':
+          description: Unknown parameter, malformed limit, unknown status, or invalid cursor
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Caller has no workspace context
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 9 — Security by Design
+        - Principle 13 — Observability
+  /tasks/{id}:
+    get:
+      summary: Read one task
+      description: |
+        Returns a single task. The id is the task, not a workspace: it is
+        resolved only inside the caller's own workspace, so an id belonging to
+        another tenant is not found rather than forbidden, and neither outcome
+        reveals whether the task exists.
+      operationId: getTask
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
           in: path
           required: true
           schema:
@@ -507,44 +739,903 @@ paths:
             format: uuid
       responses:
         '200':
-          description: List of audit events
-      principles:
-        - Principle 13 — Observability
-  /constitutional/principles:
-    get:
-      summary: List constitutional principles
-      description: List all registered constitutional principles
-      operationId: listPrinciples
-      responses:
-        '200':
-          description: List of principles
+          description: The task
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties:
-                  type: string
-      principles:
-        - Principle 13 — Observability
-  /constitutional/principles/{name}:
-    get:
-      summary: Get principle details
-      description: Get details of a specific constitutional principle
-      operationId: getPrinciple
-      responses:
-        '200':
-          description: Principle details
+                $ref: '#/components/schemas/Task'
+        '400':
+          description: Malformed task id
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  description:
-                    type: string
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Caller has no workspace context
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such task in the caller's workspace
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 9 — Security by Design
+        - Principle 10 — Privacy by Design
+    patch:
+      summary: Update task fields
+      description: |
+        Updates the non-lifecycle fields of a task: title, description, priority,
+        assignee and deadline.
+
+        Status is deliberately not among them. A lifecycle move is validated
+        against the task's current state, and a field update has no way to
+        perform that check, so allowing status here would let a PATCH smuggle a
+        transition past the rules the transition route enforces.
+
+        Every field is optional and absent means unchanged, so a partial update
+        cannot clear a field the caller did not mention.
+      operationId: updateTask
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateTaskRequest'
+      responses:
+        '200':
+          description: The updated task
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '400':
+          description: Blank or oversized title, oversized description, or an invalid priority, assignee or deadline
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Caller has no workspace context
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such task in the caller's workspace
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 9 — Security by Design
+        - Principle 4 — Quality Over Speed
+  /tasks/{id}/transition:
+    post:
+      summary: Transition a task to the next lifecycle stage
+      description: |
+        Applies exactly one lifecycle move, validated server-side.
+
+        The request names only the destination. The current status is read from
+        the database inside the same operation and task.CanTransition decides
+        whether the move is legal, so a client cannot assert a starting state the
+        task is not in, and cannot reach a status the lifecycle does not define.
+
+        The permitted destinations for a task are returned on the task itself,
+        computed from the same table the server enforces. They are a convenience
+        derived from that authority, never the authority: the server re-checks on
+        every request.
+
+        `completed`, `cancelled`, `failed` and `rejected` are terminal; no
+        transition out of them is permitted.
+      operationId: transitionTask
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransitionTaskRequest'
+      responses:
+        '200':
+          description: The task after the transition
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '400':
+          description: |
+            Missing or unknown status, or a transition the lifecycle does not
+            allow from the task's current state, including any move out of a
+            terminal state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Caller has no workspace context
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such task in the caller's workspace
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 11 — Human Oversight
+        - Principle 4 — Quality Over Speed
+  /knowledge:
+    post:
+      summary: Create a knowledge document
+      description: |
+        Creates a document in the caller's own workspace.
+
+        The workspace is never taken from the request: it comes from the verified
+        token, and the store binds it as app.current_workspace so
+        workspace_isolation_policy confines the insert in PostgreSQL.
+
+        The content is embedded server-side before it is stored. No vector is
+        accepted from the client, because a caller-supplied embedding would let
+        one workspace plant a document that another workspace's similarity search
+        retrieves -- which is precisely the isolation the column exists to serve.
+        If embedding fails, nothing is persisted.
+
+        `kind` is optional and defaults to `document`. A founder has no workspace
+        and is therefore refused.
+      operationId: createKnowledgeDocument
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateKnowledgeRequest'
+      responses:
+        '201':
+          description: Document created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeDocument'
+        '400': >-
+          Missing or oversized title, blank or oversized content, unknown kind,
+          unknown field, or a body over the request-size bound
+        '401':
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Caller has no workspace context
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Embedding or persistence failed; nothing was stored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 1 — Vision First
+        - Principle 9 — Security by Design
+    get:
+      summary: List knowledge documents
+      description: |
+        A bounded, newest-first page of the caller's documents.
+
+        Ordering is (created_at, id) descending. created_at alone would not be a
+        total order -- two documents written within the same microsecond would
+        tie -- so the primary key breaks the tie and the page boundary is never
+        arbitrary. Pagination is keyset rather than offset, so a concurrent insert
+        cannot shift rows under the reader and cause a page to be skipped or
+        repeated.
+
+        The page size is clamped to 200 rather than rejected, and the effective
+        value is reported. An unrecognized query parameter is refused rather than
+        ignored: a caller who misspells `cursor` and is silently handed the first
+        page would believe it had paged forward. The query string is parsed
+        explicitly, so a malformed one is a 400 rather than a request served with
+        a parameter silently dropped.
+      operationId: listKnowledgeDocuments
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: kind
+          in: query
+          required: false
+          description: Restrict to one document kind
+          schema:
+            type: string
+            enum: [document, campaign_rule, style_guide]
+        - name: limit
+          in: query
+          required: false
+          description: Page size, clamped to a maximum of 200
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: cursor
+          in: query
+          required: false
+          description: Keyset cursor from a previous page's next_cursor
+          schema:
+            type: string
+      responses:
+        '200':
+          description: One page of documents, newest first
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgePage'
+        '400':
+          description: Unknown query parameter, malformed cursor, non-integer limit, or unknown kind
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Caller has no workspace context
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
       principles:
         - Principle 13 — Observability
+        - Principle 10 — Privacy by Design
+  /knowledge/{id}:
+    get:
+      summary: Read a knowledge document
+      description: |
+        Returns one document from the caller's workspace.
+
+        A document owned by another workspace answers 404 rather than 403. The
+        identifier is the document, not the workspace, so answering 403 would
+        confirm to another tenant that the document exists.
+
+        The embedding is not returned: it is storage mechanics rather than part
+        of the document a reader wants, and omitting it keeps the response small.
+      operationId: getKnowledgeDocument
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The document
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeDocument'
+        '400':
+          description: Malformed document id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Caller has no workspace context
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such document in the caller's workspace
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 10 — Privacy by Design
+    patch:
+      summary: Update a knowledge document
+      description: |
+        Updates the title, content or kind of a document in the caller's
+        workspace.
+
+        Every field is optional, and an omitted field is left unchanged rather
+        than cleared. A request naming no field at all is a 400, not a silent
+        no-op, because returning 200 would tell the caller something was written
+        when nothing was.
+
+        Changing the content re-embeds the document, so similarity search ranks
+        what is actually stored. A title-only edit does not spend an embedding
+        call, because the vector is a function of the content alone.
+
+        This is a real UPDATE, not the create path's INSERT ... ON CONFLICT: a
+        document deleted between the read and the write is reported not found
+        rather than silently recreated.
+      operationId: updateKnowledgeDocument
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateKnowledgeRequest'
+      responses:
+        '200':
+          description: The updated document
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeDocument'
+        '400': >-
+          No field supplied, blank title or content, oversized content, unknown
+          kind, or unknown field
+        '401':
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Caller has no workspace context
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such document in the caller's workspace
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Re-embedding or persistence failed; the document is unchanged
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 4 — Quality Over Speed
+        - Principle 9 — Security by Design
+    delete:
+      summary: Delete a knowledge document
+      description: |
+        Removes a document from the caller's workspace.
+
+        The knowledge domain has no archive flag or status column, so deletion is
+        its only retirement path; unlike tasks, which retire through a terminal
+        lifecycle status, there is no softer state to move a document into. The
+        browser application confirms before issuing this request.
+
+        Deleting a document owned by another workspace answers 404 and removes
+        nothing.
+      operationId: deleteKnowledgeDocument
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Document removed
+        '400':
+          description: Malformed document id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Caller has no workspace context
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such document in the caller's workspace
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 9 — Security by Design
+  /knowledge/search:
+    post:
+      summary: Search knowledge by similarity
+      description: |
+        Returns the caller's documents nearest to the query text.
+
+        The query is embedded server-side using the same provider and dimension
+        as the stored documents, then ranked by cosine distance in SQL against
+        rows the workspace policy already confines. No vector is accepted from
+        the client, and the ranking cannot widen the search beyond the caller's
+        own workspace.
+
+        A POST is used rather than a GET because the query is a body to be
+        embedded, not a URL-addressable resource.
+
+        The limit is clamped to 50, and a value outside that range is rejected
+        rather than silently replaced with a default -- substituting a default
+        would hide the caller's mistake.
+      operationId: searchKnowledge
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchKnowledgeRequest'
+      responses:
+        '200':
+          description: Nearest documents, best match first
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeSearchResult'
+        '400':
+          description: Empty or oversized query, unknown kind, or limit out of range
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Caller has no workspace context
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Embedding the query failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 10 — Privacy by Design
+        - Principle 9 — Security by Design
+
 components:
   schemas:
+    KnowledgeDocument:
+      type: object
+      description: |-
+        A workspace-scoped knowledge document.
+
+        The embedding is deliberately absent. It is server-derived storage
+        mechanics rather than part of the document a reader wants, and returning
+        it would invite a client to treat it as data it may set.
+      required: [id, workspace_id, kind, title, content, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        workspace_id:
+          type: string
+          format: uuid
+          description: Stamped by the server from the verified token
+        kind:
+          type: string
+          enum: [document, campaign_rule, style_guide]
+        title:
+          type: string
+        content:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    KnowledgePage:
+      type: object
+      description: One bounded page of documents, newest first.
+      required: [documents, limit]
+      properties:
+        documents:
+          type: array
+          items:
+            $ref: '#/components/schemas/KnowledgeDocument'
+        next_cursor:
+          type: string
+          description: |-
+            Cursor for the following page. Absent on the last page, which is how
+            the caller knows the walk is finished rather than inferring it from a
+            page that happened to come back full.
+        limit:
+          type: integer
+          description: The page size actually applied, which may be below the one requested
+    KnowledgeSearchResult:
+      type: object
+      description: Similarity search results, best match first.
+      required: [documents, count]
+      properties:
+        documents:
+          type: array
+          items:
+            $ref: '#/components/schemas/KnowledgeDocument'
+        count:
+          type: integer
+    CreateKnowledgeRequest:
+      type: object
+      description: |-
+        A new document. Only the title and content are required; kind defaults
+        to document. There is no embedding field, and an unknown field is
+        rejected rather than ignored.
+      required: [title, content]
+      properties:
+        kind:
+          type: string
+          enum: [document, campaign_rule, style_guide]
+          default: document
+        title:
+          type: string
+          maxLength: 300
+        content:
+          type: string
+          maxLength: 65536
+    UpdateKnowledgeRequest:
+      type: object
+      description: |-
+        A partial update. Every field is optional and an omitted field is left
+        unchanged; at least one must be present.
+      properties:
+        kind:
+          type: string
+          enum: [document, campaign_rule, style_guide]
+        title:
+          type: string
+          maxLength: 300
+        content:
+          type: string
+          maxLength: 65536
+    SearchKnowledgeRequest:
+      type: object
+      description: A similarity query. The text is embedded server-side.
+      required: [query]
+      properties:
+        query:
+          type: string
+          maxLength: 2000
+        kind:
+          type: string
+          enum: [document, campaign_rule, style_guide]
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 10
+    Task:
+      type: object
+      description: |
+        A unit of work, always owned by exactly one workspace.
+
+        `transitions` lists the states this task may legally move to next,
+        computed server-side from the same lifecycle table the transition route
+        enforces. It exists so a client cannot offer a control the server would
+        refuse; it is derived from the authority and is never the authority.
+      required:
+        - id
+        - workspace_id
+        - title
+        - status
+        - priority
+        - created_at
+        - updated_at
+        - transitions
+      properties:
+        id:
+          type: string
+          format: uuid
+        workspace_id:
+          type: string
+          format: uuid
+          description: The owning tenant. Derived server-side; never accepted from a client.
+        title:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 4000
+        status:
+          type: string
+          enum:
+            - backlog
+            - planned
+            - in_progress
+            - in_review
+            - completed
+            - cancelled
+            - rejected
+            - failed
+        priority:
+          type: string
+          enum: [low, normal, high, urgent]
+        assignee_type:
+          type: string
+          enum: [ai_employee, human]
+        assignee_id:
+          type: string
+          format: uuid
+        deadline:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        transitions:
+          type: array
+          description: |
+            Lifecycle states reachable from the current one. Empty for a task in
+            a terminal state.
+          items:
+            type: string
+            enum:
+              - backlog
+              - planned
+              - in_progress
+              - in_review
+              - completed
+              - cancelled
+              - rejected
+              - failed
+    TaskPage:
+      type: object
+      required:
+        - tasks
+        - limit
+      properties:
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/Task'
+        next_cursor:
+          type: string
+          description: |
+            Pass as `cursor` to fetch the following page. Absent on the last
+            page, which is how a client knows it has finished.
+        limit:
+          type: integer
+          description: The page size actually applied, which may be less than requested.
+    CreateTaskRequest:
+      type: object
+      required:
+        - title
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 4000
+        priority:
+          type: string
+          enum: [low, normal, high, urgent]
+          description: Omitted means normal.
+    UpdateTaskRequest:
+      type: object
+      description: |
+        Every field is optional; an absent field is left unchanged. Status is not
+        accepted here at all -- see the transition operation.
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 4000
+        priority:
+          type: string
+          enum: [low, normal, high, urgent]
+        assignee_type:
+          type: string
+          enum: [ai_employee, human]
+        assignee_id:
+          type: string
+          format: uuid
+        deadline:
+          type: string
+          format: date-time
+    TransitionTaskRequest:
+      type: object
+      description: |
+        Names only the destination. The origin is read from the database, so a
+        client cannot claim a starting state the task is not in.
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum:
+            - backlog
+            - planned
+            - in_progress
+            - in_review
+            - completed
+            - cancelled
+            - rejected
+            - failed
+    AuditEventView:
+      type: object
+      description: |
+        One audit event as exposed to clients. Deliberately narrower than the
+        stored row: the chain hash, digital signature, outcome_details and
+        permissions_checked are withheld, because the first two are internal
+        cryptographic material and the second two are unbounded
+        writer-controlled JSON.
+      required:
+        - seq
+        - event_id
+        - timestamp
+        - actor_type
+        - target_type
+        - event_type
+        - outcome
+        - constitutional_principle
+      properties:
+        seq:
+          type: integer
+          format: int64
+          description: Chain position. Unique and monotonic; also the page cursor.
+        event_id:
+          type: string
+          format: uuid
+        timestamp:
+          type: string
+          format: date-time
+          description: The canonical instant the hash chain binds.
+        workspace_id:
+          type: string
+          format: uuid
+          nullable: true
+        trace_id:
+          type: string
+          format: uuid
+          nullable: true
+        span_id:
+          type: string
+          format: uuid
+          nullable: true
+        actor_type:
+          type: string
+        actor_id:
+          type: string
+          format: uuid
+          nullable: true
+        target_type:
+          type: string
+        target_id:
+          type: string
+          format: uuid
+          nullable: true
+        event_type:
+          type: string
+        outcome:
+          type: string
+        constitutional_principle:
+          type: string
+        genesis:
+          type: boolean
+          description: True only for the chain root.
+    AuditPage:
+      type: object
+      required:
+        - events
+        - limit
+      properties:
+        events:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/AuditEventView'
+        next_cursor:
+          type: string
+          description: |
+            seq to pass as before_seq for the next page. Absent when the page
+            was short enough to be the last one.
+        limit:
+          type: integer
+          description: The effective page size after clamping.
+    AuditVerification:
+      type: object
+      required:
+        - verified
+        - events_checked
+      properties:
+        verified:
+          type: boolean
+          description: True when every link in the persisted chain recomputes.
+        events_checked:
+          type: integer
+          description: How many events the check covered.
+        head_seq:
+          type: integer
+          format: int64
+          description: Chain position of the newest event, when any exists.
     Workspace:
       type: object
       properties:
@@ -559,146 +1650,6 @@ components:
         updated_at:
           type: string
           format: date-time
-    Department:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-        name:
-          type: string
-        workspace_id:
-          type: string
-          format: uuid
-        created_at:
-          type: string
-          format: date-time
-    Team:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-        name:
-          type: string
-        department_id:
-          type: string
-          format: uuid
-        created_at:
-          type: string
-          format: date-time
-    AIEmployee:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-        name:
-          type: string
-        role:
-          type: string
-        team_id:
-          type: string
-          format: uuid
-        department_id:
-          type: string
-          format: uuid
-        workspace_id:
-          type: string
-          format: uuid
-        capabilities:
-          type: array
-          items:
-            type: string
-        permissions:
-          type: object
-        memory_id:
-          type: string
-          format: uuid
-        current_task_id:
-          type: string
-          format: uuid
-        created_at:
-          type: string
-          format: date-time
-        updated_at:
-          type: string
-          format: date-time
-    AuditEvent:
-      type: object
-      description: |
-        Universal audit event with hash chain and digital signature.
-        The hash chain uses GENESIS_HASH for the first event; subsequent events
-        chain from the previous event's hash_value.
-      required:
-        - event_id
-        - timestamp
-        - actor_type
-        - target_type
-        - event_type
-        - outcome
-        - constitutional_principle
-      properties:
-        event_id:
-          type: string
-          format: uuid
-        timestamp:
-          type: string
-          format: date-time
-        trace_id:
-          type: string
-          format: uuid
-        span_id:
-          type: string
-          format: uuid
-        actor_type:
-          type: string
-        actor_id:
-          type: string
-        target_type:
-          type: string
-        target_id:
-          type: string
-        event_type:
-          type: string
-        outcome:
-          type: string
-        outcome_details:
-          type: object
-        permissions_checked:
-          type: object
-        constitutional_principle:
-          type: string
-          enum:
-            - Vision First
-            - Architecture Before Implementation
-            - Documentation Is Part of the Product
-            - Quality Over Speed
-            - Modular Design
-            - Replaceability
-            - Separation of Concerns
-            - AI Independence
-            - Security by Design
-            - Privacy by Design
-            - Human Oversight
-            - Continuous Improvement
-            - Observability
-            - Backward Compatibility
-            - Simplicity
-            - Scalability
-            - Explicit Decisions
-            - Founder Authority
-        digital_signature:
-          type: string
-          format: base64
-        hash_chain_parent:
-          type: string
-          format: uuid
-        hash_chain_value:
-          type: string
-          format: byte
-        genesis:
-          type: boolean
     ErrorResponse:
       type: object
       properties:

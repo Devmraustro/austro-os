@@ -10,10 +10,10 @@ import (
 
 // isoFixture captures one workspace's hierarchy (department, team, employee).
 type isoFixture struct {
-	deptID   uuid.UUID
-	teamID   uuid.UUID
-	empID    uuid.UUID
-	empName  string
+	deptID  uuid.UUID
+	teamID  uuid.UUID
+	empID   uuid.UUID
+	empName string
 }
 
 // prepareIsolationData seeds an identical hierarchy (department + team + AI

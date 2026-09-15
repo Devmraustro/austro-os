@@ -4,6 +4,7 @@ import (
 	"austro-os/internal/event"
 	logger "austro-os/internal/log"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -15,6 +16,25 @@ import (
 type WorkerConfig struct {
 	URL       string
 	QueueName string
+}
+
+// ErrPermanent marks a handler failure that can never succeed on retry: a
+// message that is structurally invalid rather than one that hit a transient
+// dependency failure.
+//
+// Without this distinction every handler error is requeued, and a message that
+// can never be processed is redelivered forever. Because the consumer runs with
+// a prefetch of 1, that single message also blocks every message behind it, so
+// one malformed event wedges the whole queue.
+//
+// A permanent failure is still a failure: it is logged at error level with its
+// own event name and then acknowledged only to take it off the queue. It is
+// never reported as successfully processed.
+var ErrPermanent = errors.New("permanent message failure")
+
+// PermanentErrorf wraps a formatted error as permanent.
+func PermanentErrorf(format string, args ...interface{}) error {
+	return fmt.Errorf("%w: %s", ErrPermanent, fmt.Sprintf(format, args...))
 }
 
 type WorkerOption func(*Worker)
@@ -232,6 +252,7 @@ func (w *Worker) processMessage(msg amqp.Delivery) {
 	var env event.UniversalEnvelope
 	if err := json.Unmarshal(msg.Body, &env); err != nil {
 		logger.NewEntry("worker-json-decode-error").
+			SetLevel("error").
 			With("message_id", msg.MessageId).
 			With("error", err.Error()).
 			Log()
@@ -268,7 +289,24 @@ func (w *Worker) processMessage(msg amqp.Delivery) {
 
 	if w.handler != nil {
 		if err := w.handler(&env); err != nil {
+			if errors.Is(err, ErrPermanent) {
+				// This message can never be processed. Requeueing it would
+				// redeliver it forever and, with a prefetch of 1, block every
+				// message behind it. It is logged at error level under its own
+				// event name and acknowledged only to take it off the queue;
+				// it is never reported as successfully processed.
+				logger.NewEntry("worker-message-rejected-permanent").
+					SetLevel("error").
+					With("message_id", msg.MessageId).
+					With("event_type", string(env.EventType)).
+					With("error", err.Error()).
+					Log()
+				msg.Ack(false)
+				return
+			}
+			// Transient failure: leave it for redelivery.
 			logger.NewEntry("worker-handler-error").
+				SetLevel("error").
 				With("message_id", msg.MessageId).
 				With("event_type", string(env.EventType)).
 				With("error", err.Error()).
@@ -288,17 +326,31 @@ func (w *Worker) processMessage(msg amqp.Delivery) {
 		Log()
 }
 
+// WithTraceID stamps a fixed trace id onto the envelope and starts a fresh
+// span. A trace id that is not a UUID is reported as an error rather than
+// panicking: uuid.MustParse would abort the process on malformed input.
 func WithTraceID(traceID string, workerID string) func(*event.UniversalEnvelope) error {
 	return func(ev *event.UniversalEnvelope) error {
-		ev.TraceID = uuid.MustParse(traceID)
+		parsed, err := uuid.Parse(traceID)
+		if err != nil {
+			return fmt.Errorf("invalid trace id %q: %w", traceID, err)
+		}
+		ev.TraceID = parsed
 		ev.SpanID = uuid.New()
 		return nil
 	}
 }
 
+// WithCorrelationID attaches a correlation id to the envelope details. The
+// payload is marshalled rather than concatenated, so a correlation id
+// containing a quote or brace cannot break out of the JSON document.
 func WithCorrelationID(correlationID string) func(*event.UniversalEnvelope) error {
 	return func(ev *event.UniversalEnvelope) error {
-		ev.Details = json.RawMessage(`{"correlation_id": "` + correlationID + `"}`)
+		b, err := json.Marshal(map[string]string{"correlation_id": correlationID})
+		if err != nil {
+			return fmt.Errorf("encode correlation id: %w", err)
+		}
+		ev.Details = b
 		return nil
 	}
 }

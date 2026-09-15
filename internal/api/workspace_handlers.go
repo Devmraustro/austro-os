@@ -7,8 +7,10 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"austro-os/internal/audit"
 	"austro-os/internal/auth"
 	logger "austro-os/internal/log"
+	"austro-os/internal/middleware"
 	"austro-os/internal/rbac"
 	"austro-os/internal/workspace"
 
@@ -33,11 +35,41 @@ const (
 // The explicit role guards below are defense-in-depth on top of the middleware.
 type WorkspaceHandler struct {
 	store workspace.Store
+	// auditSink persists workspace administration decisions. Like the auth
+	// handler it is nil only in unit tests, and the success path fails closed
+	// when it is absent.
+	auditSink audit.Sink
 }
 
 // NewWorkspaceHandler builds the handler with the workspace store port.
 func NewWorkspaceHandler(store workspace.Store) *WorkspaceHandler {
 	return &WorkspaceHandler{store: store}
+}
+
+// SetAuditSink attaches the persistent audit writer, mirroring
+// AuthHandler.SetAuditSink.
+func (h *WorkspaceHandler) SetAuditSink(s audit.Sink) *WorkspaceHandler {
+	h.auditSink = s
+	return h
+}
+
+// recordWorkspaceAudit persists a workspace administration decision. Creating a
+// workspace changes the tenant boundary itself, so it is one of the events that
+// must not be able to succeed without a durable record.
+func (h *WorkspaceHandler) recordWorkspaceAudit(r *http.Request, rec audit.Record) error {
+	if h.auditSink == nil {
+		return errAuditUnavailable
+	}
+	cv := middleware.ExtractContextValues(r)
+	if id, err := uuid.Parse(cv.TraceID); err == nil {
+		rec.TraceID = id
+	}
+	if _, err := h.auditSink.Append(r.Context(), rec); err != nil {
+		logger.NewEntry("audit-persist-failed").SetLevel("error").
+			With("event_type", rec.EventType).WithError(err).Log()
+		return err
+	}
+	return nil
 }
 
 // List returns every workspace. Only the founder's organization-level rule
@@ -111,6 +143,20 @@ func (h *WorkspaceHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	auditWorkspace(claims.ID, "create-workspace", "success", rec.ID.String())
+	created := rec.ID
+	if err := h.recordWorkspaceAudit(r, audit.Record{
+		EventType:   "workspace.create",
+		ActorType:   "user",
+		ActorID:     parseActorID(claims.ID),
+		TargetType:  "workspace",
+		TargetID:    created,
+		Outcome:     "success",
+		Principle:   "Security by Design",
+		WorkspaceID: &created,
+	}); err != nil {
+		h.serverError(w, "create-workspace", err)
+		return
+	}
 	writeJSON(w, http.StatusCreated, toWorkspaceResponse(rec))
 }
 

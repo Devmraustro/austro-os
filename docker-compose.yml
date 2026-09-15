@@ -1,14 +1,18 @@
 services:
   postgres:
-    image: pgvector/pgvector:pg15
+    # Same pgvector line the CI regression job runs, so local and CI exercise
+    # the same server version.
+    image: pgvector/pgvector:pg16
     container_name: austro-postgres
     environment:
       - POSTGRES_DB=austro
       - POSTGRES_USER=austro
-      - POSTGRES_PASSWORD=austro
-      - POSTGRES_INITDB_AUTHENTICATION=trust
+      - POSTGRES_PASSWORD=${AUSTRO_POSTGRES_PASSWORD:?AUSTRO_POSTGRES_PASSWORD is required}
     ports:
-      - "5432:5432"
+      # Loopback only: containers on austro_net reach this by service name, so
+      # publishing on every interface only exposes the database to the host's
+      # network.
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -23,8 +27,11 @@ services:
     image: redis:7-alpine
     container_name: austro-redis
     ports:
-      - "6379:6379"
-    command: redis-server --save "" --appendonly no
+      - "127.0.0.1:6379:6379"
+    # Redis holds workspace memory, so an unauthenticated instance published on
+    # every interface is a direct data exposure. The application reads the same
+    # variable through AUSTRO_REDIS_PASSWORD.
+    command: redis-server --save "" --appendonly no --requirepass ${AUSTRO_REDIS_PASSWORD:?AUSTRO_REDIS_PASSWORD is required}
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -37,11 +44,13 @@ services:
     image: rabbitmq:3-management-alpine
     container_name: austro-rabbitmq
     environment:
-      - RABBITMQ_DEFAULT_USER=austro
-      - RABBITMQ_DEFAULT_PASS=austro
+      - RABBITMQ_DEFAULT_USER=${AUSTRO_RABBITMQ_USER:?AUSTRO_RABBITMQ_USER is required}
+      - RABBITMQ_DEFAULT_PASS=${AUSTRO_RABBITMQ_PASSWORD:?AUSTRO_RABBITMQ_PASSWORD is required}
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "127.0.0.1:5672:5672"
+      # The management UI ships with a well-known default login; keep it on
+      # loopback rather than on every interface.
+      - "127.0.0.1:15672:15672"
     healthcheck:
       test: ["CMD", "rabbitmqctl", "status"]
       interval: 5s
@@ -57,14 +66,21 @@ services:
     container_name: austro-api
     environment:
       - AUSTRO_ENV=development
-      - AUSTRO_POSTGRES_DSN=${AUSTRO_POSTGRES_DSN:-postgres://austro:austro@postgres:5432/austro?sslmode=disable}
+      - AUSTRO_POSTGRES_DSN=${AUSTRO_POSTGRES_DSN:-postgres://austro:${AUSTRO_POSTGRES_PASSWORD}@postgres:5432/austro?sslmode=disable}
+      # The role the process actually serves traffic on. It is not the schema
+      # owner above: PostgreSQL applies no row level security to a table's
+      # owner, so an owner connection would enforce no workspace isolation at
+      # all. The bootstrap creates this role and refuses to start if it turns
+      # out to be a superuser, to hold BYPASSRLS, or to own a protected table.
+      - AUSTRO_POSTGRES_RUNTIME_DSN=${AUSTRO_POSTGRES_RUNTIME_DSN:-postgres://austro_app:${AUSTRO_POSTGRES_RUNTIME_PASSWORD:?AUSTRO_POSTGRES_RUNTIME_PASSWORD is required}@postgres:5432/austro?sslmode=disable}
       - AUSTRO_REDIS_ADDR=${AUSTRO_REDIS_ADDR:-redis:6379}
-      - AUSTRO_RABBITMQ_URL=${AUSTRO_RABBITMQ_URL:-amqp://austro:austro@rabbitmq:5672}
+      - AUSTRO_REDIS_PASSWORD=${AUSTRO_REDIS_PASSWORD:?AUSTRO_REDIS_PASSWORD is required}
+      - AUSTRO_RABBITMQ_URL=${AUSTRO_RABBITMQ_URL:-amqp://${AUSTRO_RABBITMQ_USER}:${AUSTRO_RABBITMQ_PASSWORD}@rabbitmq:5672}
       - AUSTRO_RABBITMQ_QUEUE=${AUSTRO_RABBITMQ_QUEUE:-austro.events}
-      - AUSTRO_JWT_SECRET=${AUSTRO_JWT_SECRET:-austro-dev-jwt-secret-key-min-32-chars}
-      - AUSTRO_JWT_REFRESH_SECRET=${AUSTRO_JWT_REFRESH_SECRET:-austro-dev-jwt-refresh-secret-min-32-chars}
+      - AUSTRO_JWT_SECRET=${AUSTRO_JWT_SECRET:?AUSTRO_JWT_SECRET is required and signs access tokens}
+      - AUSTRO_JWT_REFRESH_SECRET=${AUSTRO_JWT_REFRESH_SECRET:?AUSTRO_JWT_REFRESH_SECRET is required and signs refresh tokens}
       - AUSTRO_FOUNDER_USERNAME=${AUSTRO_FOUNDER_USERNAME:-founder}
-      - AUSTRO_FOUNDER_PASSWORD=${AUSTRO_FOUNDER_PASSWORD:-founder-dev-password-min-16-chars}
+      - AUSTRO_FOUNDER_PASSWORD=${AUSTRO_FOUNDER_PASSWORD:?AUSTRO_FOUNDER_PASSWORD is required and is the founder credential}
       - AUSTRO_AI_BACKEND=${AUSTRO_AI_BACKEND:-stub}
       - AUSTRO_AI_MODEL=${AUSTRO_AI_MODEL:-}
       - AUSTRO_AI_BASE_URL=${AUSTRO_AI_BASE_URL:-}
@@ -79,6 +95,12 @@ services:
       - AUSTRO_PUBLISH_RETRY_BACKOFF_MAX=${AUSTRO_PUBLISH_RETRY_BACKOFF_MAX:-}
     ports:
       - "8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 15s
     depends_on:
       postgres:
         condition: service_healthy
@@ -97,14 +119,21 @@ services:
     command: /app/worker
     environment:
       - AUSTRO_ENV=development
-      - AUSTRO_POSTGRES_DSN=${AUSTRO_POSTGRES_DSN:-postgres://austro:austro@postgres:5432/austro?sslmode=disable}
+      - AUSTRO_POSTGRES_DSN=${AUSTRO_POSTGRES_DSN:-postgres://austro:${AUSTRO_POSTGRES_PASSWORD}@postgres:5432/austro?sslmode=disable}
+      # The role the process actually serves traffic on. It is not the schema
+      # owner above: PostgreSQL applies no row level security to a table's
+      # owner, so an owner connection would enforce no workspace isolation at
+      # all. The bootstrap creates this role and refuses to start if it turns
+      # out to be a superuser, to hold BYPASSRLS, or to own a protected table.
+      - AUSTRO_POSTGRES_RUNTIME_DSN=${AUSTRO_POSTGRES_RUNTIME_DSN:-postgres://austro_app:${AUSTRO_POSTGRES_RUNTIME_PASSWORD:?AUSTRO_POSTGRES_RUNTIME_PASSWORD is required}@postgres:5432/austro?sslmode=disable}
       - AUSTRO_REDIS_ADDR=${AUSTRO_REDIS_ADDR:-redis:6379}
-      - AUSTRO_RABBITMQ_URL=${AUSTRO_RABBITMQ_URL:-amqp://austro:austro@rabbitmq:5672}
+      - AUSTRO_REDIS_PASSWORD=${AUSTRO_REDIS_PASSWORD:?AUSTRO_REDIS_PASSWORD is required}
+      - AUSTRO_RABBITMQ_URL=${AUSTRO_RABBITMQ_URL:-amqp://${AUSTRO_RABBITMQ_USER}:${AUSTRO_RABBITMQ_PASSWORD}@rabbitmq:5672}
       - AUSTRO_RABBITMQ_QUEUE=${AUSTRO_RABBITMQ_QUEUE:-austro.events}
-      - AUSTRO_JWT_SECRET=${AUSTRO_JWT_SECRET:-austro-dev-jwt-secret-key-min-32-chars}
-      - AUSTRO_JWT_REFRESH_SECRET=${AUSTRO_JWT_REFRESH_SECRET:-austro-dev-jwt-refresh-secret-min-32-chars}
+      - AUSTRO_JWT_SECRET=${AUSTRO_JWT_SECRET:?AUSTRO_JWT_SECRET is required and signs access tokens}
+      - AUSTRO_JWT_REFRESH_SECRET=${AUSTRO_JWT_REFRESH_SECRET:?AUSTRO_JWT_REFRESH_SECRET is required and signs refresh tokens}
       - AUSTRO_FOUNDER_USERNAME=${AUSTRO_FOUNDER_USERNAME:-founder}
-      - AUSTRO_FOUNDER_PASSWORD=${AUSTRO_FOUNDER_PASSWORD:-founder-dev-password-min-16-chars}
+      - AUSTRO_FOUNDER_PASSWORD=${AUSTRO_FOUNDER_PASSWORD:?AUSTRO_FOUNDER_PASSWORD is required and is the founder credential}
       - AUSTRO_AI_BACKEND=${AUSTRO_AI_BACKEND:-stub}
       - AUSTRO_AI_MODEL=${AUSTRO_AI_MODEL:-}
       - AUSTRO_AI_BASE_URL=${AUSTRO_AI_BASE_URL:-}
@@ -136,21 +165,28 @@ services:
     environment:
       - GOPROXY=https://proxy.golang.org,direct
       - AUSTRO_ENV=development
-      - AUSTRO_POSTGRES_DSN=${AUSTRO_POSTGRES_DSN:-postgres://austro:austro@postgres:5432/austro?sslmode=disable}
+      - AUSTRO_POSTGRES_DSN=${AUSTRO_POSTGRES_DSN:-postgres://austro:${AUSTRO_POSTGRES_PASSWORD}@postgres:5432/austro?sslmode=disable}
+      # The role the process actually serves traffic on. It is not the schema
+      # owner above: PostgreSQL applies no row level security to a table's
+      # owner, so an owner connection would enforce no workspace isolation at
+      # all. The bootstrap creates this role and refuses to start if it turns
+      # out to be a superuser, to hold BYPASSRLS, or to own a protected table.
+      - AUSTRO_POSTGRES_RUNTIME_DSN=${AUSTRO_POSTGRES_RUNTIME_DSN:-postgres://austro_app:${AUSTRO_POSTGRES_RUNTIME_PASSWORD:?AUSTRO_POSTGRES_RUNTIME_PASSWORD is required}@postgres:5432/austro?sslmode=disable}
       - AUSTRO_REDIS_ADDR=${AUSTRO_REDIS_ADDR:-redis:6379}
-      - AUSTRO_RABBITMQ_URL=${AUSTRO_RABBITMQ_URL:-amqp://austro:austro@rabbitmq:5672}
+      - AUSTRO_REDIS_PASSWORD=${AUSTRO_REDIS_PASSWORD:?AUSTRO_REDIS_PASSWORD is required}
+      - AUSTRO_RABBITMQ_URL=${AUSTRO_RABBITMQ_URL:-amqp://${AUSTRO_RABBITMQ_USER}:${AUSTRO_RABBITMQ_PASSWORD}@rabbitmq:5672}
       - AUSTRO_RABBITMQ_QUEUE=${AUSTRO_RABBITMQ_QUEUE:-austro.events}
-      - AUSTRO_JWT_SECRET=${AUSTRO_JWT_SECRET:-austro-dev-jwt-secret-key-min-32-chars}
-      - AUSTRO_JWT_REFRESH_SECRET=${AUSTRO_JWT_REFRESH_SECRET:-austro-dev-jwt-refresh-secret-min-32-chars}
+      - AUSTRO_JWT_SECRET=${AUSTRO_JWT_SECRET:?AUSTRO_JWT_SECRET is required and signs access tokens}
+      - AUSTRO_JWT_REFRESH_SECRET=${AUSTRO_JWT_REFRESH_SECRET:?AUSTRO_JWT_REFRESH_SECRET is required and signs refresh tokens}
       - AUSTRO_FOUNDER_USERNAME=${AUSTRO_FOUNDER_USERNAME:-founder}
-      - AUSTRO_FOUNDER_PASSWORD=${AUSTRO_FOUNDER_PASSWORD:-founder-dev-password-min-16-chars}
+      - AUSTRO_FOUNDER_PASSWORD=${AUSTRO_FOUNDER_PASSWORD:?AUSTRO_FOUNDER_PASSWORD is required and is the founder credential}
       - AUSTRO_API_URL=http://api:8080
     volumes:
       - .:/app
       - gomodcache:/root/go/pkg/mod
     depends_on:
       api:
-        condition: service_started
+        condition: service_healthy
       worker:
         condition: service_started
     networks:

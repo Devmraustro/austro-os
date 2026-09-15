@@ -154,6 +154,114 @@ func Rules() []Rule {
 			Scope:           ScopePath,
 			Principle:       "Principle 10 - Privacy by Design",
 		},
+		// Task management (ADR-006). Tasks are workspace-scoped tenant data, so
+		// every route is ScopeSelf: the caller must be bound to a workspace in its
+		// verified claims, and that workspace -- never anything in the request --
+		// is what the store binds as app.current_workspace. There is no workspace
+		// segment in these paths to forge; the {id} they do carry is the task, and
+		// the store resolves it only inside the caller's workspace.
+		//
+		// The founder is absent by design rather than by omission. A founder has no
+		// home workspace -- users_founder_no_workspace makes that a database
+		// invariant -- so there is no workspace for the founder to act in and
+		// ScopeSelf denies. Granting a cross-workspace task write would be a new
+		// privilege the approved scope does not ask for.
+		{
+			Action:          "POST",
+			ResourcePattern: "/tasks",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 1 - Vision First",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/tasks",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 13 - Observability",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/tasks/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
+		{
+			Action:          "PATCH",
+			ResourcePattern: "/tasks/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 4 - Quality Over Speed",
+		},
+		{
+			Action:          "POST",
+			ResourcePattern: "/tasks/{id}/transition",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 11 - Human Oversight",
+		},
+
+		// Knowledge management (ADR-007, routing completed by ADR-023). Knowledge
+		// documents are workspace-scoped tenant data with embeddings, so every
+		// route is ScopeSelf for the same reason the task routes are: the caller
+		// must be bound to a workspace in its verified claims, and that workspace
+		// -- never anything in the request -- is what the store binds as
+		// app.current_workspace. There is no workspace segment in these paths to
+		// forge, and the {id} is the document, resolved only inside the caller's
+		// own workspace.
+		//
+		// Search is an explicitly granted action even though it only reads: a
+		// similarity query ranks the whole workspace corpus, and the ranking is
+		// computed in SQL against rows the policy already confines, so it can
+		// widen nothing -- but under deny-by-default an action that is not named
+		// is refused, so it has to be named.
+		//
+		// The founder is absent by design. A founder has no home workspace --
+		// users_founder_no_workspace makes that a database invariant -- so there
+		// is no workspace to act in and ScopeSelf denies.
+		{
+			Action:          "POST",
+			ResourcePattern: "/knowledge",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 1 - Vision First",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/knowledge",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 13 - Observability",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/knowledge/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
+		{
+			Action:          "PATCH",
+			ResourcePattern: "/knowledge/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 4 - Quality Over Speed",
+		},
+		{
+			Action:          "DELETE",
+			ResourcePattern: "/knowledge/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 9 - Security by Design",
+		},
+		{
+			Action:          "POST",
+			ResourcePattern: "/knowledge/search",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
 	}
 }
 
@@ -199,6 +307,153 @@ func ImplementedRules() []Rule {
 			Scope:           ScopePath,
 			Principle:       "Principle 10 - Privacy by Design",
 		},
+
+		// Audit visibility. The organization-scoped reads are founder-only
+		// because they are served from the administrative handle, the only
+		// principal audit_org_policy names. Granting them to any other role
+		// would hand out a cross-tenant read the database would not refuse.
+		{
+			Action:          "GET",
+			ResourcePattern: "/audit/events",
+			Roles:           []Role{RoleFounder},
+			Scope:           ScopeNone,
+			Principle:       "Principle 11 - Human Oversight",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/audit/verification",
+			Roles:           []Role{RoleFounder},
+			Scope:           ScopeNone,
+			Principle:       "Principle 11 - Human Oversight",
+		},
+		// The workspace-scoped audit read is open to every workspace role.
+		// ScopePath makes the path workspace mandatory and equal to the claims
+		// workspace for admins and members, so a member cannot name another
+		// tenant's id; the founder's separate ScopeNone rule is what lets the
+		// founder read any workspace. Isolation for the non-founder path is
+		// enforced again in PostgreSQL by audit_workspace_policy.
+		{
+			Action:          "GET",
+			ResourcePattern: "/workspaces/{id}/audit/events",
+			Roles:           []Role{RoleFounder},
+			Scope:           ScopeNone,
+			Principle:       "Principle 11 - Human Oversight",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/workspaces/{id}/audit/events",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopePath,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
+		// Task management (ADR-006). Tasks are workspace-scoped tenant data, so
+		// every route is ScopeSelf: the caller must be bound to a workspace in its
+		// verified claims, and that workspace -- never anything in the request --
+		// is what the store binds as app.current_workspace. There is no workspace
+		// segment in these paths to forge; the {id} they do carry is the task, and
+		// the store resolves it only inside the caller's workspace.
+		//
+		// The founder is absent by design rather than by omission. A founder has no
+		// home workspace -- users_founder_no_workspace makes that a database
+		// invariant -- so there is no workspace for the founder to act in and
+		// ScopeSelf denies. Granting a cross-workspace task write would be a new
+		// privilege the approved scope does not ask for.
+		{
+			Action:          "POST",
+			ResourcePattern: "/tasks",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 1 - Vision First",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/tasks",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 13 - Observability",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/tasks/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
+		{
+			Action:          "PATCH",
+			ResourcePattern: "/tasks/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 4 - Quality Over Speed",
+		},
+		{
+			Action:          "POST",
+			ResourcePattern: "/tasks/{id}/transition",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 11 - Human Oversight",
+		},
+
+		// Knowledge management (ADR-007, routing completed by ADR-023). Knowledge
+		// documents are workspace-scoped tenant data with embeddings, so every
+		// route is ScopeSelf for the same reason the task routes are: the caller
+		// must be bound to a workspace in its verified claims, and that workspace
+		// -- never anything in the request -- is what the store binds as
+		// app.current_workspace. There is no workspace segment in these paths to
+		// forge, and the {id} is the document, resolved only inside the caller's
+		// own workspace.
+		//
+		// Search is an explicitly granted action even though it only reads: a
+		// similarity query ranks the whole workspace corpus, and the ranking is
+		// computed in SQL against rows the policy already confines, so it can
+		// widen nothing -- but under deny-by-default an action that is not named
+		// is refused, so it has to be named.
+		//
+		// The founder is absent by design. A founder has no home workspace --
+		// users_founder_no_workspace makes that a database invariant -- so there
+		// is no workspace to act in and ScopeSelf denies.
+		{
+			Action:          "POST",
+			ResourcePattern: "/knowledge",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 1 - Vision First",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/knowledge",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 13 - Observability",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/knowledge/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
+		{
+			Action:          "PATCH",
+			ResourcePattern: "/knowledge/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 4 - Quality Over Speed",
+		},
+		{
+			Action:          "DELETE",
+			ResourcePattern: "/knowledge/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 9 - Security by Design",
+		},
+		{
+			Action:          "POST",
+			ResourcePattern: "/knowledge/search",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
 	}
 }
 
@@ -211,16 +466,30 @@ func PermissionsForRole(r Role) map[string][]string {
 	switch r {
 	case RoleFounder:
 		return map[string][]string{
-			"GET":  {"/api/me", "/workspaces", "/workspaces/{id}"},
+			"GET": {
+				"/api/me", "/workspaces", "/workspaces/{id}",
+				"/audit/events", "/audit/verification",
+				"/workspaces/{id}/audit/events",
+			},
 			"POST": {"/workspaces"},
 		}
 	case RoleWorkspaceAdmin:
 		return map[string][]string{
-			"GET": {"/api/me", "/workspaces/{id}"},
+			"GET": {"/api/me", "/workspaces/{id}", "/workspaces/{id}/audit/events",
+				"/tasks", "/tasks/{id}",
+				"/knowledge", "/knowledge/{id}"},
+			"POST":   {"/tasks", "/tasks/{id}/transition", "/knowledge", "/knowledge/search"},
+			"PATCH":  {"/tasks/{id}", "/knowledge/{id}"},
+			"DELETE": {"/knowledge/{id}"},
 		}
 	case RoleWorkspaceMember:
 		return map[string][]string{
-			"GET": {"/api/me"},
+			"GET": {"/api/me", "/workspaces/{id}/audit/events",
+				"/tasks", "/tasks/{id}",
+				"/knowledge", "/knowledge/{id}"},
+			"POST":   {"/tasks", "/tasks/{id}/transition", "/knowledge", "/knowledge/search"},
+			"PATCH":  {"/tasks/{id}", "/knowledge/{id}"},
+			"DELETE": {"/knowledge/{id}"},
 		}
 	default:
 		return nil

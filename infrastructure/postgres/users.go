@@ -29,18 +29,54 @@ func NewUserStore(db *sql.DB) *UserStore {
 
 const userSelectColumns = "id, username, password_hash, display_name, email, is_founder, role, COALESCE(workspace_id::text, ''), created_at, updated_at"
 
+// ByUsername resolves an identity by username.
+//
+// It runs inside a transaction that binds app.auth_principal to the username
+// being authenticated. That binding is what the users row level security policy
+// grants an otherwise unbound session: without it the session sees only
+// founders, and with it the session sees exactly the one identity it asked for.
+// The alternative -- a policy branch that made every row visible whenever no
+// workspace was bound -- let any holder of the runtime credential enumerate
+// every identity in every tenant.
 func (s *UserStore) ByUsername(ctx context.Context, username string) (*auth.UserRecord, error) {
-	return scanUser(s.db.QueryRowContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `SELECT set_config('app.auth_principal', $1, true)`, username); err != nil {
+		return nil, err
+	}
+	rec, err := scanUser(tx.QueryRowContext(ctx,
 		"SELECT "+userSelectColumns+" FROM users WHERE username = $1", username))
+	if err != nil {
+		return nil, err
+	}
+	return rec, tx.Commit()
 }
 
+// ByID resolves an identity by subject, binding app.auth_principal the same way
+// ByUsername does. Refresh token validation uses this path before a workspace
+// context exists, so it needs the same narrow organization-level reach.
 func (s *UserStore) ByID(ctx context.Context, id string) (*auth.UserRecord, error) {
 	uid, err := uuid.Parse(id)
 	if err != nil {
 		return nil, auth.ErrUserNotFound
 	}
-	return scanUser(s.db.QueryRowContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `SELECT set_config('app.auth_principal', $1, true)`, uid.String()); err != nil {
+		return nil, err
+	}
+	rec, err := scanUser(tx.QueryRowContext(ctx,
 		"SELECT "+userSelectColumns+" FROM users WHERE id = $1", uid))
+	if err != nil {
+		return nil, err
+	}
+	return rec, tx.Commit()
 }
 
 func (s *UserStore) Create(ctx context.Context, u *auth.UserRecord) (*auth.UserRecord, error) {

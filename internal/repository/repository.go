@@ -83,17 +83,17 @@ type WorkspaceRecord struct {
 }
 
 type DepartmentRecord struct {
-	ID        uuid.UUID
-	Name      string
+	ID          uuid.UUID
+	Name        string
 	WorkspaceID uuid.UUID
-	CreatedAt time.Time
+	CreatedAt   time.Time
 }
 
 type TeamRecord struct {
-	ID        uuid.UUID
-	Name      string
+	ID           uuid.UUID
+	Name         string
 	DepartmentID uuid.UUID
-	CreatedAt time.Time
+	CreatedAt    time.Time
 }
 
 type AIEmployeeRecord struct {
@@ -114,20 +114,20 @@ type AIEmployeeRecord struct {
 type JSONB map[string]interface{}
 
 type AuditEvent struct {
-	ID                     uuid.UUID `json:"id"`
-	EventID                uuid.UUID `json:"event_id"`
-	Timestamp              time.Time `json:"timestamp"`
-	TraceID                uuid.UUID `json:"trace_id,omitempty"`
-	SpanID                 uuid.UUID `json:"span_id,omitempty"`
-	ActorType              string    `json:"actor_type"`
-	ActorID                uuid.UUID `json:"actor_id"`
-	TargetType             string    `json:"target_type"`
-	TargetID               uuid.UUID `json:"target_id"`
-	EventType              string    `json:"event_type"`
-	Outcome                string    `json:"outcome"`
-	HashParent             uuid.UUID `json:"hash_parent,omitempty"`
-	HashValue              []byte    `json:"hash_value,omitempty"`
-	DigitalSignature       []byte    `json:"digital_signature,omitempty"`
-	Genesis                bool      `json:"genesis,omitempty"`
-	ConstitutionalPrinciple string  `json:"constitutional_principle"`
+	ID                      uuid.UUID `json:"id"`
+	EventID                 uuid.UUID `json:"event_id"`
+	Timestamp               time.Time `json:"timestamp"`
+	TraceID                 uuid.UUID `json:"trace_id,omitempty"`
+	SpanID                  uuid.UUID `json:"span_id,omitempty"`
+	ActorType               string    `json:"actor_type"`
+	ActorID                 uuid.UUID `json:"actor_id"`
+	TargetType              string    `json:"target_type"`
+	TargetID                uuid.UUID `json:"target_id"`
+	EventType               string    `json:"event_type"`
+	Outcome                 string    `json:"outcome"`
+	HashParent              uuid.UUID `json:"hash_parent,omitempty"`
+	HashValue               []byte    `json:"hash_value,omitempty"`
+	DigitalSignature        []byte    `json:"digital_signature,omitempty"`
+	Genesis                 bool      `json:"genesis,omitempty"`
+	ConstitutionalPrinciple string    `json:"constitutional_principle"`
 }

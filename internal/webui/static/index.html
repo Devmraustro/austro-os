@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AUSTRO OS</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <!--
+    The browser application for an authenticated Founder/operator (ADR-016).
+
+    Security model: this document contains no data and no secrets. Every value
+    on screen is fetched from the authenticated JSON API after login, and the
+    server - never this file - decides what a caller may see. The token is held
+    in sessionStorage for the lifetime of the tab only.
+
+    The Content-Security-Policy served with this page forbids inline script and
+    inline style, so all behaviour lives in /assets/app.js and registers its
+    listeners there rather than through markup attributes.
+  -->
+
+  <div id="auth-view" class="view" hidden>
+    <main class="card narrow">
+      <h1>AUSTRO OS</h1>
+      <p class="muted">Sign in as the Founder to operate the organization.</p>
+
+      <!--
+        Bootstrap creates the Founder and is unauthenticated, so it is never
+        issued on page load. It stays behind an explicit disclosure and the
+        call is only sent when the operator presses the button.
+      -->
+      <p class="muted">
+        <button id="bootstrap-toggle" type="button" class="link">
+          First run? Initialize the organization
+        </button>
+      </p>
+
+      <section id="bootstrap-panel" hidden>
+        <h2>Initialize the organization</h2>
+        <p class="muted">
+          No Founder identity exists yet. Bootstrapping creates it from the
+          server's configured credentials and is recorded in the audit log.
+          This can only succeed once.
+        </p>
+        <button id="bootstrap-btn" type="button" class="primary">Bootstrap Founder</button>
+      </section>
+
+      <form id="login-form">
+        <label for="username">Username</label>
+        <input id="username" name="username" autocomplete="username" required>
+
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+
+        <button id="login-btn" type="submit" class="primary">Sign in</button>
+      </form>
+
+      <p id="auth-message" class="message" role="alert" hidden></p>
+    </main>
+  </div>
+
+  <div id="app-view" class="view" hidden>
+    <header class="topbar">
+      <strong>AUSTRO OS</strong>
+      <span id="identity" class="muted"></span>
+      <button id="logout-btn" type="button" class="link">Sign out</button>
+    </header>
+
+    <main class="content">
+      <section class="card">
+        <h2>Identity</h2>
+        <dl id="identity-details" class="details">
+          <dt>Username</dt><dd data-field="username">—</dd>
+          <dt>Role</dt><dd data-field="role">—</dd>
+          <dt>Founder</dt><dd data-field="founder">—</dd>
+          <dt>Workspace</dt><dd data-field="workspace">—</dd>
+        </dl>
+      </section>
+
+      <section class="card">
+        <h2>System status</h2>
+        <dl id="status-details" class="details">
+          <dt>Liveness</dt><dd data-field="live">—</dd>
+          <dt>Readiness</dt><dd data-field="ready">—</dd>
+        </dl>
+        <p class="muted">
+          Dependency detail (PostgreSQL, Redis, RabbitMQ) is reported in the
+          service logs; this surface reflects the API's own probes.
+        </p>
+      </section>
+
+      <section class="card">
+        <h2>Workspaces</h2>
+        <p class="muted">
+          Organization-level records. Listing and creating require the Founder
+          role; the server authorizes every call.
+        </p>
+        <div id="workspace-loading" class="muted" hidden>Loading workspaces…</div>
+        <div id="workspace-empty" class="muted" hidden>No workspaces yet.</div>
+        <ul id="workspace-list" class="list"></ul>
+        <p id="workspace-message" class="message" role="alert" hidden></p>
+
+        <form id="workspace-form">
+          <label for="workspace-name">New workspace name</label>
+          <input id="workspace-name" name="name" required>
+          <button type="submit" class="primary">Create workspace</button>
+        </form>
+      </section>
+
+      <section class="card" id="audit-card">
+        <h2>Audit trail</h2>
+        <p class="muted">
+          The append-only event chain. This view is read-only: there is no
+          control here that can alter, delete or reorder history. Sensitive
+          columns (hash material, signatures, free-form detail) are withheld by
+          the API.
+        </p>
+
+        <form id="audit-form" class="filters">
+          <label for="audit-event-type">Event type</label>
+          <input id="audit-event-type" name="event_type" maxlength="64"
+                 placeholder="e.g. auth.login">
+
+          <label for="audit-outcome">Outcome</label>
+          <select id="audit-outcome" name="outcome">
+            <option value="">Any</option>
+            <option value="success">success</option>
+            <option value="denied">denied</option>
+            <option value="failure">failure</option>
+            <option value="rejected">rejected</option>
+          </select>
+
+          <label for="audit-limit">Page size</label>
+          <select id="audit-limit" name="limit">
+            <option value="25">25</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+            <option value="200">200</option>
+          </select>
+
+          <button type="submit" class="primary">Load</button>
+          <button type="button" id="audit-verify-btn">Verify chain</button>
+        </form>
+
+        <div id="audit-loading" class="muted" hidden>Loading audit events…</div>
+        <div id="audit-empty" class="muted" hidden>No audit events match these filters.</div>
+        <div id="audit-verification" class="muted" hidden></div>
+        <p id="audit-message" class="message" role="alert" hidden></p>
+
+        <table id="audit-table" class="table" hidden>
+          <thead>
+            <tr>
+              <th>Seq</th><th>When</th><th>Event</th><th>Outcome</th>
+              <th>Actor</th><th>Workspace</th><th>Principle</th>
+            </tr>
+          </thead>
+          <tbody id="audit-body"></tbody>
+        </table>
+
+        <p>
+          <button type="button" id="audit-older-btn" hidden>Load older events</button>
+        </p>
+      </section>
+
+      <section class="card" id="tasks-card">
+        <h2>Tasks</h2>
+        <p class="muted">
+          Work items in your current workspace. The status you see comes from the
+          server, and so do the buttons on each row: a task offers only the
+          transitions the server says are legal from its current status, so this
+          page cannot put a task into a state the lifecycle forbids.
+        </p>
+
+        <form id="task-create-form">
+          <label for="task-title">Title</label>
+          <input id="task-title" name="title" required maxlength="200">
+
+          <label for="task-description">Description</label>
+          <input id="task-description" name="description" maxlength="2000">
+
+          <label for="task-priority">Priority</label>
+          <select id="task-priority" name="priority">
+            <option value="normal" selected>normal</option>
+            <option value="low">low</option>
+            <option value="high">high</option>
+            <option value="urgent">urgent</option>
+          </select>
+
+          <button type="submit" class="primary">Create task</button>
+        </form>
+        <p id="task-create-message" class="message" role="alert" hidden></p>
+
+        <form id="task-form" class="filters">
+          <label for="task-status">Status</label>
+          <select id="task-status" name="status">
+            <option value="">Any</option>
+            <option value="backlog">backlog</option>
+            <option value="planned">planned</option>
+            <option value="in_progress">in_progress</option>
+            <option value="in_review">in_review</option>
+            <option value="completed">completed</option>
+            <option value="cancelled">cancelled</option>
+            <option value="rejected">rejected</option>
+            <option value="failed">failed</option>
+          </select>
+
+          <label for="task-limit">Page size</label>
+          <select id="task-limit" name="limit">
+            <option value="25">25</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+            <option value="200">200</option>
+          </select>
+
+          <button type="submit" class="primary">Load</button>
+        </form>
+
+        <div id="task-loading" class="muted" hidden>Loading tasks…</div>
+        <div id="task-empty" class="muted" hidden>
+          No tasks match these filters yet.
+        </div>
+        <p id="task-message" class="message" role="alert" hidden></p>
+
+        <table id="task-table" class="table" hidden>
+          <thead>
+            <tr>
+              <th>Title</th><th>Status</th><th>Priority</th>
+              <th>Created</th><th>Move to</th>
+            </tr>
+          </thead>
+          <tbody id="task-body"></tbody>
+        </table>
+
+        <p>
+          <button type="button" id="task-older-btn" hidden>Load more tasks</button>
+        </p>
+      </section>
+
+      <section class="card" id="knowledge-card">
+        <h2>Knowledge</h2>
+        <p class="muted">
+          Workspace-scoped documents, campaign rules and style guides. Content is
+          embedded on the server when it is saved, so search ranks what is
+          actually stored. Nothing here sends or accepts a vector: the embedding
+          is derived from the content by the server alone.
+        </p>
+
+        <form id="kn-create-form">
+          <label for="kn-title">Title</label>
+          <input id="kn-title" name="title" required maxlength="300">
+
+          <label for="kn-kind">Kind</label>
+          <select id="kn-kind" name="kind">
+            <option value="document" selected>document</option>
+            <option value="campaign_rule">campaign_rule</option>
+            <option value="style_guide">style_guide</option>
+          </select>
+
+          <label for="kn-content">Content</label>
+          <textarea id="kn-content" name="content" rows="4" required></textarea>
+
+          <button type="submit" class="primary">Create document</button>
+        </form>
+        <p id="kn-create-message" class="message" role="alert" hidden></p>
+
+        <form id="kn-form" class="filters">
+          <label for="kn-filter-kind">Kind</label>
+          <select id="kn-filter-kind" name="kind">
+            <option value="">Any</option>
+            <option value="document">document</option>
+            <option value="campaign_rule">campaign_rule</option>
+            <option value="style_guide">style_guide</option>
+          </select>
+
+          <label for="kn-limit">Page size</label>
+          <select id="kn-limit" name="limit">
+            <option value="25">25</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+            <option value="200">200</option>
+          </select>
+
+          <label for="kn-search">Search</label>
+          <input id="kn-search" name="q" maxlength="2000"
+                 placeholder="similarity search over content">
+
+          <button type="submit" class="primary">Apply</button>
+          <button type="button" id="kn-clear-btn">Clear search</button>
+        </form>
+
+        <div id="kn-loading" class="muted" hidden>Loading knowledge…</div>
+        <div id="kn-empty" class="muted" hidden>
+          No documents match. Create one above, or clear the search.
+        </div>
+        <p id="kn-message" class="message" role="alert" hidden></p>
+
+        <table id="kn-table" class="table" hidden>
+          <thead>
+            <tr>
+              <th>Title</th><th>Kind</th><th>Updated</th><th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="kn-body"></tbody>
+        </table>
+
+        <div id="kn-detail" hidden>
+          <h3 id="kn-detail-title"></h3>
+          <p class="muted">
+            <span id="kn-detail-kind"></span> · updated <span id="kn-detail-updated"></span>
+          </p>
+          <pre id="kn-detail-content" class="muted"></pre>
+          <p>
+            <button type="button" id="kn-edit-btn">Edit</button>
+            <button type="button" id="kn-detail-close">Close</button>
+          </p>
+
+          <form id="kn-edit-form" hidden>
+            <label for="kn-edit-title">Title</label>
+            <input id="kn-edit-title" name="title" required maxlength="300">
+
+            <label for="kn-edit-kind">Kind</label>
+            <select id="kn-edit-kind" name="kind">
+              <option value="document">document</option>
+              <option value="campaign_rule">campaign_rule</option>
+              <option value="style_guide">style_guide</option>
+            </select>
+
+            <label for="kn-edit-content">Content</label>
+            <textarea id="kn-edit-content" name="content" rows="6" required></textarea>
+
+            <button type="submit" class="primary">Save</button>
+            <button type="button" id="kn-edit-cancel">Cancel</button>
+          </form>
+        </div>
+
+        <p>
+          <button type="button" id="kn-older-btn" hidden>Load more documents</button>
+        </p>
+      </section>
+
+      <section class="card">
+        <h2>Not available in this build</h2>
+        <p class="muted">
+          ADR-016 approves a wider surface. These areas are approved but their
+          backend APIs are not implemented yet, so they are listed rather than
+          left to fail silently:
+        </p>
+        <ul class="list muted">
+          <li>Creator pipelines and stage review</li>
+          <li>Publishing approval queue</li>
+          <li>Memory</li>
+          <li>AI employees</li>
+        </ul>
+      </section>
+    </main>
+  </div>
+
+  <script src="/assets/app.js"></script>
+</body>
+</html>

@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
+	"austro-os/infrastructure/auditstore"
 	"austro-os/infrastructure/database"
 	"austro-os/infrastructure/postgres"
 	"austro-os/infrastructure/rabbitmq"
@@ -36,16 +39,34 @@ func main() {
 	}
 	defer sink.Close()
 
-	db := database.Initialize(cfg)
+	// Same topology as the API: bootstrap as the owner principal, then run on
+	// the unprivileged runtime pool that the workspace policies constrain.
+	// MustInitializeTopology refuses to return a pool that is a superuser,
+	// holds BYPASSRLS, owns a protected table, or can see across workspaces, so
+	// the worker cannot come up on a privileged connection.
+	handles := database.MustInitializeTopology(cfg)
+	db := handles.Runtime
 	defer db.Close()
+	defer handles.Admin.Close()
+
+	// Pipeline and publishing decisions the worker processes are audited to the
+	// same persistent chain the API writes, so a restart of either process
+	// continues one chain rather than starting a second one.
+	auditCtx, auditCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	auditStore, err := auditstore.New(auditCtx, handles.Admin)
+	auditCancel()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to initialize audit store: %v\n", err)
+		os.Exit(1)
+	}
 
 	rt, err := composition.Compose(cfg, composition.Stores{
 		Publications: postgres.NewPublicationStore(db),
 		Pipelines:    postgres.NewPipelineStore(db),
 	}, composition.Sinks{
 		AIDecision:    rabbitmq.NewDecisionSink(sink),
-		PublishAudit:  rabbitmq.NewPublishLogAuditSink(),
-		PipelineAudit: rabbitmq.NewPipelineLogAuditSink(),
+		PublishAudit:  auditstore.NewPublishSink(auditStore),
+		PipelineAudit: auditstore.NewPipelineSink(auditStore),
 		PublishEvent:  rabbitmq.NewPublishEventSink(sink).Publish,
 		PipelineEvent: rabbitmq.NewPipelineEventSink(sink).PublishPipeline,
 	})

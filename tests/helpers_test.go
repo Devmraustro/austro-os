@@ -155,6 +155,15 @@ func connectAs(dsn, role string) (*sql.DB, error) {
 }
 
 // redisClient returns a redis client bound to the live Redis instance.
+//
+// The password comes from the same setting the application reads. docker-compose
+// runs Redis with requirepass, so a test client that could not authenticate
+// would fail against the real deployment topology while passing against an
+// unprotected local instance -- which is the wrong way round for a security
+// test.
 func redisClient() *redis.Client {
-	return redis.NewClient(&redis.Options{Addr: getEnv().redisAddr})
+	return redis.NewClient(&redis.Options{
+		Addr:     getEnv().redisAddr,
+		Password: os.Getenv("AUSTRO_REDIS_PASSWORD"),
+	})
 }
