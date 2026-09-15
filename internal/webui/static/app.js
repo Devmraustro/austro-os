@@ -195,6 +195,10 @@
     loadStatus();
     loadWorkspaces();
     loadAudit(false);
+    /* Loaded on entry so a workspace member lands on their tasks rather than an
+     * empty panel with a Load button. For a founder this returns 403, which the
+     * card explains instead of showing a misleading empty state. */
+    loadTasks(false);
     return authenticated("GET", "/api/me").then(function (r) {
       if (r.status !== 200 || !r.body) { signOut(false); return; }
       renderIdentity(r.body);
@@ -401,6 +405,197 @@
     }).catch(function () {
       out.textContent = "Could not reach the API.";
     });
+  });
+
+  /* ---------- tasks ---------- */
+
+  /* Cursor for "load more". Module state rather than a DOM value, so changing a
+   * filter and reloading resets the walk instead of continuing it under
+   * different conditions. */
+  var taskCursor = "";
+
+  /* Terminal stages. A transition into one of these ends the task's useful life,
+   * so the UI asks before making it. The server makes the real decision; this
+   * only decides whether to interrupt the user first. */
+  var terminalStatuses = { completed: 1, cancelled: 1, failed: 1, rejected: 1 };
+
+  function taskQuery(append) {
+    var parts = ["limit=" + encodeURIComponent(el("task-limit").value)];
+    var status = el("task-status").value;
+    if (status) parts.push("status=" + encodeURIComponent(status));
+    if (append && taskCursor) parts.push("cursor=" + encodeURIComponent(taskCursor));
+    return "/tasks?" + parts.join("&");
+  }
+
+  /* Rows are built with createElement and textContent, never innerHTML: a task
+   * title is user-supplied text and must never be parsed as markup. */
+  function renderTaskRows(tasks, append) {
+    var body = el("task-body");
+    if (!append) body.innerHTML = "";
+    for (var i = 0; i < tasks.length; i++) {
+      (function (task) {
+        var tr = document.createElement("tr");
+
+        var title = document.createElement("td");
+        title.textContent = task.title;
+        tr.appendChild(title);
+
+        var status = document.createElement("td");
+        status.textContent = task.status;
+        tr.appendChild(status);
+
+        var priority = document.createElement("td");
+        priority.textContent = task.priority;
+        tr.appendChild(priority);
+
+        var created = document.createElement("td");
+        created.textContent = task.created_at
+          ? String(task.created_at).replace("T", " ").slice(0, 19)
+          : "\u2014";
+        tr.appendChild(created);
+
+        /* The legal transitions are exactly the ones the server sent with this
+         * row. Nothing here re-derives the state machine, so the browser cannot
+         * offer a move the domain would refuse -- and if the server's answer and
+         * this page disagreed, the server would still win. */
+        var actions = document.createElement("td");
+        var transitions = task.transitions || [];
+        if (transitions.length === 0) {
+          var none = document.createElement("span");
+          none.className = "muted";
+          none.textContent = "\u2014 (final)";
+          actions.appendChild(none);
+        }
+        for (var j = 0; j < transitions.length; j++) {
+          actions.appendChild(transitionButton(task, transitions[j]));
+          if (j < transitions.length - 1) actions.appendChild(document.createTextNode(" "));
+        }
+        tr.appendChild(actions);
+
+        body.appendChild(tr);
+      })(tasks[i]);
+    }
+  }
+
+  function transitionButton(task, status) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = status;
+    btn.addEventListener("click", function () {
+      /* A move into a terminal stage is not reversible from this page, so it is
+       * confirmed. Forward moves are ordinary edits and are not interrupted. */
+      if (terminalStatuses[status]) {
+        var sure = window.confirm(
+          "Move \"" + task.title + "\" to " + status + "? " +
+          "This ends the task's active lifecycle."
+        );
+        if (!sure) return;
+      }
+      applyTransition(task.id, status);
+    });
+    return btn;
+  }
+
+  function applyTransition(id, status) {
+    var msg = el("task-message");
+    setMessage(msg, "", false);
+    return authenticated("POST", "/tasks/" + encodeURIComponent(id) + "/transition",
+      { status: status })
+      .then(function (r) {
+        if (r.status !== 200) {
+          setMessage(msg, "Transition refused: " + errorMessage(r), false);
+          return null;
+        }
+        setMessage(msg, "Moved to " + status + ".", true);
+        /* Read the list back so what is on screen is what the server now holds,
+         * rather than a locally predicted row. */
+        return loadTasks(false);
+      })
+      .catch(function () {
+        setMessage(msg, "Could not reach the API. The task was not changed.", false);
+      });
+  }
+
+  function loadTasks(append) {
+    var loading = el("task-loading");
+    var msg = el("task-message");
+    var table = el("task-table");
+    var empty = el("task-empty");
+    var older = el("task-older-btn");
+    if (!append) { taskCursor = ""; }
+    loading.hidden = false;
+
+    return authenticated("GET", taskQuery(append)).then(function (r) {
+      loading.hidden = true;
+      if (r.status === 403) {
+        table.hidden = true;
+        empty.hidden = true;
+        older.hidden = true;
+        setMessage(msg,
+          "Tasks are workspace-scoped, and your current session is not attached " +
+          "to a workspace, so the server refused this request. Sign in as a " +
+          "workspace member or administrator to use them.", false);
+        return;
+      }
+      if (r.status === 401) {
+        /* The refresh retry already happened inside authenticated(); reaching
+         * here means the session is genuinely over and the user has been sent
+         * back to the login view. Say so rather than showing an empty table. */
+        setMessage(msg, "Your session expired. Sign in again to see tasks.", false);
+        return;
+      }
+      if (r.status !== 200 || !r.body) {
+        setMessage(msg, errorMessage(r) + " — adjust the filters and retry.", false);
+        return;
+      }
+      renderTaskRows(r.body.tasks || [], !!append);
+      var total = el("task-body").children.length;
+      table.hidden = total === 0;
+      empty.hidden = total !== 0;
+      taskCursor = r.body.next_cursor || "";
+      older.hidden = taskCursor === "";
+      setMessage(msg, "", true);
+    }).catch(function () {
+      loading.hidden = true;
+      setMessage(msg, "Could not reach the API. Check the connection and retry.", false);
+    });
+  }
+
+  el("task-create-form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var msg = el("task-create-message");
+    setMessage(msg, "", false);
+    var payload = { title: el("task-title").value };
+    var description = el("task-description").value.trim();
+    if (description) payload.description = description;
+    payload.priority = el("task-priority").value;
+
+    authenticated("POST", "/tasks", payload).then(function (r) {
+      if (r.status === 403) {
+        setMessage(msg,
+          "Your role cannot create tasks in this workspace.", false);
+        return;
+      }
+      if (r.status !== 201 || !r.body) {
+        setMessage(msg, errorMessage(r), false);
+        return;
+      }
+      setMessage(msg, "Created \"" + r.body.title + "\".", true);
+      el("task-create-form").reset();
+      el("task-priority").value = "normal";
+      loadTasks(false);
+    }).catch(function () {
+      setMessage(msg, "Could not reach the API. The task was not created.", false);
+    });
+  });
+
+  el("task-form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    loadTasks(false);
+  });
+
+  el("task-older-btn").addEventListener("click", function () {
+    loadTasks(true);
   });
 
   if (token()) { enterApp(); } else { initAuthView(); }

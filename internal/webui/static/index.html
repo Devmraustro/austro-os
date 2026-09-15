@@ -163,6 +163,80 @@
         </p>
       </section>
 
+      <section class="card" id="tasks-card">
+        <h2>Tasks</h2>
+        <p class="muted">
+          Work items in your current workspace. The status you see comes from the
+          server, and so do the buttons on each row: a task offers only the
+          transitions the server says are legal from its current status, so this
+          page cannot put a task into a state the lifecycle forbids.
+        </p>
+
+        <form id="task-create-form">
+          <label for="task-title">Title</label>
+          <input id="task-title" name="title" required maxlength="200">
+
+          <label for="task-description">Description</label>
+          <input id="task-description" name="description" maxlength="2000">
+
+          <label for="task-priority">Priority</label>
+          <select id="task-priority" name="priority">
+            <option value="normal" selected>normal</option>
+            <option value="low">low</option>
+            <option value="high">high</option>
+            <option value="urgent">urgent</option>
+          </select>
+
+          <button type="submit" class="primary">Create task</button>
+        </form>
+        <p id="task-create-message" class="message" role="alert" hidden></p>
+
+        <form id="task-form" class="filters">
+          <label for="task-status">Status</label>
+          <select id="task-status" name="status">
+            <option value="">Any</option>
+            <option value="backlog">backlog</option>
+            <option value="planned">planned</option>
+            <option value="in_progress">in_progress</option>
+            <option value="in_review">in_review</option>
+            <option value="completed">completed</option>
+            <option value="cancelled">cancelled</option>
+            <option value="rejected">rejected</option>
+            <option value="failed">failed</option>
+          </select>
+
+          <label for="task-limit">Page size</label>
+          <select id="task-limit" name="limit">
+            <option value="25">25</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+            <option value="200">200</option>
+          </select>
+
+          <button type="submit" class="primary">Load</button>
+        </form>
+
+        <div id="task-loading" class="muted" hidden>Loading tasks…</div>
+        <div id="task-empty" class="muted" hidden>
+          No tasks match these filters yet.
+        </div>
+        <p id="task-message" class="message" role="alert" hidden></p>
+
+        <table id="task-table" class="table" hidden>
+          <thead>
+            <tr>
+              <th>Title</th><th>Status</th><th>Priority</th>
+              <th>Created</th><th>Move to</th>
+            </tr>
+          </thead>
+          <tbody id="task-body"></tbody>
+        </table>
+
+        <p>
+          <button type="button" id="task-older-btn" hidden>Load more tasks</button>
+        </p>
+      </section>
+
       <section class="card">
         <h2>Not available in this build</h2>
         <p class="muted">
@@ -173,7 +247,6 @@
         <ul class="list muted">
           <li>Creator pipelines and stage review</li>
           <li>Publishing approval queue</li>
-          <li>Tasks</li>
           <li>Knowledge</li>
           <li>Memory</li>
           <li>AI employees</li>

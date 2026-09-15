@@ -194,6 +194,14 @@ func TestOpeningThePageIsNotASideEffect(t *testing.T) {
 		`"/api/auth/refresh"`:   true, // only after a 401 on a call the user made
 		`"/api/auth/bootstrap"`: true, // explicit bootstrap button
 		`"/workspaces"`:         true, // create-workspace form submit
+		`"/tasks"`:              true, // create-task form submit
+		// The transition path is built by concatenation because the task id is
+		// dynamic: "/tasks/" + encodeURIComponent(id) + "/transition". The
+		// regex below captures the first quoted literal, so this call site
+		// registers as "/tasks/". It is the click handler on a per-row
+		// transition button, and it is confirmed with the operator first when
+		// the destination is a terminal stage.
+		`"/tasks/"`: true,
 	}
 	re := regexp.MustCompile(`(?:request|authenticated)\(\s*"(POST|PUT|PATCH|DELETE)"\s*,\s*("[^"]*")`)
 	seen := map[string]int{}
