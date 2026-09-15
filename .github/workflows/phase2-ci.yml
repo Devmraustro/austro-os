@@ -32,10 +32,13 @@ jobs:
         # here is a regression. The previous form piped into `|| true`, which
         # made the step report success no matter what gofmt found.
         run: |
-          unformatted=$(gofmt -l . | grep -v '^tests/phase1_exit_criteria_test.go$' || true)
-          if [ -n "$unformatted" ]; then
+          set -euo pipefail
+          gofmt -l . > /tmp/gofmt-files
+          awk '$0 != "tests/phase1_exit_criteria_test.go"' /tmp/gofmt-files > /tmp/gofmt-files.filtered
+          if [ -s /tmp/gofmt-files.filtered ]; then
             echo "The following files are not gofmt-clean:"
-            echo "$unformatted"
+            cat /tmp/gofmt-files.filtered
+            { echo '### gofmt failures'; echo; cat /tmp/gofmt-files.filtered; } >> "$GITHUB_STEP_SUMMARY"
             echo "Run: gofmt -w <file>"
             exit 1
           fi
