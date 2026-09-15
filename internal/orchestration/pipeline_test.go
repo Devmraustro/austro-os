@@ -170,12 +170,35 @@ func TestInvalidAndSkippedTransitions(t *testing.T) {
 
 type failOnceReviewer struct{ failed bool }
 
+type flakyEventSink struct { calls, failAt int }
+
+func (s *flakyEventSink) PublishPipeline(context.Context, string, uuid.UUID, uuid.UUID, string, string, string) error {
+	s.calls++
+	if s.calls == s.failAt { return errors.New("temporary event publish failure") }
+	return nil
+}
+
 func (r *failOnceReviewer) Review(context.Context, uuid.UUID, *Pipeline) (bool, error) {
 	if !r.failed {
 		r.failed = true
 		return false, errors.New("temporary review dependency failure")
 	}
 	return true, nil
+}
+
+func TestDuplicateWorkerDeliveryRepairsLostFollowerEvent(t *testing.T) {
+	store := newMemStore()
+	events := &flakyEventSink{failAt: 2} // create succeeds; script event is lost once
+	svc := NewService(store, StubResearcher{}, StubScriptWriter{}, StubReviewer{}, StubPublisher{}, nil, events)
+	ws := validWS()
+	p, err := svc.Create(ctx(), ws, nil, "trace")
+	if err != nil { t.Fatalf("create: %v", err) }
+	handler := NewHandler(svc)
+	if _, err = handler.AdvanceFromEvent(ctx(), ws, p.ID, StageResearch, "trace", "span"); err == nil { t.Fatal("lost event must be surfaced for worker redelivery") }
+	if _, err = handler.AdvanceFromEvent(ctx(), ws, p.ID, StageResearch, "trace", "span"); err != nil { t.Fatalf("duplicate delivery should republish follower: %v", err) }
+	current, err := svc.Get(ctx(), ws, p.ID)
+	if err != nil { t.Fatalf("get repaired pipeline: %v", err) }
+	if current.Stage != StageScript || events.calls != 3 { t.Fatalf("unexpected repaired state: stage=%s event_calls=%d", current.Stage, events.calls) }
 }
 
 func TestFailedStageCanOnlyRecoverThroughRetry(t *testing.T) {

@@ -150,9 +150,14 @@ func (s *Service) Approve(ctx context.Context, workspaceID, id uuid.UUID, actor 
 	if err != nil {
 		return nil, err
 	}
-	if p.Stage != StageReview || p.Status != StatusAwaitingApproval {
-		return nil, ErrApprovalRequired
+	if p.Stage != StageReview { return nil, ErrApprovalRequired }
+	// Approval is idempotent and also repairs a lost publish event after a
+	// durable state write. A caller may safely retry the same named command.
+	if p.Status == StatusApproved && p.Approved() {
+		if err := s.publishCurrentEvent(ctx, p); err != nil { return p, err }
+		return p, nil
 	}
+	if p.Status != StatusAwaitingApproval { return nil, ErrApprovalRequired }
 	if s.publication != nil {
 		if p.PublicationID == nil {
 			return nil, ErrApprovalRequired
@@ -285,6 +290,22 @@ func (s *Service) doAdvance(ctx context.Context, p *Pipeline, to Stage, actorTyp
 	}
 	logTrace(p.WorkspaceID, "pipeline-advanced").With("pipeline_id", p.ID).With("stage", to).With("status", p.Status).Log()
 	return updated, nil
+}
+
+// RepublishCurrentEvent repairs a message lost after its database update. It
+// never changes aggregate state; the worker's duplicate-delivery check calls it
+// only when the persisted stage is already after the incoming event.
+func (s *Service) RepublishCurrentEvent(ctx context.Context, p *Pipeline) error {
+	return s.publishCurrentEvent(ctx, p)
+}
+
+func (s *Service) publishCurrentEvent(ctx context.Context, p *Pipeline) error {
+	if p == nil { return ErrInvalidInput }
+	eventType := "pipeline." + string(p.Stage)
+	if p.Stage == StageReview {
+		if p.Status == StatusApproved { eventType = "pipeline.review_approved" } else { eventType = "pipeline.review_ready" }
+	}
+	return s.events.PublishPipeline(ctx, eventType, p.ID, p.WorkspaceID, string(p.Stage), traceOf(ctx), spanOf(ctx))
 }
 
 func (s *Service) stageWork(ctx context.Context, p *Pipeline, to Stage) (string, error) {
