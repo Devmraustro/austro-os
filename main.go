@@ -25,6 +25,7 @@ import (
 	"austro-os/internal/memory"
 	"austro-os/internal/middleware"
 	"austro-os/internal/rbac"
+	"austro-os/internal/task"
 	"austro-os/internal/webui"
 
 	"github.com/google/uuid"
@@ -130,6 +131,22 @@ func main() {
 		auditstore.NewReader(db),
 	)
 
+	// Task management. The store runs on the unprivileged runtime handle, which
+	// is the point: every operation binds app.current_workspace inside its own
+	// transaction and workspace_isolation_policy does the confining, so a task
+	// belonging to another tenant is not merely filtered out in Go but invisible
+	// to the query.
+	//
+	// Audit is recorded by the handler rather than by the domain service, because
+	// the handler is where the verified caller is known. The service's own
+	// AuditSink hardcodes a "system" actor, which would produce a trail that
+	// cannot say who moved the work. Its event sink stays a no-op: nothing
+	// consumes task events today, and publishing to a queue with no consumer
+	// would be unverifiable surface rather than a feature.
+	taskStore := postgres.NewTaskStore(db)
+	taskService := task.NewService(taskStore, nil, nil)
+	taskHandler := api.NewTaskHandler(taskService).SetAuditSink(auditStore)
+
 	// The browser application (ADR-016) is embedded in the binary. Loading it
 	// here turns a missing asset into a startup failure rather than a runtime
 	// 404 on a blank page.
@@ -179,6 +196,15 @@ func main() {
 		{Method: http.MethodGet, Pattern: "/audit/events"}:                 auditHandler.ListOrg,
 		{Method: http.MethodGet, Pattern: "/audit/verification"}:           auditHandler.Verification,
 		{Method: http.MethodGet, Pattern: "/workspaces/{id}/audit/events"}: auditHandler.ListForWorkspace,
+
+		// Task management. Every route is protected, so each is reachable only
+		// through an explicit rbac rule; the workspace each operates on comes
+		// from the verified claims and is bound in PostgreSQL by the store.
+		{Method: http.MethodPost, Pattern: "/tasks"}:                 taskHandler.Create,
+		{Method: http.MethodGet, Pattern: "/tasks"}:                  taskHandler.List,
+		{Method: http.MethodGet, Pattern: "/tasks/{id}"}:             taskHandler.Get,
+		{Method: http.MethodPatch, Pattern: "/tasks/{id}"}:           taskHandler.Update,
+		{Method: http.MethodPost, Pattern: "/tasks/{id}/transition"}: taskHandler.Transition,
 	}
 
 	// Registration is a separate function so the wiring can be exercised by a

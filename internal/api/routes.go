@@ -58,5 +58,18 @@ func Routes() []Route {
 		// handle with the workspace bound in PostgreSQL, so tenant isolation is
 		// enforced by the database rather than by the handler.
 		{http.MethodGet, "/workspaces/{id}/audit/events"},
+
+		// Task management (ADR-006). Workspace-scoped tenant data: the workspace
+		// is taken from the verified claims, so these paths carry no workspace
+		// segment. The {id} in the per-task routes is the task, not a tenant.
+		//
+		// Status changes go through the transition route rather than PATCH, so a
+		// field update cannot carry a lifecycle change past the validation that
+		// the transition path applies.
+		{http.MethodPost, "/tasks"},
+		{http.MethodGet, "/tasks"},
+		{http.MethodGet, "/tasks/{id}"},
+		{http.MethodPatch, "/tasks/{id}"},
+		{http.MethodPost, "/tasks/{id}/transition"},
 	}
 }

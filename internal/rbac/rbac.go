@@ -154,6 +154,53 @@ func Rules() []Rule {
 			Scope:           ScopePath,
 			Principle:       "Principle 10 - Privacy by Design",
 		},
+		// Task management (ADR-006). Tasks are workspace-scoped tenant data, so
+		// every route is ScopeSelf: the caller must be bound to a workspace in its
+		// verified claims, and that workspace -- never anything in the request --
+		// is what the store binds as app.current_workspace. There is no workspace
+		// segment in these paths to forge; the {id} they do carry is the task, and
+		// the store resolves it only inside the caller's workspace.
+		//
+		// The founder is absent by design rather than by omission. A founder has no
+		// home workspace -- users_founder_no_workspace makes that a database
+		// invariant -- so there is no workspace for the founder to act in and
+		// ScopeSelf denies. Granting a cross-workspace task write would be a new
+		// privilege the approved scope does not ask for.
+		{
+			Action:          "POST",
+			ResourcePattern: "/tasks",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 1 - Vision First",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/tasks",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 13 - Observability",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/tasks/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
+		{
+			Action:          "PATCH",
+			ResourcePattern: "/tasks/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 4 - Quality Over Speed",
+		},
+		{
+			Action:          "POST",
+			ResourcePattern: "/tasks/{id}/transition",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 11 - Human Oversight",
+		},
 	}
 }
 
@@ -238,6 +285,53 @@ func ImplementedRules() []Rule {
 			Scope:           ScopePath,
 			Principle:       "Principle 10 - Privacy by Design",
 		},
+		// Task management (ADR-006). Tasks are workspace-scoped tenant data, so
+		// every route is ScopeSelf: the caller must be bound to a workspace in its
+		// verified claims, and that workspace -- never anything in the request --
+		// is what the store binds as app.current_workspace. There is no workspace
+		// segment in these paths to forge; the {id} they do carry is the task, and
+		// the store resolves it only inside the caller's workspace.
+		//
+		// The founder is absent by design rather than by omission. A founder has no
+		// home workspace -- users_founder_no_workspace makes that a database
+		// invariant -- so there is no workspace for the founder to act in and
+		// ScopeSelf denies. Granting a cross-workspace task write would be a new
+		// privilege the approved scope does not ask for.
+		{
+			Action:          "POST",
+			ResourcePattern: "/tasks",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 1 - Vision First",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/tasks",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 13 - Observability",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/tasks/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
+		{
+			Action:          "PATCH",
+			ResourcePattern: "/tasks/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 4 - Quality Over Speed",
+		},
+		{
+			Action:          "POST",
+			ResourcePattern: "/tasks/{id}/transition",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 11 - Human Oversight",
+		},
 	}
 }
 
@@ -259,11 +353,17 @@ func PermissionsForRole(r Role) map[string][]string {
 		}
 	case RoleWorkspaceAdmin:
 		return map[string][]string{
-			"GET": {"/api/me", "/workspaces/{id}", "/workspaces/{id}/audit/events"},
+			"GET": {"/api/me", "/workspaces/{id}", "/workspaces/{id}/audit/events",
+				"/tasks", "/tasks/{id}"},
+			"POST":  {"/tasks", "/tasks/{id}/transition"},
+			"PATCH": {"/tasks/{id}"},
 		}
 	case RoleWorkspaceMember:
 		return map[string][]string{
-			"GET": {"/api/me", "/workspaces/{id}/audit/events"},
+			"GET": {"/api/me", "/workspaces/{id}/audit/events",
+				"/tasks", "/tasks/{id}"},
+			"POST":  {"/tasks", "/tasks/{id}/transition"},
+			"PATCH": {"/tasks/{id}"},
 		}
 	default:
 		return nil
