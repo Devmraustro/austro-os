@@ -190,7 +190,11 @@ jobs:
           set -e
           cat /tmp/browser-e2e.log
           if [ "$status" -ne 0 ]; then
-            failure_line=$(grep -E 'BROWSER_STEP|BROWSER_DIAGNOSTIC|Error:|Timeout|expect\(|locator|toHave|received|expected' /tmp/browser-e2e.log | grep -vE '[0-9]+[[:space:]]+\|' | tail -n 1 | tr '\n' ' ' | cut -c 1-900)
+            milestone_line=$(grep -E 'BROWSER_STEP|BROWSER_DIAGNOSTIC' /tmp/browser-e2e.log | tail -n 1 | tr '\n' ' ' | cut -c 1-900)
+            if [ -n "$milestone_line" ]; then
+              echo "::error title=Browser DOM milestone::$milestone_line"
+            fi
+            failure_line=$(grep -E 'Error:|Timeout|expect\(|locator|toHave|received|expected' /tmp/browser-e2e.log | grep -vE '[0-9]+[[:space:]]+\|' | tail -n 1 | tr '\n' ' ' | cut -c 1-900)
             if [ -n "$failure_line" ]; then
               echo "::error title=Browser DOM journey failure::$failure_line"
             else

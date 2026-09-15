@@ -154,7 +154,19 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
     await observeHiddenStates(founderPage);
     await founderPage.locator('#password').fill(founderPassword);
     await founderPage.locator('#login-btn').click();
-    await expect(founderPage.locator('#app-view')).toBeVisible();
+    console.log('BROWSER_STEP founder-login-submitted');
+    try {
+      await expect(founderPage.locator('#app-view')).toBeVisible();
+    } catch (error) {
+      const state = await founderPage.evaluate(() => ({
+        authHidden: document.querySelector('#auth-view').hidden,
+        appHidden: document.querySelector('#app-view').hidden,
+        authMessage: document.querySelector('#auth-message').textContent,
+      }));
+      state.responses = founderAuthResponses;
+      console.error(`BROWSER_DIAGNOSTIC founder-app ${JSON.stringify(state)}`);
+      throw error;
+    }
     await expect.poll(async () => {
       const identity = await founderPage.locator('#identity').innerText();
       if (!identity.includes(founderUsername)) {
