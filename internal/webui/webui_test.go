@@ -214,6 +214,9 @@ func TestOpeningThePageIsNotASideEffect(t *testing.T) {
 		// covers submit/approve/reject/publish/retry buttons.
 		`"/publications"`:  true,
 		`"/publications/"`: true,
+		// Creator: start is the explicit form; approve/retry are row actions.
+		`"/pipelines"`:  true,
+		`"/pipelines/"`: true,
 	}
 	re := regexp.MustCompile(`(?:request|authenticated)\(\s*"(POST|PUT|PATCH|DELETE)"\s*,\s*("[^"]*")`)
 	seen := map[string]int{}

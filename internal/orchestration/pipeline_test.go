@@ -114,7 +114,16 @@ func TestFullPipelineLifecycle(t *testing.T) {
 		t.Fatalf("expected review/awaiting_approval, got %s/%s", p.Stage, p.Status)
 	}
 
-	// review -> publish (human gate consumed via the stub publisher)
+	// Review cannot advance until a named human approval command records the
+	// handoff. The publisher is still the deterministic domain stub in this
+	// infrastructure-free test.
+	if _, err = svc.Advance(ctx(), ws, p.ID, StageReview, StagePublish); err != ErrApprovalRequired {
+		t.Fatalf("expected approval gate, got %v", err)
+	}
+	p, err = svc.Approve(ctx(), ws, p.ID, "operator")
+	if err != nil {
+		t.Fatalf("approve review: %v", err)
+	}
 	p, err = svc.Advance(ctx(), ws, p.ID, StageReview, StagePublish)
 	if err != nil {
 		t.Fatalf("review->publish: %v", err)
