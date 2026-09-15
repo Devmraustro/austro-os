@@ -131,7 +131,7 @@ func (s *PipelineStore) Update(ctx context.Context, workspaceID uuid.UUID, p *or
 		 failure_reason=$9,retry_count=$10,idempotency_key=$11,approved_by=$12,approved_at=$13,
 		 trace_id=$14,updated_at=$15,version=version+1
 		WHERE id=$16 AND workspace_id=$17 AND version=$18`,
-		string(p.Stage), string(p.Status), nullableUUID(p.TaskID), nullableUUID(p.PublicationID), nullablePipelineString(p.ResearchReference), nullablePipelineString(p.ScriptReference), nullablePipelineString(p.ReviewReference), nullablePipelineString(p.PublishedReference), nullablePipelineString(p.FailureReason), p.RetryCount, nullablePipelineString(p.IdempotencyKey), nullablePipelineString(p.ApprovedBy), nullableTime(p.ApprovedAt), nullIfEmpty(p.TraceID), p.UpdatedAt, p.ID, workspaceID, previousVersion)
+		string(p.Stage), string(p.Status), nullableUUID(p.TaskID), nullableUUID(p.PublicationID), nullablePipelineString(p.ResearchReference), nullablePipelineString(p.ScriptReference), nullablePipelineString(p.ReviewReference), nullablePipelineString(p.PublishedReference), nullablePipelineString(p.FailureReason), p.RetryCount, nullablePipelineString(p.IdempotencyKey), nullablePipelineString(p.ApprovedBy), nullableTime(p.ApprovedAt), nullablePipelineString(p.TraceID), p.UpdatedAt, p.ID, workspaceID, previousVersion)
 	if err != nil {
 		return nil, err
 	}
