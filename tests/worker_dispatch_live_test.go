@@ -76,14 +76,41 @@ func TestWorkerAdvancesPipelineFromEventToComplete(t *testing.T) {
 	}))
 
 	var stage, status string
-	// The cascade itself completes in well under two seconds on a healthy store
-	// (research -> script -> review -> publish -> complete). The window is kept
-	// generous because the first advance can block for tens of seconds behind a
-	// slow PostgreSQL fsync on an overloaded host; the test is asserting the
-	// end-to-end message loop, not disk latency.
+	// The worker must stop at the durable human gate rather than inventing
+	// approval. Wait for the review handoff and then persist the same approval
+	// evidence that the named API command writes. The API-level test covers the
+	// HTTP/RBAC path; this live worker test focuses on consuming the resulting
+	// review_approved event and completing the remaining cascade.
+	require.Eventually(t, func() bool {
+		err := db.QueryRow(`SELECT stage, status FROM pipelines WHERE id=$1`, pipeID).Scan(&stage, &status)
+		return err == nil && stage == "review" && status == "awaiting_approval"
+	}, 90*time.Second, 1*time.Second, "worker must persist the review handoff")
+
+	var publicationID uuid.UUID
+	require.NoError(t, db.QueryRow(`SELECT publication_id FROM pipelines WHERE id=$1`, pipeID).Scan(&publicationID))
+	now := time.Now().UTC()
+	_, err = db.Exec(`UPDATE publications SET status='approved', approved_by='worker-test-admin', approved_at=$1 WHERE id=$2`, now, publicationID)
+	require.NoError(t, err)
+	_, err = db.Exec(`UPDATE pipelines SET status='approved', approved_by='worker-test-admin', approved_at=$1 WHERE id=$2`, now, pipeID)
+	require.NoError(t, err)
+
+	approvalDetails, err := json.Marshal(map[string]string{"event": "pipeline.review_approved", "stage": "review"})
+	require.NoError(t, err)
+	approvalEnv := env
+	approvalEnv.EventID = uuid.New()
+	approvalEnv.Details = approvalDetails
+	approvalBody, err := approvalEnv.MarshalJSON()
+	require.NoError(t, err)
+	require.NoError(t, ch.Publish("", "austro.events", false, false, amqp.Publishing{
+		ContentType: "application/json", DeliveryMode: amqp.Persistent, Body: approvalBody,
+		MessageId: approvalEnv.EventID.String(),
+		Headers: amqp.Table{"event_type": "created", "workspace_id": wsID.String(), "target_type": "pipeline", "trace_id": approvalEnv.TraceID.String(), "span_id": approvalEnv.SpanID.String()},
+	}))
+
+	// The remaining publish -> complete cascade is entirely worker-owned.
 	require.Eventually(t, func() bool {
 		err := db.QueryRow(`SELECT stage, status FROM pipelines WHERE id=$1`, pipeID).Scan(&stage, &status)
 		return err == nil && stage == "complete" && status == "done"
 	}, 90*time.Second, 1*time.Second,
-		"worker must advance the seeded pipeline through the message loop to complete")
+		"worker must advance the approved pipeline through the message loop to complete")
 }
