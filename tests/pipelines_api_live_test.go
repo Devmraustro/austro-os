@@ -186,6 +186,6 @@ func TestCreatorUIIsARealPipelineSurface(t *testing.T) {
 	for _, route := range []string{"/pipelines", "/approve", "/retry"} {
 		require.Contains(t, string(app), route)
 	}
-	require.Contains(t, string(index), "worker progress will appear from the server")
+	require.Contains(t, string(app), "Worker progress will appear from the server.")
 	require.NotContains(t, string(index), "Set stage")
 }
