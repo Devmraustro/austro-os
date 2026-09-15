@@ -11,6 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"austro-os/internal/auth"
+	"austro-os/internal/config"
+	"austro-os/internal/rbac"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -46,10 +50,23 @@ func memoryJSON(t *testing.T, method, path string, body any, token string) (int,
 	return resp.StatusCode, out
 }
 
+func memoryAccessTokens(t *testing.T, adminA, adminB *auth.UserRecord) (string, string) {
+	t.Helper()
+	svc := rbacJWT(&config.Config{
+		JWTSecret:        envOrDefault("AUSTRO_JWT_SECRET", "change-me-in-production"),
+		JWTRefreshSecret: envOrDefault("AUSTRO_JWT_REFRESH_SECRET", "change-me-in-production"),
+	})
+	mint := func(u *auth.UserRecord) string {
+		tok, err := svc.GenerateAccessTokenWithPermissions(u.ID, u.WorkspaceID, auth.RoleFor(u), rbac.PermissionsForRole(auth.RoleFor(u)))
+		require.NoError(t, err)
+		return tok
+	}
+	return mint(adminA), mint(adminB)
+}
+
 func TestMemoryAPILiveWorkspaceScopedReadWrite(t *testing.T) {
 	adminA, _, adminB := ensureRbacUsers(t)
-	tokenA := loginLive(t, adminA.Username, rbacPassword).AccessToken
-	tokenB := loginLive(t, adminB.Username, rbacPassword).AccessToken
+	tokenA, tokenB := memoryAccessTokens(t, adminA, adminB)
 	key := "live-memory-" + strings.ReplaceAll(adminA.ID, "-", "")
 
 	status, body := memoryJSON(t, http.MethodPut, "/memory/workspace/"+key,
@@ -82,7 +99,7 @@ func TestMemoryAPILiveWorkspaceScopedReadWrite(t *testing.T) {
 
 func TestMemoryAPILiveStrictBoundaryAndAuthorization(t *testing.T) {
 	adminA, _, _ := ensureRbacUsers(t)
-	token := loginLive(t, adminA.Username, rbacPassword).AccessToken
+	token, _ := memoryAccessTokens(t, adminA, adminA)
 
 	for _, layer := range []string{"org", "organizational", "SESSION", "unknown"} {
 		status, _ := memoryJSON(t, http.MethodGet, "/memory/"+layer+"/strict-key", nil, token)

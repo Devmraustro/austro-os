@@ -510,7 +510,7 @@ func PermissionsForRole(r Role) map[string][]string {
 		return map[string][]string{
 			"GET": {"/api/me", "/workspaces/{id}", "/workspaces/{id}/audit/events",
 				"/tasks", "/tasks/{id}",
-				"/knowledge", "/knowledge/{id}"},
+				"/knowledge", "/knowledge/{id}", "/memory/{layer}/{key}"},
 			"POST":   {"/tasks", "/tasks/{id}/transition", "/knowledge", "/knowledge/search"},
 			"PATCH":  {"/tasks/{id}", "/knowledge/{id}"},
 			"PUT":    {"/memory/{layer}/{key}"},
@@ -520,7 +520,7 @@ func PermissionsForRole(r Role) map[string][]string {
 		return map[string][]string{
 			"GET": {"/api/me", "/workspaces/{id}/audit/events",
 				"/tasks", "/tasks/{id}",
-				"/knowledge", "/knowledge/{id}"},
+				"/knowledge", "/knowledge/{id}", "/memory/{layer}/{key}"},
 			"POST":   {"/tasks", "/tasks/{id}/transition", "/knowledge", "/knowledge/search"},
 			"PATCH":  {"/tasks/{id}", "/knowledge/{id}"},
 			"PUT":    {"/memory/{layer}/{key}"},
