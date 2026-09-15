@@ -1,4 +1,6 @@
 name: Arena temporary Go formatter
+permissions:
+  contents: write
 on:
   push:
     branches: [arena/01a0a5ea-austro-os]
