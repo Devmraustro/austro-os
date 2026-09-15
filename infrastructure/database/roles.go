@@ -196,12 +196,18 @@ func quoteLit(s string) string {
 // as a security problem, which makes it easy to "fix" by reaching for the owner
 // connection.
 func provisionRoles(db *sql.DB, topo *Topology) error {
+	for _, role := range []string{topo.Runtime, topo.Admin} {
+		if !validRole.MatchString(role) {
+			return fmt.Errorf("role name %q is not a supported identifier", role)
+		}
+	}
+
 	// NOSUPERUSER / NOBYPASSRLS are asserted on every boot rather than only at
 	// creation. A role altered out-of-band by an operator (or by a migration
 	// tool) is corrected here, and if it cannot be, the runtime verification
 	// that follows refuses to serve.
 	for _, role := range []string{topo.Runtime, topo.Admin} {
-		stmt := fmt.Sprintf(`
+		stmt := fmt.Sprintf(` // #nosec G201 -- role identifiers are validated before DDL construction
 		DO $$
 		BEGIN
 			IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = %s) THEN
@@ -222,7 +228,7 @@ func provisionRoles(db *sql.DB, topo *Topology) error {
 		{topo.Admin, topo.AdminDSN},
 	} {
 		if pw := passwordFromDSN(pair.dsn); pw != "" {
-			stmt := fmt.Sprintf("ALTER ROLE %s LOGIN PASSWORD %s", pair.role, quoteLit(pw))
+			stmt := fmt.Sprintf("ALTER ROLE %s LOGIN PASSWORD %s", pair.role, quoteLit(pw)) // #nosec G201 -- role is validated and password is SQL-literal escaped
 			if _, err := db.Exec(stmt); err != nil {
 				return fmt.Errorf("set password for role %s: %w", pair.role, err)
 			}
@@ -233,7 +239,7 @@ func provisionRoles(db *sql.DB, topo *Topology) error {
 	// audit table narrowed to append-only. Revoking UPDATE and DELETE there is
 	// what makes the audit log append-only from the application's own
 	// connection, independent of any application-level discipline.
-	grants := fmt.Sprintf(`
+	grants := fmt.Sprintf(` // #nosec G201 -- all interpolated role identifiers are validated
 	GRANT USAGE ON SCHEMA public TO %s, %s;
 	GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO %s;
 	REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON audit_events FROM %s;
@@ -275,7 +281,7 @@ func assertOwnership(db *sql.DB, topo *Topology) error {
 		return fmt.Errorf("owner role name %q is not a supported identifier", ownerRole)
 	}
 	for _, table := range rlsTables() {
-		if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s OWNER TO %s", table, ownerRole)); err != nil {
+		if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s OWNER TO %s", table, ownerRole)); err != nil { // #nosec G201 -- table is fixed and ownerRole is validated above
 			return fmt.Errorf("set owner of %s to %s: %w", table, ownerRole, err)
 		}
 	}
@@ -301,7 +307,7 @@ func assertOwnership(db *sql.DB, topo *Topology) error {
 // perform unbound seeding inserts that a forced policy would otherwise hide.
 func forceRLS(db *sql.DB) error {
 	for _, table := range rlsTables() {
-		if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s FORCE ROW LEVEL SECURITY", table)); err != nil {
+		if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s FORCE ROW LEVEL SECURITY", table)); err != nil { // #nosec G201 -- table is from the fixed rlsTables allowlist
 			return fmt.Errorf("force row level security on %s: %w", table, err)
 		}
 	}

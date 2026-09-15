@@ -171,4 +171,4 @@ jobs:
             echo "STATICCHECK_FINDINGS_CLASSIFIED=LOW_OR_INFO_UNRELATED_TO_CREATOR_PIPELINES"
             echo "The findings remain visible above and are not suppressed; standard CI remains the release gate."
           fi
-          exit 0
+          exit "$status"

@@ -238,6 +238,15 @@ func (w *Worker) dropConnection() {
 	w.consumeDone = nil
 }
 
+func logSettlementError(action string, msg amqp.Delivery, err error) {
+	logger.NewEntry("worker-message-settlement-error").
+		SetLevel("error").
+		With("action", action).
+		With("message_id", msg.MessageId).
+		WithError(err).
+		Log()
+}
+
 func (w *Worker) processMessage(msg amqp.Delivery) {
 	start := time.Now()
 	traceID := msg.Headers["trace_id"]
@@ -256,7 +265,9 @@ func (w *Worker) processMessage(msg amqp.Delivery) {
 			With("message_id", msg.MessageId).
 			With("error", err.Error()).
 			Log()
-		msg.Ack(false)
+		if err := msg.Ack(false); err != nil {
+			logSettlementError("ack", msg, err)
+		}
 		return
 	}
 
@@ -301,7 +312,9 @@ func (w *Worker) processMessage(msg amqp.Delivery) {
 					With("event_type", string(env.EventType)).
 					With("error", err.Error()).
 					Log()
-				msg.Ack(false)
+				if err := msg.Ack(false); err != nil {
+					logSettlementError("ack", msg, err)
+				}
 				return
 			}
 			// Transient failure: leave it for redelivery.
@@ -311,12 +324,17 @@ func (w *Worker) processMessage(msg amqp.Delivery) {
 				With("event_type", string(env.EventType)).
 				With("error", err.Error()).
 				Log()
-			msg.Nack(false, true)
+			if err := msg.Nack(false, true); err != nil {
+				logSettlementError("nack", msg, err)
+			}
 			return
 		}
 	}
 
-	msg.Ack(false)
+	if err := msg.Ack(false); err != nil {
+		logSettlementError("ack", msg, err)
+		return
+	}
 
 	duration := time.Since(start)
 	logger.NewEntry("worker-message-processed").

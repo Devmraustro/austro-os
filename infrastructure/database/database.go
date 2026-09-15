@@ -653,7 +653,7 @@ func migratePublications(db *sql.DB) error {
 
 func enableRLS(db *sql.DB) error {
 	for _, table := range rlsTables() {
-		if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ENABLE ROW LEVEL SECURITY", table)); err != nil {
+		if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ENABLE ROW LEVEL SECURITY", table)); err != nil { // #nosec G201 -- table is from the fixed rlsTables allowlist
 			return fmt.Errorf("enable row level security on %s: %w", table, err)
 		}
 	}
@@ -677,7 +677,7 @@ func setupRLSPolicies(db *sql.DB, adminRole string) error {
 	if !validRole.MatchString(adminRole) {
 		return fmt.Errorf("admin role name %q is not a supported identifier", adminRole)
 	}
-	policies := fmt.Sprintf(`
+	policies := fmt.Sprintf(` // #nosec G201 -- adminRole is validated as a restricted SQL identifier above
 	DO $$
 	BEGIN
 		-- Workspaces: direct match on id

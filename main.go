@@ -194,11 +194,15 @@ func main() {
 	handlers := map[api.Route]http.HandlerFunc{
 		{Method: http.MethodGet, Pattern: "/health/live"}: func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"status":"ok"}`))
+			if _, err := w.Write([]byte(`{"status":"ok"}`)); err != nil {
+				return
+			}
 		},
 		{Method: http.MethodGet, Pattern: "/health/ready"}: func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"ready":true}`))
+			if _, err := w.Write([]byte(`{"ready":true}`)); err != nil {
+				return
+			}
 		},
 
 		// Authentication endpoints. Login/refresh/logout/bootstrap are explicit
