@@ -199,6 +199,7 @@
      * empty panel with a Load button. For a founder this returns 403, which the
      * card explains instead of showing a misleading empty state. */
     loadTasks(false);
+    loadKnowledge(false);
     return authenticated("GET", "/api/me").then(function (r) {
       if (r.status !== 200 || !r.body) { signOut(false); return; }
       renderIdentity(r.body);
@@ -596,6 +597,271 @@
 
   el("task-older-btn").addEventListener("click", function () {
     loadTasks(true);
+  });
+
+  /* ---------- knowledge ---------- */
+
+  /* Cursor for "load more". Module state so that changing a filter and applying
+   * it resets the walk instead of continuing it under different conditions. */
+  var knCursor = "";
+  /* The document currently shown in the detail panel, so Edit and Delete act on
+   * a known id rather than on whatever row happens to be selected. */
+  var knCurrent = null;
+
+  function knListQuery(append) {
+    var parts = ["limit=" + encodeURIComponent(el("kn-limit").value)];
+    var kind = el("kn-filter-kind").value;
+    if (kind) parts.push("kind=" + encodeURIComponent(kind));
+    if (append && knCursor) parts.push("cursor=" + encodeURIComponent(knCursor));
+    return "/knowledge?" + parts.join("&");
+  }
+
+  /* Rows are built with createElement and textContent, never innerHTML: a
+   * document title and body are user-supplied text and must never be parsed as
+   * markup. */
+  function renderKnowledgeRows(docs, append) {
+    var body = el("kn-body");
+    if (!append) body.innerHTML = "";
+    for (var i = 0; i < docs.length; i++) {
+      (function (doc) {
+        var tr = document.createElement("tr");
+
+        var title = document.createElement("td");
+        title.textContent = doc.title;
+        tr.appendChild(title);
+
+        var kind = document.createElement("td");
+        kind.textContent = doc.kind;
+        tr.appendChild(kind);
+
+        var updated = document.createElement("td");
+        updated.textContent = doc.updated_at
+          ? String(doc.updated_at).replace("T", " ").slice(0, 19)
+          : "\u2014";
+        tr.appendChild(updated);
+
+        var actions = document.createElement("td");
+        actions.appendChild(knButton("View", function () { showKnowledge(doc.id); }));
+        actions.appendChild(document.createTextNode(" "));
+        actions.appendChild(knButton("Delete", function () { deleteKnowledge(doc); }));
+        tr.appendChild(actions);
+
+        body.appendChild(tr);
+      })(docs[i]);
+    }
+  }
+
+  function knButton(label, onClick) {
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = label;
+    btn.addEventListener("click", onClick);
+    return btn;
+  }
+
+  /* A listing is a bounded page with a cursor; a search is a ranked result set
+   * with none. Both render into the same table, and the absence of next_cursor
+   * from a search response is what hides "load more". */
+  function applyKnowledgeResult(r, append) {
+    var msg = el("kn-message");
+    var table = el("kn-table");
+    var empty = el("kn-empty");
+    var older = el("kn-older-btn");
+
+    if (r.status === 403) {
+      table.hidden = true;
+      empty.hidden = true;
+      older.hidden = true;
+      setMessage(msg,
+        "Knowledge is workspace-scoped, and your current session is not attached " +
+        "to a workspace, so the server refused this request. Sign in as a " +
+        "workspace member or administrator to use it.", false);
+      return;
+    }
+    if (r.status === 401) {
+      /* The single refresh retry already happened inside authenticated();
+       * reaching here means the session is genuinely over. */
+      setMessage(msg, "Your session expired. Sign in again to see knowledge.", false);
+      return;
+    }
+    if (r.status !== 200 || !r.body) {
+      setMessage(msg, errorMessage(r) + " — adjust the filters and retry.", false);
+      return;
+    }
+    renderKnowledgeRows(r.body.documents || [], !!append);
+    var total = el("kn-body").children.length;
+    table.hidden = total === 0;
+    empty.hidden = total !== 0;
+    knCursor = r.body.next_cursor || "";
+    older.hidden = knCursor === "";
+    setMessage(msg, "", true);
+  }
+
+  function loadKnowledge(append) {
+    var loading = el("kn-loading");
+    if (!append) { knCursor = ""; }
+    loading.hidden = false;
+
+    var term = el("kn-search").value.trim();
+    var req = term
+      ? authenticated("POST", "/knowledge/search", {
+          query: term,
+          limit: 50
+        })
+      : authenticated("GET", knListQuery(append));
+
+    return req.then(function (r) {
+      loading.hidden = true;
+      applyKnowledgeResult(r, append);
+    }).catch(function () {
+      loading.hidden = true;
+      setMessage(el("kn-message"),
+        "Could not reach the API. Check the connection and retry.", false);
+    });
+  }
+
+  function hideKnowledgeDetail() {
+    el("kn-detail").hidden = true;
+    el("kn-edit-form").hidden = true;
+    knCurrent = null;
+  }
+
+  function showKnowledge(id) {
+    var msg = el("kn-message");
+    setMessage(msg, "", false);
+    return authenticated("GET", "/knowledge/" + encodeURIComponent(id)).then(function (r) {
+      if (r.status === 404) {
+        hideKnowledgeDetail();
+        setMessage(msg, "That document no longer exists.", false);
+        return null;
+      }
+      if (r.status !== 200 || !r.body) {
+        setMessage(msg, "Could not load the document: " + errorMessage(r), false);
+        return null;
+      }
+      knCurrent = r.body;
+      el("kn-detail-title").textContent = r.body.title;
+      el("kn-detail-kind").textContent = r.body.kind;
+      el("kn-detail-updated").textContent = r.body.updated_at
+        ? String(r.body.updated_at).replace("T", " ").slice(0, 19) : "\u2014";
+      /* The content is the one field long enough to matter, and it is assigned
+       * through textContent so any embedded markup stays inert. */
+      el("kn-detail-content").textContent = r.body.content;
+      el("kn-detail").hidden = false;
+      el("kn-edit-form").hidden = true;
+      return r.body;
+    }).catch(function () {
+      setMessage(msg, "Could not reach the API.", false);
+      return null;
+    });
+  }
+
+  function deleteKnowledge(doc) {
+    var msg = el("kn-message");
+    /* Deletion is the only way to retire a document -- knowledge has no archive
+     * -- so it is always confirmed rather than only sometimes. */
+    var sure = window.confirm(
+      "Delete \u201c" + doc.title + "\u201d permanently? " +
+      "Knowledge has no archive, so this cannot be undone from this page."
+    );
+    if (!sure) return;
+    setMessage(msg, "", false);
+    return authenticated("DELETE", "/knowledge/" + encodeURIComponent(doc.id))
+      .then(function (r) {
+        if (r.status !== 204) {
+          setMessage(msg, "Delete refused: " + errorMessage(r), false);
+          return null;
+        }
+        if (knCurrent && knCurrent.id === doc.id) hideKnowledgeDetail();
+        setMessage(msg, "Deleted \u201c" + doc.title + "\u201d.", true);
+        /* Read the list back so what is on screen is what the server holds. */
+        return loadKnowledge(false);
+      })
+      .catch(function () {
+        setMessage(msg, "Could not reach the API. Nothing was deleted.", false);
+      });
+  }
+
+  el("kn-create-form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var msg = el("kn-create-message");
+    setMessage(msg, "", false);
+    authenticated("POST", "/knowledge", {
+      title: el("kn-title").value,
+      kind: el("kn-kind").value,
+      content: el("kn-content").value
+    }).then(function (r) {
+      if (r.status === 403) {
+        setMessage(msg, "Your role cannot create knowledge in this workspace.", false);
+        return;
+      }
+      if (r.status !== 201 || !r.body) {
+        setMessage(msg, errorMessage(r), false);
+        return;
+      }
+      setMessage(msg, "Created \u201c" + r.body.title + "\u201d.", true);
+      el("kn-create-form").reset();
+      el("kn-kind").value = "document";
+      loadKnowledge(false);
+    }).catch(function () {
+      setMessage(msg, "Could not reach the API. The document was not created.", false);
+    });
+  });
+
+  el("kn-form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    hideKnowledgeDetail();
+    loadKnowledge(false);
+  });
+
+  el("kn-clear-btn").addEventListener("click", function () {
+    el("kn-search").value = "";
+    el("kn-filter-kind").value = "";
+    hideKnowledgeDetail();
+    loadKnowledge(false);
+  });
+
+  el("kn-older-btn").addEventListener("click", function () {
+    loadKnowledge(true);
+  });
+
+  el("kn-edit-btn").addEventListener("click", function () {
+    if (!knCurrent) return;
+    el("kn-edit-title").value = knCurrent.title;
+    el("kn-edit-kind").value = knCurrent.kind;
+    el("kn-edit-content").value = knCurrent.content;
+    el("kn-edit-form").hidden = false;
+  });
+
+  el("kn-edit-cancel").addEventListener("click", function () {
+    el("kn-edit-form").hidden = true;
+  });
+
+  el("kn-detail-close").addEventListener("click", hideKnowledgeDetail);
+
+  el("kn-edit-form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var msg = el("kn-message");
+    if (!knCurrent) return;
+    setMessage(msg, "", false);
+    authenticated("PATCH", "/knowledge/" + encodeURIComponent(knCurrent.id), {
+      title: el("kn-edit-title").value,
+      kind: el("kn-edit-kind").value,
+      content: el("kn-edit-content").value
+    }).then(function (r) {
+      if (r.status !== 200 || !r.body) {
+        setMessage(msg, "Update refused: " + errorMessage(r), false);
+        return;
+      }
+      setMessage(msg, "Saved \u201c" + r.body.title + "\u201d.", true);
+      el("kn-edit-form").hidden = true;
+      /* Re-read rather than patch locally: a content change is re-embedded on
+       * the server, and the panel should show what is stored. */
+      showKnowledge(r.body.id);
+      loadKnowledge(false);
+    }).catch(function () {
+      setMessage(msg, "Could not reach the API. The document was not changed.", false);
+    });
   });
 
   if (token()) { enterApp(); } else { initAuthView(); }

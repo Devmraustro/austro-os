@@ -202,6 +202,14 @@ func TestOpeningThePageIsNotASideEffect(t *testing.T) {
 		// transition button, and it is confirmed with the operator first when
 		// the destination is a terminal stage.
 		`"/tasks/"`: true,
+		// Knowledge, same reasoning. "/knowledge" is the create form,
+		// "/knowledge/search" the search box, and "/knowledge/" the literal
+		// prefix of the two concatenated per-document paths -- the edit form
+		// submit (PATCH) and the Delete button, which is confirmed first
+		// because knowledge has no archive to move a document into instead.
+		`"/knowledge"`:        true,
+		`"/knowledge/search"`: true,
+		`"/knowledge/"`:       true,
 	}
 	re := regexp.MustCompile(`(?:request|authenticated)\(\s*"(POST|PUT|PATCH|DELETE)"\s*,\s*("[^"]*")`)
 	seen := map[string]int{}
