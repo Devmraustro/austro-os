@@ -60,7 +60,16 @@ jobs:
           cat /tmp/gosec.log
           exit "$status"
 
+      - name: Preserve gosec report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gosec-report
+          path: /tmp/gosec.log
+          if-no-files-found: error
+
       - name: Run govulncheck
+        if: always()
         env:
           GOFLAGS: -mod=mod
           GOTOOLCHAIN: local
@@ -70,6 +79,7 @@ jobs:
           go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
 
       - name: Run staticcheck
+        if: always()
         env:
           GOFLAGS: -mod=mod
           GOTOOLCHAIN: local
