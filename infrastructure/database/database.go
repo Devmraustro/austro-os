@@ -103,6 +103,7 @@ func Bootstrap(owner *sql.DB, topo *Topology) error {
 		{"tables", func() error { return createTables(owner) }},
 		{"migrate-users", func() error { return migrateUsers(owner) }},
 		{"migrate-audit-events", func() error { return migrateAuditEvents(owner) }},
+		{"migrate-tasks", func() error { return migrateTasks(owner) }},
 		{"enable-rls", func() error { return enableRLS(owner) }},
 		// Roles before policies: CREATE POLICY ... TO <role> requires the role
 		// to exist, so provisioning them afterwards fails the policy step.
@@ -455,6 +456,62 @@ func migrateAuditEvents(db *sql.DB) error {
 	`
 	if _, err := db.Exec(migration); err != nil {
 		return fmt.Errorf("migrate audit_events: %w", err)
+	}
+	return nil
+}
+
+// migrateTasks adds the column constraints and the listing index the task
+// HTTP surface depends on.
+//
+// The CHECK constraints duplicate validation the domain already performs in
+// internal/task, and that duplication is deliberate. The service is the place a
+// caller is told why a value was refused, but it is not the only path to the
+// table: a migration, an operator, or a future writer could all insert a row the
+// service never saw. A status the lifecycle does not define would then be
+// stored, read back, and fail every transition check with a confusing error
+// instead of never having been written.
+//
+// The lists here must stay identical to the constants in internal/task; a test
+// asserts the two agree so they cannot drift apart quietly.
+//
+// idx_tasks_workspace_created backs the bounded, newest-first listing: the query
+// filters on workspace_id (and optionally status) and pages by (created_at, id),
+// so without a matching index every page is a full scan of the tenant's tasks
+// followed by a sort.
+//
+// Idempotent, and it runs on every boot, so a database created before the task
+// API existed is upgraded rather than left without the constraints.
+func migrateTasks(db *sql.DB) error {
+	migration := `
+	DO $$
+	BEGIN
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'tasks_status_valid') THEN
+			ALTER TABLE tasks ADD CONSTRAINT tasks_status_valid CHECK (status IN (
+				'backlog', 'planned', 'in_progress', 'in_review',
+				'completed', 'cancelled', 'rejected', 'failed'));
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'tasks_priority_valid') THEN
+			ALTER TABLE tasks ADD CONSTRAINT tasks_priority_valid CHECK (priority IN (
+				'low', 'normal', 'high', 'urgent'));
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'tasks_assignee_type_valid') THEN
+			ALTER TABLE tasks ADD CONSTRAINT tasks_assignee_type_valid CHECK (assignee_type IN (
+				'ai_employee', 'human'));
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'tasks_title_not_blank') THEN
+			ALTER TABLE tasks ADD CONSTRAINT tasks_title_not_blank
+				CHECK (length(trim(title)) > 0);
+		END IF;
+	END$$;
+
+	CREATE INDEX IF NOT EXISTS idx_tasks_workspace_created
+		ON tasks(workspace_id, created_at DESC, id DESC);
+	`
+	if _, err := db.Exec(migration); err != nil {
+		// A constraint add can only fail if pre-existing rows already violate
+		// the invariant. Surface that loudly: silently skipping the constraint
+		// would leave the table accepting values the lifecycle cannot handle.
+		return fmt.Errorf("migrate tasks: %w", err)
 	}
 	return nil
 }

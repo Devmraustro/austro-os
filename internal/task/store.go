@@ -17,7 +17,16 @@ type TaskStore interface {
 	// reads must not succeed (RLS + explicit workspace guard).
 	Get(ctx context.Context, workspaceID, id uuid.UUID) (*Task, error)
 	// List returns tasks in a workspace, optionally filtered by status.
+	//
+	// It is unbounded and is meant for internal callers that already hold a
+	// workspace they own. It must not back an HTTP route: use ListPage, which
+	// caps the result and orders it deterministically.
 	List(ctx context.Context, workspaceID uuid.UUID, status *Status) ([]*Task, error)
+	// ListPage returns one bounded page of a workspace's tasks, newest first, in
+	// a total order that a cursor can traverse without skipping or repeating a
+	// row. Implementations must apply the same workspace confinement as every
+	// other method here.
+	ListPage(ctx context.Context, workspaceID uuid.UUID, q ListQuery) (Page, error)
 	// Update persists field changes for a task owned by the workspace.
 	Update(ctx context.Context, workspaceID uuid.UUID, t *Task) (*Task, error)
 	// Delete removes a task within a workspace (soft-delete optional).

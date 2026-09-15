@@ -81,6 +81,23 @@ func (s *Service) List(ctx context.Context, workspaceID uuid.UUID, status *Statu
 	return s.store.List(ctx, workspaceID, status)
 }
 
+// ListPage returns one bounded page of the workspace's tasks, newest first.
+//
+// This is the listing meant to back an HTTP route. The workspace argument is
+// always the caller's own verified workspace, so the store's RLS binding and
+// this call agree; a filter naming a different workspace is not expressible
+// here, which is the point.
+func (s *Service) ListPage(ctx context.Context, workspaceID uuid.UUID, q ListQuery) (Page, error) {
+	if workspaceID == uuid.Nil {
+		return Page{}, ErrWorkspaceMismatch
+	}
+	if q.Status != nil && !ValidStatus(*q.Status) {
+		return Page{}, ErrStatus
+	}
+	q.Normalize()
+	return s.store.ListPage(ctx, workspaceID, q)
+}
+
 // Transition applies an explicit, validated lifecycle transition.
 func (s *Service) Transition(ctx context.Context, workspaceID, id uuid.UUID, to Status) (*Task, error) {
 	if !ValidStatus(to) {

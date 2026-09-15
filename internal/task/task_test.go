@@ -3,6 +3,7 @@ package task
 import (
 	"context"
 	"errors"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -59,6 +60,53 @@ func (m *memStore) List(_ context.Context, workspaceID uuid.UUID, status *Status
 		out = append(out, &cp)
 	}
 	return out, nil
+}
+
+// ListPage mirrors the Postgres adapter's contract: newest first by
+// (created_at, id), keyset-filtered, and one row over the page size so the
+// presence of a following page is known rather than inferred.
+func (m *memStore) ListPage(_ context.Context, workspaceID uuid.UUID, q ListQuery) (Page, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	q.Normalize()
+
+	all := []*Task{}
+	for _, t := range m.items {
+		if t.WorkspaceID != workspaceID {
+			continue
+		}
+		if q.Status != nil && t.Status != *q.Status {
+			continue
+		}
+		cp := *t
+		all = append(all, &cp)
+	}
+	sort.Slice(all, func(i, j int) bool {
+		if !all[i].CreatedAt.Equal(all[j].CreatedAt) {
+			return all[i].CreatedAt.After(all[j].CreatedAt)
+		}
+		return all[i].ID.String() > all[j].ID.String()
+	})
+
+	out := []*Task{}
+	for _, t := range all {
+		if q.Before.Set {
+			after := t.CreatedAt.Before(q.Before.CreatedAt) ||
+				(t.CreatedAt.Equal(q.Before.CreatedAt) && t.ID.String() < q.Before.ID.String())
+			if !after {
+				continue
+			}
+		}
+		out = append(out, t)
+	}
+
+	page := Page{Limit: q.Limit}
+	if len(out) > q.Limit {
+		out = out[:q.Limit]
+		page.NextCursor = EncodeCursor(out[len(out)-1])
+	}
+	page.Tasks = out
+	return page, nil
 }
 
 func (m *memStore) Update(_ context.Context, workspaceID uuid.UUID, t *Task) (*Task, error) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	"austro-os/internal/task"
@@ -132,6 +133,75 @@ func (s *TaskStore) List(ctx context.Context, workspaceID uuid.UUID, status *tas
 		return nil, err
 	}
 	return out, nil
+}
+
+// ListPage returns one bounded page of a workspace's tasks.
+//
+// Ordering is (created_at DESC, id DESC). created_at alone would not be a total
+// order -- two tasks created within the same microsecond would tie, and a tie at
+// a page boundary makes which row lands on which page arbitrary -- so the
+// primary key breaks it. idx_tasks_workspace_created backs exactly this shape.
+//
+// One more row than the page size is fetched so the presence of a following page
+// is known for certain. Inferring it from "the page came back full" sends the
+// client one extra request whenever the total happens to be a multiple of the
+// page size.
+func (s *TaskStore) ListPage(ctx context.Context, workspaceID uuid.UUID, q task.ListQuery) (task.Page, error) {
+	q.Normalize()
+
+	tx, err := s.beginTx(ctx, workspaceID)
+	if err != nil {
+		return task.Page{}, err
+	}
+	defer tx.Rollback()
+
+	query := `
+		SELECT id, workspace_id, title, description, status, priority,
+		       assignee_type, assignee_id, deadline, created_at, updated_at
+		FROM tasks WHERE workspace_id = $1`
+	args := []interface{}{workspaceID}
+	if q.Status != nil {
+		args = append(args, string(*q.Status))
+		query += fmt.Sprintf(" AND status = $%d", len(args))
+	}
+	if q.Before.Set {
+		// Row comparison, not two separate predicates: (created_at, id) < (c, i)
+		// is the lexicographic form of the ORDER BY, so a task created earlier
+		// sorts after the cursor even when its id happens to be larger.
+		args = append(args, q.Before.CreatedAt, q.Before.ID)
+		query += fmt.Sprintf(" AND (created_at, id) < ($%d, $%d)", len(args)-1, len(args))
+	}
+	args = append(args, q.Limit+1)
+	query += fmt.Sprintf(" ORDER BY created_at DESC, id DESC LIMIT $%d", len(args))
+
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return task.Page{}, err
+	}
+	defer rows.Close()
+
+	var out []*task.Task
+	for rows.Next() {
+		t, err := scanTask(rows)
+		if err != nil {
+			return task.Page{}, err
+		}
+		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return task.Page{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return task.Page{}, err
+	}
+
+	page := task.Page{Limit: q.Limit}
+	if len(out) > q.Limit {
+		out = out[:q.Limit]
+		page.NextCursor = task.EncodeCursor(out[len(out)-1])
+	}
+	page.Tasks = out
+	return page, nil
 }
 
 func (s *TaskStore) Update(ctx context.Context, workspaceID uuid.UUID, t *task.Task) (*task.Task, error) {
