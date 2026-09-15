@@ -104,7 +104,7 @@ func TestWorkerAdvancesPipelineFromEventToComplete(t *testing.T) {
 	require.NoError(t, ch.Publish("", "austro.events", false, false, amqp.Publishing{
 		ContentType: "application/json", DeliveryMode: amqp.Persistent, Body: approvalBody,
 		MessageId: approvalEnv.EventID.String(),
-		Headers: amqp.Table{"event_type": "created", "workspace_id": wsID.String(), "target_type": "pipeline", "trace_id": approvalEnv.TraceID.String(), "span_id": approvalEnv.SpanID.String()},
+		Headers:   amqp.Table{"event_type": "created", "workspace_id": wsID.String(), "target_type": "pipeline", "trace_id": approvalEnv.TraceID.String(), "span_id": approvalEnv.SpanID.String()},
 	}))
 
 	// The remaining publish -> complete cascade is entirely worker-owned.
