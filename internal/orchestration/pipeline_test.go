@@ -213,6 +213,43 @@ func TestDuplicateWorkerDeliveryRepairsLostFollowerEvent(t *testing.T) {
 	}
 }
 
+func TestApprovalIsIdempotentAndRepublishesEvent(t *testing.T) {
+	store := newMemStore()
+	events := &flakyEventSink{}
+	svc := NewService(store, StubResearcher{}, StubScriptWriter{}, StubReviewer{}, StubPublisher{}, nil, events)
+	ws := validWS()
+	p := basePipeline(t, store, ws)
+
+	var err error
+	if p, err = svc.Advance(ctx(), ws, p.ID, StageResearch, StageScript); err != nil {
+		t.Fatalf("research->script: %v", err)
+	}
+	if p, err = svc.Advance(ctx(), ws, p.ID, StageScript, StageReview); err != nil {
+		t.Fatalf("script->review: %v", err)
+	}
+	beforeApprovalEvents := events.calls
+	approved, err := svc.Approve(ctx(), ws, p.ID, "operator")
+	if err != nil {
+		t.Fatalf("first approval: %v", err)
+	}
+	if !approved.Approved() || approved.ApprovedBy != "operator" {
+		t.Fatalf("approval was not durably recorded: %#v", approved)
+	}
+
+	// A retried approval must not perform a second state transition, but it must
+	// republish the durable follower event if the first publication was lost.
+	repeated, err := svc.Approve(ctx(), ws, p.ID, "operator")
+	if err != nil {
+		t.Fatalf("idempotent approval: %v", err)
+	}
+	if !repeated.Approved() || repeated.ApprovedBy != "operator" || repeated.ID != approved.ID {
+		t.Fatalf("idempotent approval changed the aggregate: %#v", repeated)
+	}
+	if events.calls != beforeApprovalEvents+2 {
+		t.Fatalf("expected one event for each approval attempt, got %d total", events.calls)
+	}
+}
+
 func TestFailedStageCanOnlyRecoverThroughRetry(t *testing.T) {
 	store := newMemStore()
 	reviewer := &failOnceReviewer{}
