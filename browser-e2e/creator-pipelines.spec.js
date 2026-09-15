@@ -1,6 +1,6 @@
 const { test, expect } = require('@playwright/test');
 const { execFileSync } = require('node:child_process');
-const { readFileSync } = require('node:fs');
+const { appendFileSync, readFileSync } = require('node:fs');
 
 function env(name) {
   const value = process.env[name];
@@ -164,7 +164,9 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
         authMessage: document.querySelector('#auth-message').textContent,
       }));
       state.responses = founderAuthResponses;
-      process.stderr.write(`BROWSER_DIAGNOSTIC founder-app ${JSON.stringify(state)}; cause: ${error.message}\n`);
+      const diagnostic = `BROWSER_DIAGNOSTIC founder-app ${JSON.stringify(state)}; cause: ${error.message}`;
+      appendFileSync('/tmp/browser-e2e-diagnostic.log', `${diagnostic}\n`);
+      process.stderr.write(`${diagnostic}\n`);
       throw new Error(`BROWSER_DIAGNOSTIC founder-app ${JSON.stringify(state)}; cause: ${error.message}`);
     }
     try {
@@ -180,7 +182,9 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
         identity: document.querySelector('#identity').textContent,
       }));
       state.responses = founderAuthResponses;
-      process.stderr.write(`BROWSER_DIAGNOSTIC founder-identity ${JSON.stringify(state)}; cause: ${error.message}\n`);
+      const diagnostic = `BROWSER_DIAGNOSTIC founder-identity ${JSON.stringify(state)}; cause: ${error.message}`;
+      appendFileSync('/tmp/browser-e2e-diagnostic.log', `${diagnostic}\n`);
+      process.stderr.write(`${diagnostic}\n`);
       throw new Error(`BROWSER_DIAGNOSTIC founder-identity ${JSON.stringify(state)}; cause: ${error.message}`);
     }
     console.log('BROWSER_STEP founder-authenticated');

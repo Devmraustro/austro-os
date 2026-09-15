@@ -189,6 +189,10 @@ jobs:
           status=$?
           set -e
           cat /tmp/browser-e2e.log
+          if [ -f /tmp/browser-e2e-diagnostic.log ]; then
+            diagnostic_line=$(tail -n 1 /tmp/browser-e2e-diagnostic.log | tr '\n' ' ' | cut -c 1-900)
+            echo "::error title=Browser DOM diagnostic::$diagnostic_line"
+          fi
           if [ "$status" -ne 0 ]; then
             milestone_line=$(grep -E 'BROWSER_STEP|BROWSER_DIAGNOSTIC' /tmp/browser-e2e.log | tail -n 1 | tr '\n' ' ' | cut -c 1-900)
             if [ -n "$milestone_line" ]; then
