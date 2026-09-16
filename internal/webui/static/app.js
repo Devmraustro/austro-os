@@ -412,6 +412,22 @@
       }
       el("department-form").reset();
       setMessage(msg, "Department created: " + r.body.name, true);
+      if (r.body && r.body.id) {
+        var deptSelects = [el("team-department"), el("team-filter-department"), el("team-edit-department")];
+        for (var s = 0; s < deptSelects.length; s++) {
+          if (!deptSelects[s]) continue;
+          var exists = false;
+          for (var o = 0; o < deptSelects[s].options.length; o++) {
+            if (deptSelects[s].options[o].value === r.body.id) { exists = true; break; }
+          }
+          if (!exists) {
+            var opt = document.createElement("option");
+            opt.value = r.body.id;
+            opt.textContent = r.body.name;
+            deptSelects[s].appendChild(opt);
+          }
+        }
+      }
       loadDepartments(false);
     }).catch(function () {
       setMessage(msg, "Could not reach API.", false);
@@ -552,6 +568,22 @@
       }
       el("team-form").reset();
       setMessage(msg, "Team created: " + r.body.name, true);
+      if (r.body && r.body.id) {
+        var teamSelects = [el("employee-team"), el("employee-filter-team"), el("employee-edit-team")];
+        for (var s = 0; s < teamSelects.length; s++) {
+          if (!teamSelects[s]) continue;
+          var exists = false;
+          for (var o = 0; o < teamSelects[s].options.length; o++) {
+            if (teamSelects[s].options[o].value === r.body.id) { exists = true; break; }
+          }
+          if (!exists) {
+            var opt = document.createElement("option");
+            opt.value = r.body.id;
+            opt.textContent = r.body.name + " (" + r.body.department_id.slice(0,6) + ")";
+            teamSelects[s].appendChild(opt);
+          }
+        }
+      }
       loadTeams(false);
       loadEmployees(false);
     }).catch(function () {
