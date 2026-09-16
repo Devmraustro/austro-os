@@ -24,15 +24,17 @@ func prepareIsolationData(t *testing.T, db *sql.DB) (a, b isoFixture) {
 	wsA := uuid.MustParse(workspaceA)
 	wsB := uuid.MustParse(workspaceB)
 
-	a = isoFixture{deptID: uuid.New(), teamID: uuid.New(), empID: uuid.New(), empName: "Emp A"}
-	b = isoFixture{deptID: uuid.New(), teamID: uuid.New(), empID: uuid.New(), empName: "Emp B"}
+	a = isoFixture{deptID: uuid.New(), teamID: uuid.New(), empID: uuid.New(), empName: "Emp A " + uuid.NewString()[:6]}
+	b = isoFixture{deptID: uuid.New(), teamID: uuid.New(), empID: uuid.New(), empName: "Emp B " + uuid.NewString()[:6]}
 
 	create := func(f *isoFixture, ws uuid.UUID) {
+		deptName := "dept-" + f.deptID.String()[:8]
+		teamName := "team-" + f.teamID.String()[:8]
 		_, err := db.Exec(`INSERT INTO departments (id, name, workspace_id) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING`,
-			f.deptID, "dept", ws)
+			f.deptID, deptName, ws)
 		require.NoError(t, err)
 		_, err = db.Exec(`INSERT INTO teams (id, name, department_id) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING`,
-			f.teamID, "team", f.deptID)
+			f.teamID, teamName, f.deptID)
 		require.NoError(t, err)
 		_, err = db.Exec(`INSERT INTO ai_employees (id, name, role, team_id) VALUES ($1, $2, 'analyst', $3) ON CONFLICT (id) DO NOTHING`,
 			f.empID, f.empName, f.teamID)
@@ -40,6 +42,11 @@ func prepareIsolationData(t *testing.T, db *sql.DB) (a, b isoFixture) {
 	}
 	create(&a, wsA)
 	create(&b, wsB)
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM ai_employees WHERE id IN ($1,$2)`, a.empID, b.empID)
+		_, _ = db.Exec(`DELETE FROM teams WHERE id IN ($1,$2)`, a.teamID, b.teamID)
+		_, _ = db.Exec(`DELETE FROM departments WHERE id IN ($1,$2)`, a.deptID, b.deptID)
+	})
 	return a, b
 }
 

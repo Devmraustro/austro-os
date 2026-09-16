@@ -364,12 +364,21 @@ func (s *AIEmployeeStore) Update(ctx context.Context, workspaceID uuid.UUID, e *
 	var memID uuid.NullUUID
 	var currTask uuid.NullUUID
 	var createdAt, updatedAt time.Time
-	err = tx.QueryRowContext(ctx, `
+	if e.CurrentTaskID == nil {
+		err = tx.QueryRowContext(ctx, `
+		UPDATE ai_employees SET team_id = $1, name = $2, role = $3, capabilities = $4, permissions = $5, knowledge_access = $6, current_task_id = NULL, updated_at = NOW()
+		WHERE id = $7
+		RETURNING id, team_id, name, role, capabilities, permissions, knowledge_access, memory_id, current_task_id, created_at, updated_at`,
+			e.TeamID, e.Name, e.Role, pq.Array(e.Capabilities), jsonValue(e.Permissions), jsonValue(e.KnowledgeAccess), e.ID).Scan(
+			&updated.ID, &updated.TeamID, &name, &role, &caps, &perms, &know, &memID, &currTask, &createdAt, &updatedAt)
+	} else {
+		err = tx.QueryRowContext(ctx, `
 		UPDATE ai_employees SET team_id = $1, name = $2, role = $3, capabilities = $4, permissions = $5, knowledge_access = $6, current_task_id = $7, updated_at = NOW()
 		WHERE id = $8
 		RETURNING id, team_id, name, role, capabilities, permissions, knowledge_access, memory_id, current_task_id, created_at, updated_at`,
-		e.TeamID, e.Name, e.Role, pq.Array(e.Capabilities), jsonValue(e.Permissions), jsonValue(e.KnowledgeAccess), nullableUUID(e.CurrentTaskID), e.ID).Scan(
-		&updated.ID, &updated.TeamID, &name, &role, &caps, &perms, &know, &memID, &currTask, &createdAt, &updatedAt)
+			e.TeamID, e.Name, e.Role, pq.Array(e.Capabilities), jsonValue(e.Permissions), jsonValue(e.KnowledgeAccess), *e.CurrentTaskID, e.ID).Scan(
+			&updated.ID, &updated.TeamID, &name, &role, &caps, &perms, &know, &memID, &currTask, &createdAt, &updatedAt)
+	}
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, aiemployee.ErrNotFound

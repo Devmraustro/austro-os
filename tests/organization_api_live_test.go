@@ -567,12 +567,12 @@ func TestOrganizationLiveInputValidation(t *testing.T) {
 		for _, path := range []string{"/departments?limit=100000", "/teams?limit=100000", "/ai-employees?limit=100000"} {
 			status, body := authJSONRaw(t, http.MethodGet, path, "", tokens.adminA)
 			require.Equal(t, http.StatusOK, status, body)
-			// check limit in response is capped <=100
+			// check limit in response is capped <=200 (MaxPageSize)
 			var generic struct {
 				Limit int `json:"limit"`
 			}
 			require.NoError(t, json.Unmarshal(body, &generic))
-			require.LessOrEqual(t, generic.Limit, 100, "limit must be clamped")
+			require.LessOrEqual(t, generic.Limit, 200, "limit must be clamped")
 		}
 	})
 
