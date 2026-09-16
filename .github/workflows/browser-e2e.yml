@@ -265,13 +265,21 @@ jobs:
           status=$?
           set -e
           cat /tmp/browser-e2e-mutation.log
+          echo "=== MUTATION LOG TAIL (last 100 lines) ==="
+          tail -n 100 /tmp/browser-e2e-mutation.log || true
+          echo "=== END TAIL ==="
           if [ "$status" -ne 0 ]; then
-            failure_line=$(grep -E 'RESTORE|MUTATION|CAUGHT|SURVIVED|FAILED|error|Error|FAIL|fail|did not|missing|cannot|expected|received|BROWSER_STEP' /tmp/browser-e2e-mutation.log | grep -vE '^[[:space:]]*[0-9]+ (passed|failed)' | tail -n 8 | tr '\\n' ' ' | cut -c 1-900)
+            failure_line=$(grep -E 'RESTORE|MUTATION|CAUGHT|SURVIVED|FAILED|error|Error|FAIL|fail|did not|missing|cannot|expected|received|BROWSER_STEP|BUILD_PASS|API_PASS|SOURCE_PASS' /tmp/browser-e2e-mutation.log | grep -vE '^[[:space:]]*[0-9]+ (passed|failed)' | tail -n 20 | tr '\n' ' ' | cut -c 1-2000)
             if [ -n "$failure_line" ]; then
               echo "::error title=Browser authorization mutation failure::$failure_line"
             else
               echo "::error title=Browser authorization mutation failure::script exited with status $status; see the uploaded mutation log"
             fi
+            tail_lines=$(tail -n 20 /tmp/browser-e2e-mutation.log | tr '\n' ' ' | cut -c 1-2000)
+            echo "::error title=Mutation log tail::$tail_lines"
+          else
+            echo "Mutation harness succeeded with status $status"
+            grep -E 'MUTATION_SUITE_PASS|RESTORE_API_PASS|CAUGHT|BUILD_PASS' /tmp/browser-e2e-mutation.log | tail -n 10 || true
           fi
           exit "$status"
 
