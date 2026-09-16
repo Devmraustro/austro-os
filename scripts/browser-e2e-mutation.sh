@@ -79,8 +79,15 @@ if text.count(old) != 1:
 path.write_text(text.replace(old, new, 1))
 PY
 
-echo "building and starting temporarily mutated API"
+echo "preparing fresh fixture for the temporarily mutated browser test"
 stop_api
+AUSTRO_POSTGRES_DSN="$AUSTRO_POSTGRES_DSN" go run ./cmd/browser-e2e-setup -mode=cleanup
+AUSTRO_POSTGRES_DSN="$AUSTRO_POSTGRES_DSN" go run ./cmd/browser-e2e-setup
+set -a
+. "$BROWSER_E2E_ENV_FILE"
+set +a
+
+echo "building and starting temporarily mutated API"
 go build -o /tmp/austro-api .
 start_api
 
