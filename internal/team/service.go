@@ -17,7 +17,7 @@ type DepartmentResolver interface {
 
 // Service enforces workspace ownership and hierarchy invariants for teams.
 type Service struct {
-	store              Store
+	store            Store
 	departmentLookup DepartmentResolver
 }
 

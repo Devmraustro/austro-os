@@ -16,13 +16,13 @@ import (
 	"austro-os/infrastructure/rabbitmq"
 	"austro-os/infrastructure/redis"
 	"austro-os/internal/ai"
+	"austro-os/internal/aiemployee"
 	"austro-os/internal/api"
 	"austro-os/internal/audit"
 	"austro-os/internal/auth"
 	"austro-os/internal/authz"
 	"austro-os/internal/composition"
 	"austro-os/internal/config"
-	"austro-os/internal/aiemployee"
 	"austro-os/internal/department"
 	"austro-os/internal/knowledge"
 	logger "austro-os/internal/log"
@@ -289,22 +289,22 @@ func main() {
 		{Method: http.MethodPost, Pattern: "/pipelines/{id}/retry"}:   pipelineHandler.Retry,
 
 		// Organization hierarchy: Workspace → Departments → Teams → AI Employees.
-		{Method: http.MethodPost, Pattern: "/departments"}:       departmentHandler.Create,
-		{Method: http.MethodGet, Pattern: "/departments"}:        departmentHandler.List,
-		{Method: http.MethodGet, Pattern: "/departments/{id}"}:   departmentHandler.Get,
-		{Method: http.MethodPatch, Pattern: "/departments/{id}"}: departmentHandler.Update,
+		{Method: http.MethodPost, Pattern: "/departments"}:        departmentHandler.Create,
+		{Method: http.MethodGet, Pattern: "/departments"}:         departmentHandler.List,
+		{Method: http.MethodGet, Pattern: "/departments/{id}"}:    departmentHandler.Get,
+		{Method: http.MethodPatch, Pattern: "/departments/{id}"}:  departmentHandler.Update,
 		{Method: http.MethodDelete, Pattern: "/departments/{id}"}: departmentHandler.Delete,
 
-		{Method: http.MethodPost, Pattern: "/teams"}:       teamHandler.Create,
-		{Method: http.MethodGet, Pattern: "/teams"}:        teamHandler.List,
-		{Method: http.MethodGet, Pattern: "/teams/{id}"}:   teamHandler.Get,
-		{Method: http.MethodPatch, Pattern: "/teams/{id}"}: teamHandler.Update,
+		{Method: http.MethodPost, Pattern: "/teams"}:        teamHandler.Create,
+		{Method: http.MethodGet, Pattern: "/teams"}:         teamHandler.List,
+		{Method: http.MethodGet, Pattern: "/teams/{id}"}:    teamHandler.Get,
+		{Method: http.MethodPatch, Pattern: "/teams/{id}"}:  teamHandler.Update,
 		{Method: http.MethodDelete, Pattern: "/teams/{id}"}: teamHandler.Delete,
 
-		{Method: http.MethodPost, Pattern: "/ai-employees"}:       aiEmployeeHandler.Create,
-		{Method: http.MethodGet, Pattern: "/ai-employees"}:        aiEmployeeHandler.List,
-		{Method: http.MethodGet, Pattern: "/ai-employees/{id}"}:   aiEmployeeHandler.Get,
-		{Method: http.MethodPatch, Pattern: "/ai-employees/{id}"}: aiEmployeeHandler.Update,
+		{Method: http.MethodPost, Pattern: "/ai-employees"}:        aiEmployeeHandler.Create,
+		{Method: http.MethodGet, Pattern: "/ai-employees"}:         aiEmployeeHandler.List,
+		{Method: http.MethodGet, Pattern: "/ai-employees/{id}"}:    aiEmployeeHandler.Get,
+		{Method: http.MethodPatch, Pattern: "/ai-employees/{id}"}:  aiEmployeeHandler.Update,
 		{Method: http.MethodDelete, Pattern: "/ai-employees/{id}"}: aiEmployeeHandler.Delete,
 
 		// Memory is deliberately limited to key-based read/write operations.

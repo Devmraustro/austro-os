@@ -25,19 +25,19 @@ type Role string
 
 // AIEmployee is the persistent aggregate.
 type AIEmployee struct {
-	ID             uuid.UUID  `json:"id"`
-	TeamID         uuid.UUID  `json:"team_id"`
-	DepartmentID   uuid.UUID  `json:"department_id"` // derived via team
-	WorkspaceID    uuid.UUID  `json:"workspace_id"`  // derived via team->department
-	Name           string     `json:"name"`
-	Role           string     `json:"role"`
-	Capabilities   []string   `json:"capabilities"`
-	Permissions    any        `json:"permissions,omitempty"`
-	MemoryID       *uuid.UUID `json:"memory_id,omitempty"`
-	KnowledgeAccess any       `json:"knowledge_access,omitempty"`
-	CurrentTaskID  *uuid.UUID `json:"current_task_id,omitempty"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
+	ID              uuid.UUID  `json:"id"`
+	TeamID          uuid.UUID  `json:"team_id"`
+	DepartmentID    uuid.UUID  `json:"department_id"` // derived via team
+	WorkspaceID     uuid.UUID  `json:"workspace_id"`  // derived via team->department
+	Name            string     `json:"name"`
+	Role            string     `json:"role"`
+	Capabilities    []string   `json:"capabilities"`
+	Permissions     any        `json:"permissions,omitempty"`
+	MemoryID        *uuid.UUID `json:"memory_id,omitempty"`
+	KnowledgeAccess any        `json:"knowledge_access,omitempty"`
+	CurrentTaskID   *uuid.UUID `json:"current_task_id,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 // New creates a valid employee.

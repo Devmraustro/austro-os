@@ -10,11 +10,11 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"austro-os/internal/aiemployee"
 	"austro-os/internal/audit"
 	"austro-os/internal/auth"
 	logger "austro-os/internal/log"
 	"austro-os/internal/middleware"
-	"austro-os/internal/aiemployee"
 
 	"github.com/google/uuid"
 )
@@ -124,11 +124,11 @@ type createAIEmployeeRequest struct {
 }
 
 type updateAIEmployeeRequest struct {
-	Name          *string   `json:"name"`
-	Role          *string   `json:"role"`
-	TeamID        *string   `json:"team_id"`
-	Capabilities  []string  `json:"capabilities"`
-	CurrentTaskID *string   `json:"current_task_id"`
+	Name          *string  `json:"name"`
+	Role          *string  `json:"role"`
+	TeamID        *string  `json:"team_id"`
+	Capabilities  []string `json:"capabilities"`
+	CurrentTaskID *string  `json:"current_task_id"`
 }
 
 type aiEmployeeResponse struct {

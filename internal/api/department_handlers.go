@@ -12,9 +12,9 @@ import (
 
 	"austro-os/internal/audit"
 	"austro-os/internal/auth"
+	"austro-os/internal/department"
 	logger "austro-os/internal/log"
 	"austro-os/internal/middleware"
-	"austro-os/internal/department"
 
 	"github.com/google/uuid"
 )
@@ -27,7 +27,7 @@ const (
 // POST /departments, GET /departments, GET /departments/{id}, PATCH /departments/{id}, DELETE /departments/{id}
 // Workspace is taken from verified claims, never from client.
 type DepartmentHandler struct {
-	svc DepartmentService
+	svc       DepartmentService
 	auditSink audit.Sink
 }
 

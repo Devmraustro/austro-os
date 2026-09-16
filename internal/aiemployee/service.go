@@ -20,8 +20,8 @@ type TeamResolver interface {
 
 // Service enforces workspace ownership and hierarchy invariants.
 type Service struct {
-	store        Store
-	teamLookup   TeamResolver
+	store      Store
+	teamLookup TeamResolver
 }
 
 // NewService creates an AI employee service.

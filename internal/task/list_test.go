@@ -52,15 +52,15 @@ func TestCursorRoundTrip(t *testing.T) {
 func TestDecodeCursorRejectsMalformed(t *testing.T) {
 	for name, raw := range map[string]string{
 		"empty is not an error but yields no cursor": "",
-		"no separator":      "12345",
-		"non-numeric time":  "notanumber.3f2b1c9e-0000-4000-8000-000000000001",
-		"bad uuid":          "12345.not-a-uuid",
-		"empty time":        ".3f2b1c9e-0000-4000-8000-000000000001",
-		"empty uuid":        "12345.",
-		"trailing garbage":  "12345.3f2b1c9e-0000-4000-8000-000000000001.extra",
-		"float time":        "123.5.3f2b1c9e-0000-4000-8000-000000000001",
-		"time before range": "-99999999999999999999.3f2b1c9e-0000-4000-8000-000000000001",
-		"sql injection":     "1;DROP TABLE tasks--.x",
+		"no separator":                               "12345",
+		"non-numeric time":                           "notanumber.3f2b1c9e-0000-4000-8000-000000000001",
+		"bad uuid":                                   "12345.not-a-uuid",
+		"empty time":                                 ".3f2b1c9e-0000-4000-8000-000000000001",
+		"empty uuid":                                 "12345.",
+		"trailing garbage":                           "12345.3f2b1c9e-0000-4000-8000-000000000001.extra",
+		"float time":                                 "123.5.3f2b1c9e-0000-4000-8000-000000000001",
+		"time before range":                          "-99999999999999999999.3f2b1c9e-0000-4000-8000-000000000001",
+		"sql injection":                              "1;DROP TABLE tasks--.x",
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, err := DecodeCursor(raw)
