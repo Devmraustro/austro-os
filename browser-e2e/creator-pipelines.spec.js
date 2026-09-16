@@ -285,10 +285,14 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
     console.log('BROWSER_STEP pipeline-review');
 
     const pipelineList = await browserAPI(adminPage, 'GET', '/api/pipelines?limit=50');
-    expect(pipelineList.status).toBe(200);
-    expect(pipelineList.body.pipelines).toHaveLength(1);
+    console.log('BROWSER_STEP pipeline-list-read', JSON.stringify({
+      status: pipelineList.status,
+      count: pipelineList.body && pipelineList.body.pipelines && pipelineList.body.pipelines.length,
+    }));
+    expect(pipelineList.status, `pipeline list response: ${JSON.stringify(pipelineList)}`).toBe(200);
+    expect(pipelineList.body.pipelines, `pipeline list body: ${JSON.stringify(pipelineList)}`).toHaveLength(1);
     const pipelineID = pipelineList.body.pipelines[0].id;
-    expect(pipelineID).toMatch(/^[0-9a-f-]{36}$/);
+    expect(pipelineID, `pipeline list body: ${JSON.stringify(pipelineList)}`).toMatch(/^[0-9a-f-]{36}$/);
 
     // SECURITY A: a member can observe the real review state but is not shown
     // an approval control. The same real browser also tries the restricted
@@ -297,7 +301,8 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
     await signIn(memberPage, memberA, browserPassword);
     await waitForPipeline(memberPage, /review\s+awaiting_approval/s);
     const memberApproval = await browserAPI(memberPage, 'POST', `/api/pipelines/${pipelineID}/approve`);
-    expect(memberApproval.status).toBe(403);
+    console.log('BROWSER_STEP member-approval-denied', JSON.stringify({ status: memberApproval.status }));
+    expect(memberApproval.status, `member approval response: ${JSON.stringify(memberApproval)}`).toBe(403);
     await waitForPipeline(memberPage, /review\s+awaiting_approval/s);
     await expect(memberPage.locator('#pipeline-body-rows')).toContainText('research, script, review');
     await expect(memberPage.locator('#pipeline-body-rows button')).toHaveCount(0);
@@ -311,9 +316,11 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
     await expect(otherWorkspacePage.locator('#pipeline-body-rows tr')).toHaveCount(0);
     await expect(otherWorkspacePage.locator('#pipeline-body-rows button')).toHaveCount(0);
     const otherPipelineGet = await browserAPI(otherWorkspacePage, 'GET', `/api/pipelines/${pipelineID}`);
-    expect(otherPipelineGet.status).toBe(404);
+    console.log('BROWSER_STEP cross-workspace-read-denied', JSON.stringify({ status: otherPipelineGet.status }));
+    expect(otherPipelineGet.status, `cross-workspace read response: ${JSON.stringify(otherPipelineGet)}`).toBe(404);
     const otherPipelineApproval = await browserAPI(otherWorkspacePage, 'POST', `/api/pipelines/${pipelineID}/approve`);
-    expect(otherPipelineApproval.status).toBe(404);
+    console.log('BROWSER_STEP cross-workspace-approval-denied', JSON.stringify({ status: otherPipelineApproval.status }));
+    expect(otherPipelineApproval.status, `cross-workspace approval response: ${JSON.stringify(otherPipelineApproval)}`).toBe(404);
 
     // UI authorization and unsupported-action proof while the pipeline is at
     // review: only the approved action is presented to the admin, and neither
@@ -324,7 +331,8 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
       stage: 'publish',
       status: 'done',
     });
-    expect(forgedState.status).toBe(400);
+    console.log('BROWSER_STEP client-state-mutation-denied', JSON.stringify({ status: forgedState.status }));
+    expect(forgedState.status, `forged pipeline state response: ${JSON.stringify(forgedState)}`).toBe(400);
     await expect(adminPage.locator('#pipeline-body-rows')).toContainText('review awaiting_approval');
 
     // UI SERVER-ERROR STATE. Stop the actual API, use the already-rendered
