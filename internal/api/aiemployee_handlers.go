@@ -296,9 +296,10 @@ func (h *AIEmployeeHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if req.CurrentTaskID != nil {
 		trimmed := strings.TrimSpace(*req.CurrentTaskID)
 		if trimmed == "" {
-			// clear assignment
+			// clear assignment - use nil UUID as sentinel for service to clear
 			nilUUID := uuid.Nil
 			currentTaskID = &nilUUID
+			logger.NewEntry("ai-employee-clear-task").With("employee_id", id.String()).Log()
 		} else {
 			parsed, err := uuid.Parse(trimmed)
 			if err != nil {
