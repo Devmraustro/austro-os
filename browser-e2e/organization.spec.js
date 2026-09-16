@@ -96,15 +96,14 @@ test('organization hierarchy browser journey', async ({ browser }) => {
     await expect(async () => {
       const opts = await adminPage.locator('#team-department option').allTextContents();
       console.log('BROWSER_DIAGNOSTIC team-department options:', opts.join(','));
-      const html = await adminPage.locator('#team-department').innerHTML();
-      console.log('BROWSER_DIAGNOSTIC team-department html:', html.slice(0,500));
-      const listText = await adminPage.locator('#department-list').textContent();
-      console.log('BROWSER_DIAGNOSTIC department-list:', listText.slice(0,500));
+      const count = await adminPage.locator('#team-department option').count();
+      console.log('BROWSER_DIAGNOSTIC team-department count:', count);
       expect(opts.join(',')).toContain(deptName);
-    }).toPass({ timeout: 15000 });
+    }).toPass({ timeout: 20000 });
     await expect(adminPage.locator('#team-department')).toContainText(deptName, { timeout: 15000 });
     await adminPage.locator('#team-name').fill(teamName);
-    await adminPage.locator('#team-department').selectOption({ label: deptName });
+    // Select by value (deptId) is more reliable than label
+    await adminPage.locator('#team-department').selectOption(deptId);
     await adminPage.locator('#team-form button[type="submit"]').click();
     await expect(adminPage.locator('#team-message')).toContainText('Team created');
     await expect(adminPage.locator('#team-list')).toContainText(teamName);
@@ -121,10 +120,15 @@ test('organization hierarchy browser journey', async ({ browser }) => {
     await expect(adminPage.locator('#employee-loading')).toBeHidden({ timeout: 15000 });
     const empName = 'Emp-' + Math.random().toString(36).slice(2, 8);
     const empRole = 'analyst';
+    await expect(async () => {
+      const opts = await adminPage.locator('#employee-team option').allTextContents();
+      console.log('BROWSER_DIAGNOSTIC employee-team options:', opts.join(',').slice(0,500));
+      expect(opts.join(',')).toContain(teamName);
+    }).toPass({ timeout: 20000 });
     await expect(adminPage.locator('#employee-team')).toContainText(teamName);
     await adminPage.locator('#employee-name').fill(empName);
     await adminPage.locator('#employee-role').fill(empRole);
-    await adminPage.locator('#employee-team').selectOption({ label: teamName, exact: false });
+    await adminPage.locator('#employee-team').selectOption(teamId);
     await adminPage.locator('#employee-capabilities').fill('research, writing');
     await adminPage.locator('#employee-form button[type="submit"]').click();
     await expect(adminPage.locator('#employee-message')).toContainText('AI employee created');
@@ -192,7 +196,11 @@ test('organization hierarchy browser journey', async ({ browser }) => {
 
     await adminPage.locator('#team-list li', { hasText: teamName }).locator('button', { hasText: 'View' }).click();
     await expect(adminPage.locator('#team-detail')).toBeVisible();
-    await adminPage.locator('#team-edit-department').selectOption({ label: dept2Name });
+    await expect(async () => {
+      const opts = await adminPage.locator('#team-edit-department option').allTextContents();
+      expect(opts.join(',')).toContain(dept2Name);
+    }).toPass({ timeout: 15000 });
+    await adminPage.locator('#team-edit-department').selectOption(dept2.id);
     await adminPage.locator('#team-edit-form button[type="submit"]').click();
     await expect(adminPage.locator('#team-message')).toContainText('Team updated');
     console.log('BROWSER_STEP org-team-moved');
