@@ -107,10 +107,10 @@ echo "MUTATED_API_PASS: mutated API ready"
 
 echo "running browser test; failure is required for this mutation"
 set +e
-npm --prefix browser-e2e test -- --reporter=line > /tmp/browser-e2e-mutation.log 2>&1
+npm --prefix browser-e2e test -- --reporter=line > /tmp/browser-e2e-mutated-run.log 2>&1
 status=$?
 set -e
-cat /tmp/browser-e2e-mutation.log
+cat /tmp/browser-e2e-mutated-run.log
 if [ "$status" -eq 0 ]; then
   echo "SURVIVED: browser unauthorized approval-control mutation"
   exit 1
