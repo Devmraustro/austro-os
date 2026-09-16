@@ -63,6 +63,30 @@ async function refreshPublications(page) {
   await expect(page.locator('#publication-loading')).toBeHidden();
 }
 
+// These are real same-origin browser fetches, using the session material held by
+// the page. They are used only for negative security commands that the UI must
+// not expose; all positive journey assertions still exercise rendered controls.
+async function browserAPI(page, method, path, payload) {
+  return page.evaluate(async ({ method, path, payload }) => {
+    const headers = {};
+    const accessToken = sessionStorage.getItem('austro.access');
+    if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
+    if (payload !== undefined) headers['Content-Type'] = 'application/json';
+    const response = await fetch(path, {
+      method,
+      headers,
+      body: payload === undefined ? undefined : JSON.stringify(payload),
+    });
+    let body = null;
+    try {
+      body = await response.json();
+    } catch (_) {
+      // Empty 204 responses are valid for some negative probes.
+    }
+    return { status: response.status, body };
+  }, { method, path, payload });
+}
+
 async function waitForAPI(page) {
   await expect.poll(async () => {
     try {
@@ -213,6 +237,15 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
     }))).resolves.toEqual({ access: null, refresh: null });
     console.log('BROWSER_STEP founder-logout');
 
+    // AUTHORIZATION-DENIED STATE. A Founder is authenticated but has no
+    // workspace binding. The existing UI sends the real request and renders
+    // the server's 403 response instead of hiding an authorization failure.
+    await signIn(founderPage, founderUsername, founderPassword);
+    await founderPage.locator('#pipeline-form button[type="submit"]').click();
+    await expect(founderPage.locator('#pipeline-message')).toContainText('Pipelines require a workspace identity.');
+    console.log('BROWSER_STEP founder-authorization-denied');
+    await signOut(founderPage);
+
     // WORKSPACE → CREATOR/PIPELINE. The admin starts with an isolated empty
     // workspace. The UI has a real loading transition and renders the empty
     // state before a pipeline is created.
@@ -251,9 +284,20 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
     await expect(adminPage.locator('#pipeline-body-rows button', { hasText: 'Complete' })).toHaveCount(0);
     console.log('BROWSER_STEP pipeline-review');
 
+    const pipelineList = await browserAPI(adminPage, 'GET', '/api/pipelines?limit=50');
+    expect(pipelineList.status).toBe(200);
+    expect(pipelineList.body.pipelines).toHaveLength(1);
+    const pipelineID = pipelineList.body.pipelines[0].id;
+    expect(pipelineID).toMatch(/^[0-9a-f-]{36}$/);
+
     // SECURITY A: a member can observe the real review state but is not shown
-    // an approval control. This is an actual second authenticated browser.
+    // an approval control. The same real browser also tries the restricted
+    // command directly; the API denies it even if a client manufactures the
+    // request, while the UI presents no bypass control.
     await signIn(memberPage, memberA, browserPassword);
+    await waitForPipeline(memberPage, /review\s+awaiting_approval/s);
+    const memberApproval = await browserAPI(memberPage, 'POST', `/api/pipelines/${pipelineID}/approve`);
+    expect(memberApproval.status).toBe(403);
     await waitForPipeline(memberPage, /review\s+awaiting_approval/s);
     await expect(memberPage.locator('#pipeline-body-rows')).toContainText('research, script, review');
     await expect(memberPage.locator('#pipeline-body-rows button')).toHaveCount(0);
@@ -266,12 +310,22 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
     await expect(otherWorkspacePage.locator('#pipeline-empty')).toBeVisible();
     await expect(otherWorkspacePage.locator('#pipeline-body-rows tr')).toHaveCount(0);
     await expect(otherWorkspacePage.locator('#pipeline-body-rows button')).toHaveCount(0);
+    const otherPipelineGet = await browserAPI(otherWorkspacePage, 'GET', `/api/pipelines/${pipelineID}`);
+    expect(otherPipelineGet.status).toBe(404);
+    const otherPipelineApproval = await browserAPI(otherWorkspacePage, 'POST', `/api/pipelines/${pipelineID}/approve`);
+    expect(otherPipelineApproval.status).toBe(404);
 
     // UI authorization and unsupported-action proof while the pipeline is at
     // review: only the approved action is presented to the admin, and neither
     // stage/status mutation nor publish/complete bypass is exposed.
     const adminActionLabels = await adminPage.locator('#pipeline-body-rows button').allTextContents();
     expect(adminActionLabels).toEqual(['Approve']);
+    const forgedState = await browserAPI(adminPage, 'POST', '/api/pipelines', {
+      stage: 'publish',
+      status: 'done',
+    });
+    expect(forgedState.status).toBe(400);
+    await expect(adminPage.locator('#pipeline-body-rows')).toContainText('review awaiting_approval');
 
     // UI SERVER-ERROR STATE. Stop the actual API, use the already-rendered
     // authenticated page, and exercise its real failed fetch path. Always
