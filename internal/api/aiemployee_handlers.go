@@ -247,6 +247,11 @@ func (h *AIEmployeeHandler) Update(w http.ResponseWriter, r *http.Request) {
 		h.record(r, claims, "update-ai-employee", id, ws, "failed", "invalid_body")
 		return
 	}
+	if req.Name == nil && req.Role == nil && req.TeamID == nil && req.Capabilities == nil && req.CurrentTaskID == nil {
+		writeJSONError(w, http.StatusBadRequest, "at least one field is required")
+		h.record(r, claims, "update-ai-employee", id, ws, "failed", "empty_update")
+		return
+	}
 	var name *string
 	if req.Name != nil {
 		trimmed := strings.TrimSpace(*req.Name)

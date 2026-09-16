@@ -2,8 +2,11 @@ package team
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"unicode/utf8"
+
+	"austro-os/internal/department"
 
 	"github.com/google/uuid"
 )
@@ -42,6 +45,12 @@ func (svc *Service) Create(ctx context.Context, workspaceID, departmentID uuid.U
 	if svc.departmentLookup != nil {
 		_, err := svc.departmentLookup.Get(ctx, workspaceID, departmentID)
 		if err != nil {
+			if errors.Is(err, department.ErrNotFound) {
+				return nil, ErrInvalidInput
+			}
+			if errors.Is(err, department.ErrWorkspaceMismatch) {
+				return nil, ErrWorkspaceMismatch
+			}
 			return nil, err
 		}
 	}
@@ -100,6 +109,12 @@ func (svc *Service) Update(ctx context.Context, workspaceID, id uuid.UUID, name 
 		if svc.departmentLookup != nil {
 			_, err := svc.departmentLookup.Get(ctx, workspaceID, *departmentID)
 			if err != nil {
+				if errors.Is(err, department.ErrNotFound) {
+					return nil, ErrInvalidInput
+				}
+				if errors.Is(err, department.ErrWorkspaceMismatch) {
+					return nil, ErrWorkspaceMismatch
+				}
 				return nil, err
 			}
 		}

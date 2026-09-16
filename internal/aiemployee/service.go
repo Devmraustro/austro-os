@@ -2,8 +2,11 @@ package aiemployee
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"unicode/utf8"
+
+	"austro-os/internal/team"
 
 	"github.com/google/uuid"
 )
@@ -45,6 +48,12 @@ func (svc *Service) Create(ctx context.Context, workspaceID, teamID uuid.UUID, n
 	if svc.teamLookup != nil {
 		ws, dID, err := svc.teamLookup.Get(ctx, workspaceID, teamID)
 		if err != nil {
+			if errors.Is(err, team.ErrNotFound) {
+				return nil, ErrInvalidInput
+			}
+			if errors.Is(err, team.ErrWorkspaceMismatch) {
+				return nil, ErrWorkspaceMismatch
+			}
 			return nil, err
 		}
 		_ = ws
@@ -122,6 +131,12 @@ func (svc *Service) Update(ctx context.Context, workspaceID, id uuid.UUID, name,
 		if svc.teamLookup != nil {
 			_, deptID, err := svc.teamLookup.Get(ctx, workspaceID, *teamID)
 			if err != nil {
+				if errors.Is(err, team.ErrNotFound) {
+					return nil, ErrInvalidInput
+				}
+				if errors.Is(err, team.ErrWorkspaceMismatch) {
+					return nil, ErrWorkspaceMismatch
+				}
 				return nil, err
 			}
 			existing.DepartmentID = deptID

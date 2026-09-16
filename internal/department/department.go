@@ -73,8 +73,8 @@ func (q *ListQuery) Normalize() {
 	if q.Limit <= 0 {
 		q.Limit = 50
 	}
-	if q.Limit > 100 {
-		q.Limit = 100
+	if q.Limit > 200 {
+		q.Limit = 200
 	}
 }
 
