@@ -266,7 +266,7 @@ jobs:
           set -e
           cat /tmp/browser-e2e-mutation.log
           if [ "$status" -ne 0 ]; then
-            failure_line=$(grep -E 'RESTORE|MUTATION|CAUGHT|SURVIVED|FAILED|error|Error|FAIL|fail|did not|missing|cannot' /tmp/browser-e2e-mutation.log | tail -n 1 | tr '\n' ' ' | cut -c 1-900)
+            failure_line=$(grep -E 'RESTORE|MUTATION|CAUGHT|SURVIVED|FAILED|error|Error|FAIL|fail|did not|missing|cannot|expected|received|BROWSER_STEP' /tmp/browser-e2e-mutation.log | grep -vE '^[[:space:]]*[0-9]+ (passed|failed)' | tail -n 8 | tr '\n' ' ' | cut -c 1-900)
             if [ -n "$failure_line" ]; then
               echo "::error title=Browser authorization mutation failure::$failure_line"
             else
