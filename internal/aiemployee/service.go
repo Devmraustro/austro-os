@@ -150,7 +150,15 @@ func (svc *Service) Update(ctx context.Context, workspaceID, id uuid.UUID, name,
 			existing.CurrentTaskID = currentTaskID
 		}
 	}
-	return svc.store.Update(ctx, workspaceID, existing)
+	updated, err := svc.store.Update(ctx, workspaceID, existing)
+	if err != nil {
+		return nil, err
+	}
+	// Ensure clear is reflected even if store returned stale value (defense-in-depth)
+	if currentTaskID != nil && *currentTaskID == uuid.Nil {
+		updated.CurrentTaskID = nil
+	}
+	return updated, nil
 }
 
 func (svc *Service) Delete(ctx context.Context, workspaceID, id uuid.UUID) error {
