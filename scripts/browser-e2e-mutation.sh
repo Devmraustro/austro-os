@@ -59,9 +59,16 @@ restore() {
     echo "browser mutation restore failed"
     exit 1
   fi
+  echo "RESTORE_SOURCE_PASS: browser authorization source matches HEAD"
   stop_api
+  rm -f /tmp/austro-api
   go build -o /tmp/austro-api .
+  if [ ! -x /tmp/austro-api ]; then
+    echo "RESTORE_BUILD_FAILED: API binary not created"
+    exit 1
+  fi
   start_api
+  echo "RESTORE_API_PASS: API rebuilt from restored source and ready"
   rm -f -- "$backup"
 }
 trap restore EXIT
@@ -88,8 +95,15 @@ set -a
 set +a
 
 echo "building and starting temporarily mutated API"
+rm -f /tmp/austro-api
 go build -o /tmp/austro-api .
+if [ ! -x /tmp/austro-api ]; then
+  echo "MUTATED_BUILD_FAILED: API binary not created"
+  exit 1
+fi
+echo "MUTATED_BUILD_PASS: binary created"
 start_api
+echo "MUTATED_API_PASS: mutated API ready"
 
 echo "running browser test; failure is required for this mutation"
 set +e

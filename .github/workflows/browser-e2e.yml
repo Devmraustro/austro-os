@@ -65,7 +65,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -74,7 +74,7 @@ jobs:
           cache: true
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "22.22.3"
           cache: npm
@@ -283,6 +283,9 @@ jobs:
       - name: Upload browser screenshots, traces, videos, and report on failure
         if: failure()
         uses: actions/upload-artifact@v4
+        # v4 still targets Node20 but is forced to Node24; v5+ would be ideal but
+        # keep minimal change - Phase1/2 use v4/v5 and succeed, so artifact
+        # upload is not the root cause of browser failures
         with:
           name: austro-browser-e2e-failure-${{ github.run_id }}
           path: |
