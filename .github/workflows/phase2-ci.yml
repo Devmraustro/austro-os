@@ -2,9 +2,9 @@ name: AUSTRO OS Phase 2 CI
 
 on:
   push:
-    branches: [master, main]
+    branches: [master, main, arena/01a0ab5b-austro-os]
   pull_request:
-    branches: [master, main]
+    branches: [master, main, arena/01a0ab5b-austro-os]
 
 env:
   GOFLAGS: -mod=mod

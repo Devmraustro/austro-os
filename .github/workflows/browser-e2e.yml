@@ -2,7 +2,7 @@ name: AUSTRO OS Real Browser E2E
 
 on:
   push:
-    branches: [arena/01a0a5ea-austro-os]
+    branches: [arena/01a0a5ea-austro-os, arena/01a0ab5b-austro-os]
   pull_request:
 
 permissions:
