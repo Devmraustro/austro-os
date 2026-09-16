@@ -343,15 +343,32 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
     // stack.
     let apiStopped = false;
     try {
+      console.log('BROWSER_STEP server-error-stop-api');
       stopAPI();
       apiStopped = true;
       await waitForAPIDown(adminPage);
+      console.log('BROWSER_STEP server-error-api-down');
+      // Ensure the loading indicator is hidden before clicking
+      await expect(adminPage.locator('#pipeline-loading')).toBeHidden({ timeout: 10000 });
       await adminPage.locator('#pipeline-form button[type="submit"]').click();
-      await expect(adminPage.locator('#pipeline-message')).toContainText(/Could not reach the API\.|Could not load pipelines:/);
+      console.log('BROWSER_STEP server-error-clicked');
+      // The message should appear after failed fetch - poll for it with longer timeout
+      await expect.poll(async () => {
+        const text = await adminPage.locator('#pipeline-message').innerText();
+        console.log('BROWSER_STEP server-error-message-poll', JSON.stringify(text));
+        return text;
+      }, {
+        timeout: 30000,
+        intervals: [250, 500, 1000],
+        message: 'pipeline error message did not appear after API outage',
+      }).toMatch(/Could not reach the API\.|Could not load pipelines:/);
+      console.log('BROWSER_STEP server-error-message-shown');
     } finally {
       if (apiStopped) {
+        console.log('BROWSER_STEP server-error-restore-api');
         startAPI();
         await waitForAPI(adminPage);
+        console.log('BROWSER_STEP server-error-api-restored');
       }
     }
 
