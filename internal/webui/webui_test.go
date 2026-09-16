@@ -316,3 +316,54 @@ func stripHTMLComments(s string) string {
 	re := regexp.MustCompile(`(?s)<!--.*?-->`)
 	return re.ReplaceAllString(s, "")
 }
+
+func TestPipelineApproveIsAdminOnly(t *testing.T) {
+	assets, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	var js Asset
+	for _, a := range Assets() {
+		if strings.HasSuffix(a.File, "app.js") {
+			js = a
+		}
+	}
+	if js.File == "" {
+		t.Fatal("no app.js asset is declared")
+	}
+	src := stripJSComments(string(assets[js]))
+	// The approve control must be gated on workspace_admin, not member.
+	if !strings.Contains(src, `currentRole === "workspace_admin"`) {
+		t.Error("pipeline approve must be gated on workspace_admin")
+	}
+	// Ensure member is not granted approve via OR condition in the same line
+	re := regexp.MustCompile(`awaiting_approval.*workspace_admin.*workspace_member`)
+	if re.MatchString(src) {
+		t.Error("pipeline approve must not be visible to workspace_member")
+	}
+}
+
+func TestOrganizationHierarchyIsRendered(t *testing.T) {
+	assets, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	var html Asset
+	for _, a := range Assets() {
+		if strings.HasSuffix(a.File, "index.html") {
+			html = a
+		}
+	}
+	if html.File == "" {
+		t.Fatal("no index.html asset is declared")
+	}
+	body := stripHTMLComments(string(assets[html]))
+	if !strings.Contains(body, "Workspace→Departments→Teams→AI Employees") {
+		t.Error("hierarchy visualization Workspace→Departments→Teams→AI Employees must be present")
+	}
+	for _, id := range []string{"departments-card", "teams-card", "ai-employees-card", "department-list", "team-list", "employee-list"} {
+		if !strings.Contains(body, id) {
+			t.Errorf("organization card %s must be present", id)
+		}
+	}
+}

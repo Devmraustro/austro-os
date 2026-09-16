@@ -22,12 +22,15 @@ import (
 	"austro-os/internal/authz"
 	"austro-os/internal/composition"
 	"austro-os/internal/config"
+	"austro-os/internal/aiemployee"
+	"austro-os/internal/department"
 	"austro-os/internal/knowledge"
 	logger "austro-os/internal/log"
 	"austro-os/internal/memory"
 	"austro-os/internal/middleware"
 	"austro-os/internal/rbac"
 	"austro-os/internal/task"
+	"austro-os/internal/team"
 	"austro-os/internal/webui"
 
 	"github.com/google/uuid"
@@ -176,6 +179,23 @@ func main() {
 	taskService := task.NewService(taskStore, nil, nil)
 	taskHandler := api.NewTaskHandler(taskService).SetAuditSink(auditStore)
 
+	// Organization hierarchy: Departments → Teams → AI Employees.
+	// Stores run on runtime handle so RLS confines them; workspace is bound
+	// from verified claims in each store's transaction.
+	departmentStore := postgres.NewDepartmentStore(db)
+	departmentService := department.NewService(departmentStore)
+	departmentHandler := api.NewDepartmentHandler(departmentService).SetAuditSink(auditStore)
+
+	teamStore := postgres.NewTeamStore(db)
+	teamResolver := postgres.NewDepartmentResolverAdapter(departmentStore)
+	teamService := team.NewService(teamStore, teamResolver)
+	teamHandler := api.NewTeamHandler(teamService).SetAuditSink(auditStore)
+
+	aiEmployeeStore := postgres.NewAIEmployeeStore(db)
+	teamResolverForEmployee := postgres.NewTeamResolverAdapter(teamStore)
+	aiEmployeeService := aiemployee.NewService(aiEmployeeStore, teamResolverForEmployee)
+	aiEmployeeHandler := api.NewAIEmployeeHandler(aiEmployeeService).SetAuditSink(auditStore)
+
 	// The browser application (ADR-016) is embedded in the binary. Loading it
 	// here turns a missing asset into a startup failure rather than a runtime
 	// 404 on a blank page.
@@ -267,6 +287,25 @@ func main() {
 		{Method: http.MethodGet, Pattern: "/pipelines/{id}"}:          pipelineHandler.Get,
 		{Method: http.MethodPost, Pattern: "/pipelines/{id}/approve"}: pipelineHandler.Approve,
 		{Method: http.MethodPost, Pattern: "/pipelines/{id}/retry"}:   pipelineHandler.Retry,
+
+		// Organization hierarchy: Workspace → Departments → Teams → AI Employees.
+		{Method: http.MethodPost, Pattern: "/departments"}:       departmentHandler.Create,
+		{Method: http.MethodGet, Pattern: "/departments"}:        departmentHandler.List,
+		{Method: http.MethodGet, Pattern: "/departments/{id}"}:   departmentHandler.Get,
+		{Method: http.MethodPatch, Pattern: "/departments/{id}"}: departmentHandler.Update,
+		{Method: http.MethodDelete, Pattern: "/departments/{id}"}: departmentHandler.Delete,
+
+		{Method: http.MethodPost, Pattern: "/teams"}:       teamHandler.Create,
+		{Method: http.MethodGet, Pattern: "/teams"}:        teamHandler.List,
+		{Method: http.MethodGet, Pattern: "/teams/{id}"}:   teamHandler.Get,
+		{Method: http.MethodPatch, Pattern: "/teams/{id}"}: teamHandler.Update,
+		{Method: http.MethodDelete, Pattern: "/teams/{id}"}: teamHandler.Delete,
+
+		{Method: http.MethodPost, Pattern: "/ai-employees"}:       aiEmployeeHandler.Create,
+		{Method: http.MethodGet, Pattern: "/ai-employees"}:        aiEmployeeHandler.List,
+		{Method: http.MethodGet, Pattern: "/ai-employees/{id}"}:   aiEmployeeHandler.Get,
+		{Method: http.MethodPatch, Pattern: "/ai-employees/{id}"}: aiEmployeeHandler.Update,
+		{Method: http.MethodDelete, Pattern: "/ai-employees/{id}"}: aiEmployeeHandler.Delete,
 
 		// Memory is deliberately limited to key-based read/write operations.
 		{Method: http.MethodGet, Pattern: "/memory/{layer}/{key}"}: memoryHandler.Read,

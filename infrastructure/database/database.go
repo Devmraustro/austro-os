@@ -107,6 +107,7 @@ func Bootstrap(owner *sql.DB, topo *Topology) error {
 		{"migrate-knowledge", func() error { return migrateKnowledge(owner) }},
 		{"migrate-publications", func() error { return migratePublications(owner) }},
 		{"migrate-pipelines", func() error { return migratePipelines(owner) }},
+		{"migrate-organization", func() error { return migrateOrganization(owner) }},
 		{"enable-rls", func() error { return enableRLS(owner) }},
 		// Roles before policies: CREATE POLICY ... TO <role> requires the role
 		// to exist, so provisioning them afterwards fails the policy step.
@@ -619,6 +620,49 @@ func migrateKnowledge(db *sql.DB) error {
 	`
 	if _, err := db.Exec(migration); err != nil {
 		return fmt.Errorf("migrate knowledge: %w", err)
+	}
+	return nil
+}
+
+// migrateOrganization adds constraints and indexes for the organizational
+// hierarchy: Departments → Teams → AI Employees. It enforces DB-level
+// invariants: name not blank, role not blank, unique name within parent
+// (case-insensitive), and deterministic listing indexes. It also adds
+// updated_at columns to departments and teams for audit consistency.
+//
+// Idempotent and runs on every boot, so databases created before the org API
+// existed are upgraded.
+func migrateOrganization(db *sql.DB) error {
+	migration := `
+	ALTER TABLE departments ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();
+	ALTER TABLE teams ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();
+
+	DO $$
+	BEGIN
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'departments_name_not_blank') THEN
+			ALTER TABLE departments ADD CONSTRAINT departments_name_not_blank CHECK (length(trim(name)) > 0);
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'teams_name_not_blank') THEN
+			ALTER TABLE teams ADD CONSTRAINT teams_name_not_blank CHECK (length(trim(name)) > 0);
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ai_employees_name_not_blank') THEN
+			ALTER TABLE ai_employees ADD CONSTRAINT ai_employees_name_not_blank CHECK (length(trim(name)) > 0);
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ai_employees_role_not_blank') THEN
+			ALTER TABLE ai_employees ADD CONSTRAINT ai_employees_role_not_blank CHECK (length(trim(role)) > 0);
+		END IF;
+	END$$;
+
+	CREATE UNIQUE INDEX IF NOT EXISTS uq_departments_workspace_name ON departments(workspace_id, lower(name));
+	CREATE UNIQUE INDEX IF NOT EXISTS uq_teams_department_name ON teams(department_id, lower(name));
+	CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_employees_team_name ON ai_employees(team_id, lower(name));
+
+	CREATE INDEX IF NOT EXISTS idx_departments_workspace_created ON departments(workspace_id, created_at DESC, id DESC);
+	CREATE INDEX IF NOT EXISTS idx_teams_workspace_created ON teams(department_id, created_at DESC, id DESC);
+	CREATE INDEX IF NOT EXISTS idx_ai_employees_workspace_created ON ai_employees(team_id, created_at DESC, id DESC);
+	`
+	if _, err := db.Exec(migration); err != nil {
+		return fmt.Errorf("migrate organization: %w", err)
 	}
 	return nil
 }

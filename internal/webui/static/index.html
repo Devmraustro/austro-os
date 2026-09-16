@@ -7,35 +7,15 @@
   <link rel="stylesheet" href="/assets/styles.css">
 </head>
 <body>
-  <!--
-    The browser application for an authenticated Founder/operator (ADR-016).
-
-    Security model: this document contains no data and no secrets. Every value
-    on screen is fetched from the authenticated JSON API after login, and the
-    server - never this file - decides what a caller may see. The token is held
-    in sessionStorage for the lifetime of the tab only.
-
-    The Content-Security-Policy served with this page forbids inline script and
-    inline style, so all behaviour lives in /assets/app.js and registers its
-    listeners there rather than through markup attributes.
-  -->
-
   <div id="auth-view" class="view" hidden>
     <main class="card narrow">
       <h1>AUSTRO OS</h1>
       <p class="muted">Sign in as the Founder to operate the organization.</p>
-
-      <!--
-        Bootstrap creates the Founder and is unauthenticated, so it is never
-        issued on page load. It stays behind an explicit disclosure and the
-        call is only sent when the operator presses the button.
-      -->
       <p class="muted">
         <button id="bootstrap-toggle" type="button" class="link">
           First run? Initialize the organization
         </button>
       </p>
-
       <section id="bootstrap-panel" hidden>
         <h2>Initialize the organization</h2>
         <p class="muted">
@@ -45,17 +25,13 @@
         </p>
         <button id="bootstrap-btn" type="button" class="primary">Bootstrap Founder</button>
       </section>
-
       <form id="login-form">
         <label for="username">Username</label>
         <input id="username" name="username" autocomplete="username" required>
-
         <label for="password">Password</label>
         <input id="password" name="password" type="password" autocomplete="current-password" required>
-
         <button id="login-btn" type="submit" class="primary">Sign in</button>
       </form>
-
       <p id="auth-message" class="message" role="alert" hidden></p>
     </main>
   </div>
@@ -84,23 +60,15 @@
           <dt>Liveness</dt><dd data-field="live">—</dd>
           <dt>Readiness</dt><dd data-field="ready">—</dd>
         </dl>
-        <p class="muted">
-          Dependency detail (PostgreSQL, Redis, RabbitMQ) is reported in the
-          service logs; this surface reflects the API's own probes.
-        </p>
       </section>
 
       <section class="card">
         <h2>Workspaces</h2>
-        <p class="muted">
-          Organization-level records. Listing and creating require the Founder
-          role; the server authorizes every call.
-        </p>
+        <p class="muted">Organization-level records. Founder only.</p>
         <div id="workspace-loading" class="muted" hidden>Loading workspaces…</div>
         <div id="workspace-empty" class="muted" hidden>No workspaces yet.</div>
         <ul id="workspace-list" class="list"></ul>
         <p id="workspace-message" class="message" role="alert" hidden></p>
-
         <form id="workspace-form">
           <label for="workspace-name">New workspace name</label>
           <input id="workspace-name" name="name" required>
@@ -108,20 +76,140 @@
         </form>
       </section>
 
+      <section class="card" id="departments-card">
+        <h2>Departments</h2>
+        <p class="muted">
+          Workspace → Departments. Each department belongs to exactly one workspace.
+          Only workspace_admin may create, update, delete; members may read.
+          Deterministic bounded listing, validation, RBAC, RLS enforced.
+        </p>
+        <div id="department-loading" class="muted" hidden>Loading departments…</div>
+        <div id="department-empty" class="muted" hidden>No departments yet.</div>
+        <div id="department-denied" class="muted" hidden>Access denied or no workspace context.</div>
+        <ul id="department-list" class="list"></ul>
+        <p id="department-message" class="message" role="alert" hidden></p>
+        <form id="department-form">
+          <label for="department-name">New department name</label>
+          <input id="department-name" name="name" required maxlength="100">
+          <button type="submit" class="primary">Create department</button>
+        </form>
+        <div id="department-detail" hidden>
+          <h3>Department details</h3>
+          <dl class="details">
+            <dt>ID</dt><dd id="department-detail-id">—</dd>
+            <dt>Name</dt><dd id="department-detail-name">—</dd>
+            <dt>Workspace</dt><dd id="department-detail-workspace">—</dd>
+          </dl>
+          <form id="department-edit-form">
+            <label for="department-edit-name">Edit name</label>
+            <input id="department-edit-name" name="name" required maxlength="100">
+            <button type="submit" class="primary">Save</button>
+            <button type="button" id="department-edit-cancel">Cancel</button>
+          </form>
+          <p><button type="button" id="department-detail-close">Close</button></p>
+        </div>
+      </section>
+
+      <section class="card" id="teams-card">
+        <h2>Teams</h2>
+        <p class="muted">Teams belong to exactly one department. Workspace → Department → Team. Cross-workspace parent forbidden.</p>
+        <form id="team-filter-form" class="filters">
+          <label for="team-filter-department">Filter by department</label>
+          <select id="team-filter-department" name="department_id"><option value="">All departments</option></select>
+          <button type="submit" class="primary">Apply</button>
+        </form>
+        <div id="team-loading" class="muted" hidden>Loading teams…</div>
+        <div id="team-empty" class="muted" hidden>No teams yet.</div>
+        <div id="team-denied" class="muted" hidden>Access denied.</div>
+        <ul id="team-list" class="list"></ul>
+        <p id="team-message" class="message" role="alert" hidden></p>
+        <form id="team-form">
+          <label for="team-name">New team name</label>
+          <input id="team-name" name="name" required maxlength="100">
+          <label for="team-department">Department</label>
+          <select id="team-department" name="department_id" required></select>
+          <button type="submit" class="primary">Create team</button>
+        </form>
+        <div id="team-detail" hidden>
+          <h3>Team details</h3>
+          <dl class="details">
+            <dt>ID</dt><dd id="team-detail-id">—</dd>
+            <dt>Name</dt><dd id="team-detail-name">—</dd>
+            <dt>Department</dt><dd id="team-detail-department">—</dd>
+            <dt>Workspace</dt><dd id="team-detail-workspace">—</dd>
+          </dl>
+          <form id="team-edit-form">
+            <label for="team-edit-name">Edit name</label>
+            <input id="team-edit-name" name="name" required maxlength="100">
+            <label for="team-edit-department">Move to department</label>
+            <select id="team-edit-department" name="department_id"></select>
+            <button type="submit" class="primary">Save</button>
+            <button type="button" id="team-edit-cancel">Cancel</button>
+          </form>
+          <p><button type="button" id="team-detail-close">Close</button></p>
+        </div>
+      </section>
+
+      <section class="card" id="ai-employees-card">
+        <h2>AI Employees</h2>
+        <p class="muted">AI Employees belong to exactly one team. Hierarchy: Workspace → Departments → Teams → AI Employees. Assignment audited.</p>
+        <form id="employee-filter-form" class="filters">
+          <label for="employee-filter-team">Filter by team</label>
+          <select id="employee-filter-team" name="team_id"><option value="">All teams</option></select>
+          <button type="submit" class="primary">Apply</button>
+        </form>
+        <div id="employee-loading" class="muted" hidden>Loading AI employees…</div>
+        <div id="employee-empty" class="muted" hidden>No AI employees yet.</div>
+        <div id="employee-denied" class="muted" hidden>Access denied.</div>
+        <ul id="employee-list" class="list"></ul>
+        <p id="employee-message" class="message" role="alert" hidden></p>
+        <form id="employee-form">
+          <label for="employee-name">New employee name</label>
+          <input id="employee-name" name="name" required maxlength="100">
+          <label for="employee-role">Role</label>
+          <input id="employee-role" name="role" required maxlength="100" placeholder="e.g. analyst">
+          <label for="employee-team">Team</label>
+          <select id="employee-team" name="team_id" required></select>
+          <label for="employee-capabilities">Capabilities (comma separated)</label>
+          <input id="employee-capabilities" name="capabilities" placeholder="research, writing">
+          <button type="submit" class="primary">Create AI employee</button>
+        </form>
+        <div id="employee-detail" hidden>
+          <h3>AI Employee details</h3>
+          <dl class="details">
+            <dt>ID</dt><dd id="employee-detail-id">—</dd>
+            <dt>Name</dt><dd id="employee-detail-name">—</dd>
+            <dt>Role</dt><dd id="employee-detail-role">—</dd>
+            <dt>Team</dt><dd id="employee-detail-team">—</dd>
+            <dt>Department</dt><dd id="employee-detail-department">—</dd>
+            <dt>Workspace</dt><dd id="employee-detail-workspace">—</dd>
+            <dt>Capabilities</dt><dd id="employee-detail-capabilities">—</dd>
+            <dt>Current Task</dt><dd id="employee-detail-task">—</dd>
+          </dl>
+          <form id="employee-edit-form">
+            <label for="employee-edit-name">Edit name</label>
+            <input id="employee-edit-name" name="name" required maxlength="100">
+            <label for="employee-edit-role">Edit role</label>
+            <input id="employee-edit-role" name="role" required maxlength="100">
+            <label for="employee-edit-team">Move to team</label>
+            <select id="employee-edit-team" name="team_id"></select>
+            <label for="employee-edit-capabilities">Capabilities (comma)</label>
+            <input id="employee-edit-capabilities" name="capabilities">
+            <label for="employee-edit-task">Assign task ID (blank to clear)</label>
+            <input id="employee-edit-task" name="current_task_id" placeholder="UUID">
+            <button type="submit" class="primary">Save</button>
+            <button type="button" id="employee-edit-cancel">Cancel</button>
+          </form>
+          <p><button type="button" id="employee-detail-close">Close</button></p>
+        </div>
+      </section>
+
       <section class="card" id="audit-card">
         <h2>Audit trail</h2>
-        <p class="muted">
-          The append-only event chain. This view is read-only: there is no
-          control here that can alter, delete or reorder history. Sensitive
-          columns (hash material, signatures, free-form detail) are withheld by
-          the API.
-        </p>
-
+        <p class="muted">Append-only event chain, read-only.</p>
         <form id="audit-form" class="filters">
           <label for="audit-event-type">Event type</label>
-          <input id="audit-event-type" name="event_type" maxlength="64"
-                 placeholder="e.g. auth.login">
-
+          <input id="audit-event-type" name="event_type" maxlength="64" placeholder="e.g. auth.login">
           <label for="audit-outcome">Outcome</label>
           <select id="audit-outcome" name="outcome">
             <option value="">Any</option>
@@ -130,7 +218,6 @@
             <option value="failure">failure</option>
             <option value="rejected">rejected</option>
           </select>
-
           <label for="audit-limit">Page size</label>
           <select id="audit-limit" name="limit">
             <option value="25">25</option>
@@ -138,47 +225,28 @@
             <option value="100">100</option>
             <option value="200">200</option>
           </select>
-
           <button type="submit" class="primary">Load</button>
           <button type="button" id="audit-verify-btn">Verify chain</button>
         </form>
-
         <div id="audit-loading" class="muted" hidden>Loading audit events…</div>
         <div id="audit-empty" class="muted" hidden>No audit events match these filters.</div>
         <div id="audit-verification" class="muted" hidden></div>
         <p id="audit-message" class="message" role="alert" hidden></p>
-
         <table id="audit-table" class="table" hidden>
-          <thead>
-            <tr>
-              <th>Seq</th><th>When</th><th>Event</th><th>Outcome</th>
-              <th>Actor</th><th>Workspace</th><th>Principle</th>
-            </tr>
-          </thead>
+          <thead><tr><th>Seq</th><th>When</th><th>Event</th><th>Outcome</th><th>Actor</th><th>Workspace</th><th>Principle</th></tr></thead>
           <tbody id="audit-body"></tbody>
         </table>
-
-        <p>
-          <button type="button" id="audit-older-btn" hidden>Load older events</button>
-        </p>
+        <p><button type="button" id="audit-older-btn" hidden>Load older events</button></p>
       </section>
 
       <section class="card" id="tasks-card">
         <h2>Tasks</h2>
-        <p class="muted">
-          Work items in your current workspace. The status you see comes from the
-          server, and so do the buttons on each row: a task offers only the
-          transitions the server says are legal from its current status, so this
-          page cannot put a task into a state the lifecycle forbids.
-        </p>
-
+        <p class="muted">Work items in your current workspace.</p>
         <form id="task-create-form">
           <label for="task-title">Title</label>
           <input id="task-title" name="title" required maxlength="200">
-
           <label for="task-description">Description</label>
           <input id="task-description" name="description" maxlength="2000">
-
           <label for="task-priority">Priority</label>
           <select id="task-priority" name="priority">
             <option value="normal" selected>normal</option>
@@ -186,11 +254,9 @@
             <option value="high">high</option>
             <option value="urgent">urgent</option>
           </select>
-
           <button type="submit" class="primary">Create task</button>
         </form>
         <p id="task-create-message" class="message" role="alert" hidden></p>
-
         <form id="task-form" class="filters">
           <label for="task-status">Status</label>
           <select id="task-status" name="status">
@@ -204,7 +270,6 @@
             <option value="rejected">rejected</option>
             <option value="failed">failed</option>
           </select>
-
           <label for="task-limit">Page size</label>
           <select id="task-limit" name="limit">
             <option value="25">25</option>
@@ -212,58 +277,35 @@
             <option value="100">100</option>
             <option value="200">200</option>
           </select>
-
           <button type="submit" class="primary">Load</button>
         </form>
-
         <div id="task-loading" class="muted" hidden>Loading tasks…</div>
-        <div id="task-empty" class="muted" hidden>
-          No tasks match these filters yet.
-        </div>
+        <div id="task-empty" class="muted" hidden>No tasks match these filters yet.</div>
         <p id="task-message" class="message" role="alert" hidden></p>
-
         <table id="task-table" class="table" hidden>
-          <thead>
-            <tr>
-              <th>Title</th><th>Status</th><th>Priority</th>
-              <th>Created</th><th>Move to</th>
-            </tr>
-          </thead>
+          <thead><tr><th>Title</th><th>Status</th><th>Priority</th><th>Created</th><th>Move to</th></tr></thead>
           <tbody id="task-body"></tbody>
         </table>
-
-        <p>
-          <button type="button" id="task-older-btn" hidden>Load more tasks</button>
-        </p>
+        <p><button type="button" id="task-older-btn" hidden>Load more tasks</button></p>
       </section>
 
       <section class="card" id="knowledge-card">
         <h2>Knowledge</h2>
-        <p class="muted">
-          Workspace-scoped documents, campaign rules and style guides. Content is
-          embedded on the server when it is saved, so search ranks what is
-          actually stored. Nothing here sends or accepts a vector: the embedding
-          is derived from the content by the server alone.
-        </p>
-
+        <p class="muted">Workspace-scoped documents.</p>
         <form id="kn-create-form">
           <label for="kn-title">Title</label>
           <input id="kn-title" name="title" required maxlength="300">
-
           <label for="kn-kind">Kind</label>
           <select id="kn-kind" name="kind">
             <option value="document" selected>document</option>
             <option value="campaign_rule">campaign_rule</option>
             <option value="style_guide">style_guide</option>
           </select>
-
           <label for="kn-content">Content</label>
           <textarea id="kn-content" name="content" rows="4" required></textarea>
-
           <button type="submit" class="primary">Create document</button>
         </form>
         <p id="kn-create-message" class="message" role="alert" hidden></p>
-
         <form id="kn-form" class="filters">
           <label for="kn-filter-kind">Kind</label>
           <select id="kn-filter-kind" name="kind">
@@ -272,7 +314,6 @@
             <option value="campaign_rule">campaign_rule</option>
             <option value="style_guide">style_guide</option>
           </select>
-
           <label for="kn-limit">Page size</label>
           <select id="kn-limit" name="limit">
             <option value="25">25</option>
@@ -280,74 +321,43 @@
             <option value="100">100</option>
             <option value="200">200</option>
           </select>
-
           <label for="kn-search">Search</label>
-          <input id="kn-search" name="q" maxlength="2000"
-                 placeholder="similarity search over content">
-
+          <input id="kn-search" name="q" maxlength="2000" placeholder="similarity search">
           <button type="submit" class="primary">Apply</button>
           <button type="button" id="kn-clear-btn">Clear search</button>
         </form>
-
         <div id="kn-loading" class="muted" hidden>Loading knowledge…</div>
-        <div id="kn-empty" class="muted" hidden>
-          No documents match. Create one above, or clear the search.
-        </div>
+        <div id="kn-empty" class="muted" hidden>No documents match.</div>
         <p id="kn-message" class="message" role="alert" hidden></p>
-
         <table id="kn-table" class="table" hidden>
-          <thead>
-            <tr>
-              <th>Title</th><th>Kind</th><th>Updated</th><th>Actions</th>
-            </tr>
-          </thead>
+          <thead><tr><th>Title</th><th>Kind</th><th>Updated</th><th>Actions</th></tr></thead>
           <tbody id="kn-body"></tbody>
         </table>
-
         <div id="kn-detail" hidden>
           <h3 id="kn-detail-title"></h3>
-          <p class="muted">
-            <span id="kn-detail-kind"></span> · updated <span id="kn-detail-updated"></span>
-          </p>
+          <p class="muted"><span id="kn-detail-kind"></span> · updated <span id="kn-detail-updated"></span></p>
           <pre id="kn-detail-content" class="muted"></pre>
-          <p>
-            <button type="button" id="kn-edit-btn">Edit</button>
-            <button type="button" id="kn-detail-close">Close</button>
-          </p>
-
+          <p><button type="button" id="kn-edit-btn">Edit</button><button type="button" id="kn-detail-close">Close</button></p>
           <form id="kn-edit-form" hidden>
             <label for="kn-edit-title">Title</label>
             <input id="kn-edit-title" name="title" required maxlength="300">
-
             <label for="kn-edit-kind">Kind</label>
             <select id="kn-edit-kind" name="kind">
               <option value="document">document</option>
               <option value="campaign_rule">campaign_rule</option>
               <option value="style_guide">style_guide</option>
             </select>
-
             <label for="kn-edit-content">Content</label>
             <textarea id="kn-edit-content" name="content" rows="6" required></textarea>
-
             <button type="submit" class="primary">Save</button>
             <button type="button" id="kn-edit-cancel">Cancel</button>
           </form>
         </div>
-
-        <p>
-          <button type="button" id="kn-older-btn" hidden>Load more documents</button>
-        </p>
+        <p><button type="button" id="kn-older-btn" hidden>Load more documents</button></p>
       </section>
 
       <section class="card" id="publications-card">
         <h2>Publishing approval</h2>
-        <p class="muted">
-          Drafts stay in the server-owned lifecycle: queued, review, approved,
-          then published. Workspace members can draft and submit; only a
-          workspace administrator can approve, reject or publish. Delivery
-          failures remain visible as failed records and are never shown as
-          success.
-        </p>
         <form id="publication-create-form">
           <label for="publication-title">Title</label>
           <input id="publication-title" name="title" required maxlength="200">
@@ -388,15 +398,7 @@
 
       <section class="card" id="pipelines-card">
         <h2>Creator pipelines</h2>
-        <p class="muted">
-          Pipelines run through the server-owned research, script, review and
-          publish lifecycle. This view never invents progress or exposes a stage
-          selector. Review output pauses for workspace-admin approval; failures
-          expose only the server's retry command and evidence.
-        </p>
-        <form id="pipeline-create-form">
-          <button type="submit" class="primary">Start pipeline</button>
-        </form>
+        <form id="pipeline-create-form"><button type="submit" class="primary">Start pipeline</button></form>
         <p id="pipeline-create-message" class="message" role="alert" hidden></p>
         <form id="pipeline-form" class="filters">
           <label for="pipeline-limit">Page size</label>
@@ -418,12 +420,6 @@
 
       <section class="card" id="memory-card">
         <h2>Memory</h2>
-        <p class="muted">
-          Read or replace one key in your current workspace. The server derives
-          the workspace, actor and authorization scope from your session. This
-          browser surface intentionally exposes no list, search or delete control.
-        </p>
-
         <form id="memory-form">
           <label for="memory-layer">Layer</label>
           <select id="memory-layer" name="layer">
@@ -431,19 +427,12 @@
             <option value="longterm">longterm</option>
             <option value="workspace" selected>workspace</option>
           </select>
-
           <label for="memory-key">Key</label>
-          <input id="memory-key" name="key" required maxlength="256"
-                 autocomplete="off" placeholder="e.g. campaign.tone">
-
+          <input id="memory-key" name="key" required maxlength="256" autocomplete="off" placeholder="e.g. campaign.tone">
           <label for="memory-value">Value</label>
-          <textarea id="memory-value" name="value" rows="4" maxlength="65536"
-                    placeholder="Value to store"></textarea>
-
+          <textarea id="memory-value" name="value" rows="4" maxlength="65536" placeholder="Value to store"></textarea>
           <label for="memory-ttl">TTL in seconds</label>
-          <input id="memory-ttl" name="ttl_seconds" type="number" min="0"
-                 max="7776000" value="86400">
-
+          <input id="memory-ttl" name="ttl_seconds" type="number" min="0" max="7776000" value="86400">
           <button type="submit" class="primary">Save memory</button>
           <button type="button" id="memory-read-btn">Read memory</button>
         </form>
@@ -455,22 +444,8 @@
           <dt>TTL</dt><dd id="memory-result-ttl">—</dd>
         </dl>
       </section>
-
-      <section class="card">
-        <h2>Not available in this build</h2>
-        <p class="muted">
-          ADR-016 approves a wider surface. These areas are approved but their
-          backend APIs are not implemented yet, so they are listed rather than
-          left to fail silently:
-        </p>
-        <ul class="list muted">
-          <li>Creator pipelines and stage review</li>
-          <li>AI employees</li>
-        </ul>
-      </section>
     </main>
   </div>
-
   <script src="/assets/app.js"></script>
 </body>
 </html>

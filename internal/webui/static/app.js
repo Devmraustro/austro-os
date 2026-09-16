@@ -202,10 +202,10 @@
     showApp();
     loadStatus();
     loadWorkspaces();
+    loadDepartments(false);
+    loadTeams(false);
+    loadEmployees(false);
     loadAudit(false);
-    /* Loaded on entry so a workspace member lands on their tasks rather than an
-     * empty panel with a Load button. For a founder this returns 403, which the
-     * card explains instead of showing a misleading empty state. */
     loadTasks(false);
     loadKnowledge(false);
     return authenticated("GET", "/api/me").then(function (r) {
@@ -300,6 +300,461 @@
         }
         setMessage(msg, errorMessage(r), false);
       }).catch(function () { setMessage(msg, "Could not reach the API.", false); });
+  });
+
+  /* ---------- departments ---------- */
+  var departmentCursor = "";
+  var departmentCurrent = null;
+
+  function renderDepartments(list) {
+    var ul = el("department-list");
+    ul.innerHTML = "";
+    var empty = el("department-empty");
+    var denied = el("department-denied");
+    empty.hidden = list.length !== 0;
+    denied.hidden = true;
+    var deptSelects = [el("team-department"), el("team-filter-department"), el("team-edit-department")];
+    for (var s = 0; s < deptSelects.length; s++) {
+      if (!deptSelects[s]) continue;
+      var currentVal = deptSelects[s].value;
+      // Keep first option for filter, clear rest
+      var keepFirst = deptSelects[s].id.indexOf("filter") !== -1;
+      var first = keepFirst && deptSelects[s].options.length > 0 ? deptSelects[s].options[0] : null;
+      deptSelects[s].innerHTML = "";
+      if (first) deptSelects[s].appendChild(first);
+      for (var i = 0; i < list.length; i++) {
+        var opt = document.createElement("option");
+        opt.value = list[i].id;
+        opt.textContent = list[i].name;
+        deptSelects[s].appendChild(opt);
+      }
+      if (currentVal) deptSelects[s].value = currentVal;
+    }
+    for (var i = 0; i < list.length; i++) {
+      (function (dept) {
+        var li = document.createElement("li");
+        var name = document.createElement("span");
+        name.textContent = dept.name + " (" + dept.id.slice(0,8) + ")";
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = "View";
+        btn.addEventListener("click", function () { showDepartment(dept.id); });
+        li.appendChild(name);
+        li.appendChild(btn);
+        ul.appendChild(li);
+      })(list[i]);
+    }
+  }
+
+  function loadDepartments(append) {
+    var loading = el("department-loading");
+    var msg = el("department-message");
+    var denied = el("department-denied");
+    if (!append) departmentCursor = "";
+    loading.hidden = false;
+    setMessage(msg, "", false);
+    var path = "/departments?limit=100" + (append && departmentCursor ? "&cursor=" + encodeURIComponent(departmentCursor) : "");
+    return authenticated("GET", path).then(function (r) {
+      loading.hidden = true;
+      if (r.status === 403) {
+        el("department-list").innerHTML = "";
+        el("department-empty").hidden = true;
+        denied.hidden = false;
+        setMessage(msg, "Access denied or no workspace context.", false);
+        return;
+      }
+      if (r.status !== 200 || !r.body) {
+        setMessage(msg, errorMessage(r), false);
+        return;
+      }
+      var depts = r.body.departments || [];
+      if (!append) renderDepartments(depts);
+      else {
+        // append not fully supported, just re-render combined? For simplicity reload.
+        loadDepartments(false);
+        return;
+      }
+      departmentCursor = r.body.next_cursor || "";
+      setMessage(msg, "", true);
+    }).catch(function () {
+      loading.hidden = true;
+      setMessage(msg, "Could not reach API.", false);
+    });
+  }
+
+  function showDepartment(id) {
+    var msg = el("department-message");
+    setMessage(msg, "", false);
+    authenticated("GET", "/departments/" + encodeURIComponent(id)).then(function (r) {
+      if (r.status !== 200 || !r.body) {
+        setMessage(msg, errorMessage(r), false);
+        return;
+      }
+      departmentCurrent = r.body;
+      el("department-detail-id").textContent = r.body.id;
+      el("department-detail-name").textContent = r.body.name;
+      el("department-detail-workspace").textContent = r.body.workspace_id;
+      el("department-edit-name").value = r.body.name;
+      el("department-detail").hidden = false;
+    }).catch(function () {
+      setMessage(msg, "Could not reach API.", false);
+    });
+  }
+
+  el("department-form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var msg = el("department-message");
+    setMessage(msg, "", false);
+    authenticated("POST", "/departments", { name: el("department-name").value }).then(function (r) {
+      if (r.status !== 201) {
+        setMessage(msg, errorMessage(r), false);
+        return;
+      }
+      el("department-form").reset();
+      setMessage(msg, "Department created: " + r.body.name, true);
+      loadDepartments(false);
+    }).catch(function () {
+      setMessage(msg, "Could not reach API.", false);
+    });
+  });
+
+  el("department-edit-form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    if (!departmentCurrent) return;
+    var msg = el("department-message");
+    setMessage(msg, "", false);
+    authenticated("PATCH", "/departments/" + encodeURIComponent(departmentCurrent.id), { name: el("department-edit-name").value }).then(function (r) {
+      if (r.status !== 200) {
+        setMessage(msg, errorMessage(r), false);
+        return;
+      }
+      setMessage(msg, "Department updated.", true);
+      el("department-detail").hidden = true;
+      departmentCurrent = null;
+      loadDepartments(false);
+    }).catch(function () {
+      setMessage(msg, "Could not reach API.", false);
+    });
+  });
+
+  el("department-edit-cancel").addEventListener("click", function () {
+    el("department-detail").hidden = true;
+    departmentCurrent = null;
+  });
+  el("department-detail-close").addEventListener("click", function () {
+    el("department-detail").hidden = true;
+    departmentCurrent = null;
+  });
+
+  /* ---------- teams ---------- */
+  var teamCursor = "";
+  var teamCurrent = null;
+
+  function renderTeams(list) {
+    var ul = el("team-list");
+    ul.innerHTML = "";
+    el("team-empty").hidden = list.length !== 0;
+    el("team-denied").hidden = true;
+    var teamSelects = [el("employee-team"), el("employee-filter-team"), el("employee-edit-team")];
+    for (var s = 0; s < teamSelects.length; s++) {
+      if (!teamSelects[s]) continue;
+      var currentVal = teamSelects[s].value;
+      var keepFirst = teamSelects[s].id.indexOf("filter") !== -1;
+      var first = keepFirst && teamSelects[s].options.length > 0 ? teamSelects[s].options[0] : null;
+      teamSelects[s].innerHTML = "";
+      if (first) teamSelects[s].appendChild(first);
+      for (var i = 0; i < list.length; i++) {
+        var opt = document.createElement("option");
+        opt.value = list[i].id;
+        opt.textContent = list[i].name + " (" + list[i].department_id.slice(0,6) + ")";
+        teamSelects[s].appendChild(opt);
+      }
+      if (currentVal) teamSelects[s].value = currentVal;
+    }
+    for (var i = 0; i < list.length; i++) {
+      (function (t) {
+        var li = document.createElement("li");
+        var name = document.createElement("span");
+        name.textContent = t.name + " [dept " + t.department_id.slice(0,6) + "] (" + t.id.slice(0,8) + ")";
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = "View";
+        btn.addEventListener("click", function () { showTeam(t.id); });
+        li.appendChild(name);
+        li.appendChild(btn);
+        ul.appendChild(li);
+      })(list[i]);
+    }
+  }
+
+  function loadTeams(append) {
+    var loading = el("team-loading");
+    var msg = el("team-message");
+    if (!append) teamCursor = "";
+    loading.hidden = false;
+    setMessage(msg, "", false);
+    var deptFilter = el("team-filter-department").value;
+    var path = "/teams?limit=100" + (deptFilter ? "&department_id=" + encodeURIComponent(deptFilter) : "") + (append && teamCursor ? "&cursor=" + encodeURIComponent(teamCursor) : "");
+    return authenticated("GET", path).then(function (r) {
+      loading.hidden = true;
+      if (r.status === 403) {
+        el("team-list").innerHTML = "";
+        el("team-empty").hidden = true;
+        el("team-denied").hidden = false;
+        setMessage(msg, "Access denied.", false);
+        return;
+      }
+      if (r.status !== 200 || !r.body) {
+        setMessage(msg, errorMessage(r), false);
+        return;
+      }
+      var teams = r.body.teams || [];
+      renderTeams(teams);
+      teamCursor = r.body.next_cursor || "";
+      setMessage(msg, "", true);
+    }).catch(function () {
+      loading.hidden = true;
+      setMessage(msg, "Could not reach API.", false);
+    });
+  }
+
+  function showTeam(id) {
+    var msg = el("team-message");
+    setMessage(msg, "", false);
+    authenticated("GET", "/teams/" + encodeURIComponent(id)).then(function (r) {
+      if (r.status !== 200 || !r.body) {
+        setMessage(msg, errorMessage(r), false);
+        return;
+      }
+      teamCurrent = r.body;
+      el("team-detail-id").textContent = r.body.id;
+      el("team-detail-name").textContent = r.body.name;
+      el("team-detail-department").textContent = r.body.department_id;
+      el("team-detail-workspace").textContent = r.body.workspace_id;
+      el("team-edit-name").value = r.body.name;
+      // populate edit department select with current departments
+      var sel = el("team-edit-department");
+      if (sel) sel.value = r.body.department_id;
+      el("team-detail").hidden = false;
+    }).catch(function () {
+      setMessage(msg, "Could not reach API.", false);
+    });
+  }
+
+  el("team-form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var msg = el("team-message");
+    setMessage(msg, "", false);
+    authenticated("POST", "/teams", { name: el("team-name").value, department_id: el("team-department").value }).then(function (r) {
+      if (r.status !== 201) {
+        setMessage(msg, errorMessage(r), false);
+        return;
+      }
+      el("team-form").reset();
+      setMessage(msg, "Team created: " + r.body.name, true);
+      loadTeams(false);
+      loadEmployees(false);
+    }).catch(function () {
+      setMessage(msg, "Could not reach API.", false);
+    });
+  });
+
+  el("team-filter-form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    loadTeams(false);
+  });
+
+  el("team-edit-form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    if (!teamCurrent) return;
+    var msg = el("team-message");
+    setMessage(msg, "", false);
+    var payload = {};
+    var name = el("team-edit-name").value.trim();
+    if (name) payload.name = name;
+    var dept = el("team-edit-department").value;
+    if (dept) payload.department_id = dept;
+    authenticated("PATCH", "/teams/" + encodeURIComponent(teamCurrent.id), payload).then(function (r) {
+      if (r.status !== 200) {
+        setMessage(msg, errorMessage(r), false);
+        return;
+      }
+      setMessage(msg, "Team updated.", true);
+      el("team-detail").hidden = true;
+      teamCurrent = null;
+      loadTeams(false);
+    }).catch(function () {
+      setMessage(msg, "Could not reach API.", false);
+    });
+  });
+
+  el("team-edit-cancel").addEventListener("click", function () {
+    el("team-detail").hidden = true;
+    teamCurrent = null;
+  });
+  el("team-detail-close").addEventListener("click", function () {
+    el("team-detail").hidden = true;
+    teamCurrent = null;
+  });
+
+  /* ---------- AI employees ---------- */
+  var employeeCursor = "";
+  var employeeCurrent = null;
+
+  function renderEmployees(list) {
+    var ul = el("employee-list");
+    ul.innerHTML = "";
+    el("employee-empty").hidden = list.length !== 0;
+    el("employee-denied").hidden = true;
+    for (var i = 0; i < list.length; i++) {
+      (function (emp) {
+        var li = document.createElement("li");
+        var name = document.createElement("span");
+        name.textContent = emp.name + " (" + emp.role + ") [team " + emp.team_id.slice(0,6) + "] (" + emp.id.slice(0,8) + ")";
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = "View";
+        btn.addEventListener("click", function () { showEmployee(emp.id); });
+        li.appendChild(name);
+        li.appendChild(btn);
+        ul.appendChild(li);
+      })(list[i]);
+    }
+  }
+
+  function loadEmployees(append) {
+    var loading = el("employee-loading");
+    var msg = el("employee-message");
+    if (!append) employeeCursor = "";
+    loading.hidden = false;
+    setMessage(msg, "", false);
+    var teamFilter = el("employee-filter-team").value;
+    var path = "/ai-employees?limit=100" + (teamFilter ? "&team_id=" + encodeURIComponent(teamFilter) : "") + (append && employeeCursor ? "&cursor=" + encodeURIComponent(employeeCursor) : "");
+    return authenticated("GET", path).then(function (r) {
+      loading.hidden = true;
+      if (r.status === 403) {
+        el("employee-list").innerHTML = "";
+        el("employee-empty").hidden = true;
+        el("employee-denied").hidden = false;
+        setMessage(msg, "Access denied.", false);
+        return;
+      }
+      if (r.status !== 200 || !r.body) {
+        setMessage(msg, errorMessage(r), false);
+        return;
+      }
+      var emps = r.body.ai_employees || [];
+      renderEmployees(emps);
+      employeeCursor = r.body.next_cursor || "";
+      setMessage(msg, "", true);
+    }).catch(function () {
+      loading.hidden = true;
+      setMessage(msg, "Could not reach API.", false);
+    });
+  }
+
+  function showEmployee(id) {
+    var msg = el("employee-message");
+    setMessage(msg, "", false);
+    authenticated("GET", "/ai-employees/" + encodeURIComponent(id)).then(function (r) {
+      if (r.status !== 200 || !r.body) {
+        setMessage(msg, errorMessage(r), false);
+        return;
+      }
+      employeeCurrent = r.body;
+      el("employee-detail-id").textContent = r.body.id;
+      el("employee-detail-name").textContent = r.body.name;
+      el("employee-detail-role").textContent = r.body.role;
+      el("employee-detail-team").textContent = r.body.team_id;
+      el("employee-detail-department").textContent = r.body.department_id;
+      el("employee-detail-workspace").textContent = r.body.workspace_id;
+      el("employee-detail-capabilities").textContent = (r.body.capabilities || []).join(", ") || "—";
+      el("employee-detail-task").textContent = r.body.current_task_id || "—";
+      el("employee-edit-name").value = r.body.name;
+      el("employee-edit-role").value = r.body.role;
+      el("employee-edit-capabilities").value = (r.body.capabilities || []).join(", ");
+      el("employee-edit-task").value = r.body.current_task_id || "";
+      var sel = el("employee-edit-team");
+      if (sel) sel.value = r.body.team_id;
+      el("employee-detail").hidden = false;
+    }).catch(function () {
+      setMessage(msg, "Could not reach API.", false);
+    });
+  }
+
+  el("employee-form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var msg = el("employee-message");
+    setMessage(msg, "", false);
+    var capsRaw = el("employee-capabilities").value;
+    var caps = capsRaw ? capsRaw.split(",").map(function (s) { return s.trim(); }).filter(function (s) { return s; }) : [];
+    authenticated("POST", "/ai-employees", { name: el("employee-name").value, role: el("employee-role").value, team_id: el("employee-team").value, capabilities: caps }).then(function (r) {
+      if (r.status !== 201) {
+        setMessage(msg, errorMessage(r), false);
+        return;
+      }
+      el("employee-form").reset();
+      setMessage(msg, "AI employee created: " + r.body.name, true);
+      loadEmployees(false);
+    }).catch(function () {
+      setMessage(msg, "Could not reach API.", false);
+    });
+  });
+
+  el("employee-filter-form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    loadEmployees(false);
+  });
+
+  el("employee-edit-form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    if (!employeeCurrent) return;
+    var msg = el("employee-message");
+    setMessage(msg, "", false);
+    var capsRaw = el("employee-edit-capabilities").value;
+    var caps = capsRaw ? capsRaw.split(",").map(function (s) { return s.trim(); }).filter(function (s) { return s; }) : undefined;
+    var payload = {};
+    var name = el("employee-edit-name").value.trim();
+    if (name) payload.name = name;
+    var role = el("employee-edit-role").value.trim();
+    if (role) payload.role = role;
+    var team = el("employee-edit-team").value;
+    if (team) payload.team_id = team;
+    if (caps !== undefined) payload.capabilities = caps;
+    var task = el("employee-edit-task").value.trim();
+    if (task !== "" || el("employee-edit-task").value === "") {
+      // If user cleared, send empty string to clear; if provided, send UUID
+      if (task === "") {
+        payload.current_task_id = "";
+      } else {
+        payload.current_task_id = task;
+      }
+    }
+    // If task field untouched and empty originally, don't send to avoid clearing unintentionally
+    if (!task && !employeeCurrent.current_task_id) {
+      delete payload.current_task_id;
+    }
+    authenticated("PATCH", "/ai-employees/" + encodeURIComponent(employeeCurrent.id), payload).then(function (r) {
+      if (r.status !== 200) {
+        setMessage(msg, errorMessage(r), false);
+        return;
+      }
+      setMessage(msg, "AI employee updated.", true);
+      el("employee-detail").hidden = true;
+      employeeCurrent = null;
+      loadEmployees(false);
+    }).catch(function () {
+      setMessage(msg, "Could not reach API.", false);
+    });
+  });
+
+  el("employee-edit-cancel").addEventListener("click", function () {
+    el("employee-detail").hidden = true;
+    employeeCurrent = null;
+  });
+  el("employee-detail-close").addEventListener("click", function () {
+    el("employee-detail").hidden = true;
+    employeeCurrent = null;
   });
 
   /* ---------- audit trail ---------- */
