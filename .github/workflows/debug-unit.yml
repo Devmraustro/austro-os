@@ -11,12 +11,40 @@ jobs:
         with:
           go-version: "1.25.13"
       - name: Run department tests
-        run: go test ./internal/department -count=1 -v
+        run: |
+          go test ./internal/department -count=1 -v 2>&1 | tee /tmp/dept.log
+          cat /tmp/dept.log >> $GITHUB_STEP_SUMMARY || true
       - name: Run team tests
-        run: go test ./internal/team -count=1 -v
+        run: |
+          go test ./internal/team -count=1 -v 2>&1 | tee /tmp/team.log
+          cat /tmp/team.log >> $GITHUB_STEP_SUMMARY || true
       - name: Run aiemployee tests
-        run: go test ./internal/aiemployee -count=1 -v
-      - name: Run all internal tests verbose
-        run: go test ./internal/... -count=1 -run TestDepartment -v 2>&1 | head -n 200
-      - name: Run full suite with json
-        run: go test ./internal/... ./cmd/... ./infrastructure/... . -count=1 -json 2>&1 | grep -E '"Action":"fail"' | head -n 100
+        run: |
+          go test ./internal/aiemployee -count=1 -v 2>&1 | tee /tmp/emp.log
+          cat /tmp/emp.log >> $GITHUB_STEP_SUMMARY || true
+      - name: Run api tests
+        run: |
+          go test ./internal/api -count=1 -v 2>&1 | tee /tmp/api.log
+          cat /tmp/api.log >> $GITHUB_STEP_SUMMARY || true
+          if grep -q "FAIL" /tmp/api.log; then
+            grep -E "FAIL|--- FAIL|panic" /tmp/api.log | head -n 100 | while IFS= read -r line; do echo "::error::$line"; done
+          fi
+      - name: Run webui tests
+        run: |
+          go test ./internal/webui -count=1 -v 2>&1 | tee /tmp/webui.log
+          cat /tmp/webui.log >> $GITHUB_STEP_SUMMARY || true
+      - name: Run task tests
+        run: |
+          go test ./internal/task -count=1 -v 2>&1 | tee /tmp/task.log
+          cat /tmp/task.log >> $GITHUB_STEP_SUMMARY || true
+          if grep -q "FAIL" /tmp/task.log; then
+            grep -E "FAIL|--- FAIL" /tmp/task.log | head -n 100 | while IFS= read -r line; do echo "::error::$line"; done
+          fi
+      - name: Run all internal tests
+        run: |
+          go test ./internal/... -count=1 -v 2>&1 | tee /tmp/all.log
+          cat /tmp/all.log >> $GITHUB_STEP_SUMMARY || true
+          if grep -q "^--- FAIL" /tmp/all.log; then
+            grep -E "^--- FAIL|FAIL" /tmp/all.log | head -n 200 | while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          fi
