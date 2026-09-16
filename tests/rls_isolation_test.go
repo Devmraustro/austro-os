@@ -137,7 +137,8 @@ func TestWorkspaceIsolation(t *testing.T) {
 		dbA := connectRestricted(t, workspaceARole)
 		defer dbA.Close()
 		setWorkspace(t, dbA, workspaceA)
-		res, err := dbA.Exec(`UPDATE departments SET name='Dept A renamed' WHERE id=$1`, a.deptID)
+		newName := "Dept A renamed " + uuid.NewString()[:8]
+		res, err := dbA.Exec(`UPDATE departments SET name=$1 WHERE id=$2`, newName, a.deptID)
 		require.NoError(t, err)
 		aff, _ := res.RowsAffected()
 		require.Equal(t, int64(1), aff, "A must be able to update its own row")

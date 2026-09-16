@@ -92,8 +92,17 @@ test('organization hierarchy browser journey', async ({ browser }) => {
     await expect(adminPage.locator('#teams-card')).toBeVisible();
     await expect(adminPage.locator('#team-loading')).toBeHidden({ timeout: 15000 });
     const teamName = 'Team-' + Math.random().toString(36).slice(2, 8);
-    // department select should have our dept
-    await expect(adminPage.locator('#team-department')).toContainText(deptName);
+    // department select should have our dept - wait longer and log options for debugging
+    await expect(async () => {
+      const opts = await adminPage.locator('#team-department option').allTextContents();
+      console.log('BROWSER_DIAGNOSTIC team-department options:', opts.join(','));
+      const html = await adminPage.locator('#team-department').innerHTML();
+      console.log('BROWSER_DIAGNOSTIC team-department html:', html.slice(0,500));
+      const listText = await adminPage.locator('#department-list').textContent();
+      console.log('BROWSER_DIAGNOSTIC department-list:', listText.slice(0,500));
+      expect(opts.join(',')).toContain(deptName);
+    }).toPass({ timeout: 15000 });
+    await expect(adminPage.locator('#team-department')).toContainText(deptName, { timeout: 15000 });
     await adminPage.locator('#team-name').fill(teamName);
     await adminPage.locator('#team-department').selectOption({ label: deptName });
     await adminPage.locator('#team-form button[type="submit"]').click();

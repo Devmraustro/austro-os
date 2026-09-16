@@ -104,3 +104,14 @@ func TestAIEmployeeUpdateRejectsCrossWorkspaceMove(t *testing.T) {
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrWorkspaceMismatch)
 }
+
+func TestAIEmployeeUpdateClearsTask(t *testing.T) {
+	store := &fakeStore{}
+	svc := NewService(store, &fakeTeamResolver{})
+	ws := uuid.New()
+	empID := uuid.New()
+	nilUUID := uuid.Nil
+	updated, err := svc.Update(context.Background(), ws, empID, nil, nil, nil, nil, &nilUUID)
+	require.NoError(t, err)
+	require.Nil(t, updated.CurrentTaskID, "clearing task should set CurrentTaskID to nil")
+}
