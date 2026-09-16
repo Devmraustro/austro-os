@@ -66,7 +66,7 @@ restore() {
   fi
   echo "RESTORE_SOURCE_PASS: browser authorization source matches HEAD"
   stop_api
-  go build -a -o /tmp/austro-api .
+  go build -o /tmp/austro-api .
   start_api
   echo "RESTORE_API_PASS: API rebuilt from restored source and ready"
   rm -f -- "$backup"
