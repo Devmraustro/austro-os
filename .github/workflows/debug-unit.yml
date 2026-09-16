@@ -1,0 +1,22 @@
+name: Debug Unit
+on:
+  push:
+    branches: [arena/01a0ab5b-austro-os]
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.13"
+      - name: Run department tests
+        run: go test ./internal/department -count=1 -v
+      - name: Run team tests
+        run: go test ./internal/team -count=1 -v
+      - name: Run aiemployee tests
+        run: go test ./internal/aiemployee -count=1 -v
+      - name: Run all internal tests verbose
+        run: go test ./internal/... -count=1 -run TestDepartment -v 2>&1 | head -n 200
+      - name: Run full suite with json
+        run: go test ./internal/... ./cmd/... ./infrastructure/... . -count=1 -json 2>&1 | grep -E '"Action":"fail"' | head -n 100
