@@ -66,7 +66,12 @@ restore() {
   fi
   echo "RESTORE_SOURCE_PASS: browser authorization source matches HEAD"
   stop_api
+  rm -f /tmp/austro-api
   go build -o /tmp/austro-api .
+  if [ ! -x /tmp/austro-api ]; then
+    echo "RESTORE_BUILD_FAILED: API binary not created"
+    exit 1
+  fi
   start_api
   echo "RESTORE_API_PASS: API rebuilt from restored source and ready"
   rm -f -- "$backup"
@@ -95,7 +100,17 @@ set -a
 set +a
 
 echo "building and starting temporarily mutated API"
+rm -f /tmp/austro-api
 go build -o /tmp/austro-api .
+if [ ! -x /tmp/austro-api ]; then
+  echo "MUTATED_BUILD_FAILED: API binary not created"
+  exit 1
+fi
+if ! grep -q "workspace_member" "$file"; then
+  echo "MUTATION_FILE_CHECK_FAILED: mutated source does not contain expected string"
+  exit 1
+fi
+echo "MUTATED_SOURCE_PASS: mutation applied"
 start_api
 
 echo "running browser test; failure is required for this mutation"
