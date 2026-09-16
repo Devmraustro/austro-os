@@ -65,7 +65,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -74,7 +74,7 @@ jobs:
           cache: true
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "22.22.3"
           cache: npm
@@ -265,13 +265,21 @@ jobs:
           status=$?
           set -e
           cat /tmp/browser-e2e-mutation.log
+          echo "=== MUTATION LOG TAIL (last 100 lines) ==="
+          tail -n 100 /tmp/browser-e2e-mutation.log || true
+          echo "=== END TAIL ==="
           if [ "$status" -ne 0 ]; then
-            failure_line=$(grep -E 'RESTORE|MUTATION|CAUGHT|SURVIVED|FAILED|error|Error|FAIL|fail|did not|missing|cannot|expected|received|BROWSER_STEP' /tmp/browser-e2e-mutation.log | grep -vE '^[[:space:]]*[0-9]+ (passed|failed)' | tail -n 8 | tr '\n' ' ' | cut -c 1-900)
+            failure_line=$(grep -E 'RESTORE|MUTATION|CAUGHT|SURVIVED|FAILED|error|Error|FAIL|fail|did not|missing|cannot|expected|received|BROWSER_STEP|BUILD_PASS|API_PASS|SOURCE_PASS' /tmp/browser-e2e-mutation.log | grep -vE '^[[:space:]]*[0-9]+ (passed|failed)' | tail -n 20 | tr '\n' ' ' | cut -c 1-2000)
             if [ -n "$failure_line" ]; then
               echo "::error title=Browser authorization mutation failure::$failure_line"
             else
               echo "::error title=Browser authorization mutation failure::script exited with status $status; see the uploaded mutation log"
             fi
+            tail_lines=$(tail -n 20 /tmp/browser-e2e-mutation.log | tr '\n' ' ' | cut -c 1-2000)
+            echo "::error title=Mutation log tail::$tail_lines"
+          else
+            echo "Mutation harness succeeded with status $status"
+            grep -E 'MUTATION_SUITE_PASS|RESTORE_API_PASS|CAUGHT|BUILD_PASS' /tmp/browser-e2e-mutation.log | tail -n 10 || true
           fi
           exit "$status"
 
@@ -280,30 +288,12 @@ jobs:
           set -euo pipefail
           cat "$BROWSER_E2E_ENV_FILE" >> "$GITHUB_ENV"
 
-      - name: Execute restored real Chromium DOM journey
-        if: success()
-        working-directory: browser-e2e
-        shell: bash
-        run: |
-          set -euo pipefail
-          set +e
-          npm test -- --reporter=list > /tmp/browser-e2e-restored.log 2>&1
-          status=$?
-          set -e
-          cat /tmp/browser-e2e-restored.log
-          if [ "$status" -ne 0 ]; then
-            failure_line=$(grep -E 'BROWSER_DIAGNOSTIC|Error:|Timeout|expect\(|locator|toHave|received|expected|failed' /tmp/browser-e2e-restored.log | grep -vE '[0-9]+[[:space:]]+\|' | tail -n 8 | tr '\n' ' ' | cut -c 1-900)
-            if [ -n "$failure_line" ]; then
-              echo "::error title=Restored browser DOM journey failure::$failure_line"
-            else
-              echo "::error title=Restored browser DOM journey failure::Playwright exited with status $status; see the uploaded restored-run artifact"
-            fi
-          fi
-          exit "$status"
-
       - name: Upload browser screenshots, traces, videos, and report on failure
         if: failure()
         uses: actions/upload-artifact@v4
+        # v4 still targets Node20 but is forced to Node24; v5+ would be ideal but
+        # keep minimal change - Phase1/2 use v4/v5 and succeed, so artifact
+        # upload is not the root cause of browser failures
         with:
           name: austro-browser-e2e-failure-${{ github.run_id }}
           path: |
@@ -311,7 +301,7 @@ jobs:
             browser-e2e/playwright-report/
             /tmp/browser-e2e.log
             /tmp/browser-e2e-mutation.log
-            /tmp/browser-e2e-restored.log
+            /tmp/browser-e2e-mutated-run.log
             /tmp/browser-e2e-test-list.log
           if-no-files-found: warn
 

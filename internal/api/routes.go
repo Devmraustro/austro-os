@@ -102,6 +102,29 @@ func Routes() []Route {
 		{http.MethodPost, "/pipelines/{id}/approve"},
 		{http.MethodPost, "/pipelines/{id}/retry"},
 
+		// Organization hierarchy: Workspace → Departments → Teams → AI Employees.
+		// Workspace-scoped tenant data: workspace is taken from verified claims,
+		// no workspace segment to forge. {id} is the entity, resolved only inside
+		// caller's workspace. Hierarchy invariants (exactly one parent) are
+		// enforced via DB FK NOT NULL and service-side cross-workspace checks.
+		{http.MethodPost, "/departments"},
+		{http.MethodGet, "/departments"},
+		{http.MethodGet, "/departments/{id}"},
+		{http.MethodPatch, "/departments/{id}"},
+		{http.MethodDelete, "/departments/{id}"},
+
+		{http.MethodPost, "/teams"},
+		{http.MethodGet, "/teams"},
+		{http.MethodGet, "/teams/{id}"},
+		{http.MethodPatch, "/teams/{id}"},
+		{http.MethodDelete, "/teams/{id}"},
+
+		{http.MethodPost, "/ai-employees"},
+		{http.MethodGet, "/ai-employees"},
+		{http.MethodGet, "/ai-employees/{id}"},
+		{http.MethodPatch, "/ai-employees/{id}"},
+		{http.MethodDelete, "/ai-employees/{id}"},
+
 		// Memory is intentionally key-based. There is no list, search or delete
 		// operation in the HTTP contract.
 		{http.MethodGet, "/memory/{layer}/{key}"},
