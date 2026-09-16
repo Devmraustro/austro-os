@@ -145,6 +145,25 @@ jobs:
           fi
           echo "real API and worker are ready"
 
+      - name: Bootstrap the configured founder identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          bootstrap_body=$(mktemp)
+          bootstrap_status=$(curl --silent --show-error --output "$bootstrap_body" --write-out '%{http_code}' \
+            --header 'Content-Type: application/json' \
+            --data '{}' \
+            http://127.0.0.1:8080/api/auth/bootstrap)
+          if [ "$bootstrap_status" != 201 ]; then
+            bootstrap_error=$(tr '\n' ' ' < "$bootstrap_body" | cut -c 1-900)
+            echo "::error title=Founder bootstrap failed::HTTP $bootstrap_status: $bootstrap_error"
+            cat "$bootstrap_body"
+            tail -n 160 /tmp/austro-api.log
+            exit 1
+          fi
+          rm -f "$bootstrap_body"
+          echo "configured founder identity bootstrapped through the real API"
+
       - name: Provision isolated browser identities and workspaces
         run: |
           set -euo pipefail
