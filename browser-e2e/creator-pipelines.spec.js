@@ -284,7 +284,7 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
     await expect(adminPage.locator('#pipeline-body-rows button', { hasText: 'Complete' })).toHaveCount(0);
     console.log('BROWSER_STEP pipeline-review');
 
-    const pipelineList = await browserAPI(adminPage, 'GET', '/api/pipelines?limit=50');
+    const pipelineList = await browserAPI(adminPage, 'GET', '/pipelines?limit=50');
     console.log('BROWSER_STEP pipeline-list-read', JSON.stringify({
       status: pipelineList.status,
       count: pipelineList.body && pipelineList.body.pipelines && pipelineList.body.pipelines.length,
@@ -300,7 +300,7 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
     // request, while the UI presents no bypass control.
     await signIn(memberPage, memberA, browserPassword);
     await waitForPipeline(memberPage, /review\s+awaiting_approval/s);
-    const memberApproval = await browserAPI(memberPage, 'POST', `/api/pipelines/${pipelineID}/approve`);
+    const memberApproval = await browserAPI(memberPage, 'POST', `/pipelines/${pipelineID}/approve`);
     console.log('BROWSER_STEP member-approval-denied', JSON.stringify({ status: memberApproval.status }));
     expect(memberApproval.status, `member approval response: ${JSON.stringify(memberApproval)}`).toBe(403);
     await waitForPipeline(memberPage, /review\s+awaiting_approval/s);
@@ -315,10 +315,10 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
     await expect(otherWorkspacePage.locator('#pipeline-empty')).toBeVisible();
     await expect(otherWorkspacePage.locator('#pipeline-body-rows tr')).toHaveCount(0);
     await expect(otherWorkspacePage.locator('#pipeline-body-rows button')).toHaveCount(0);
-    const otherPipelineGet = await browserAPI(otherWorkspacePage, 'GET', `/api/pipelines/${pipelineID}`);
+    const otherPipelineGet = await browserAPI(otherWorkspacePage, 'GET', `/pipelines/${pipelineID}`);
     console.log('BROWSER_STEP cross-workspace-read-denied', JSON.stringify({ status: otherPipelineGet.status }));
     expect(otherPipelineGet.status, `cross-workspace read response: ${JSON.stringify(otherPipelineGet)}`).toBe(404);
-    const otherPipelineApproval = await browserAPI(otherWorkspacePage, 'POST', `/api/pipelines/${pipelineID}/approve`);
+    const otherPipelineApproval = await browserAPI(otherWorkspacePage, 'POST', `/pipelines/${pipelineID}/approve`);
     console.log('BROWSER_STEP cross-workspace-approval-denied', JSON.stringify({ status: otherPipelineApproval.status }));
     expect(otherPipelineApproval.status, `cross-workspace approval response: ${JSON.stringify(otherPipelineApproval)}`).toBe(404);
 
@@ -327,7 +327,7 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
     // stage/status mutation nor publish/complete bypass is exposed.
     const adminActionLabels = await adminPage.locator('#pipeline-body-rows button').allTextContents();
     expect(adminActionLabels).toEqual(['Approve']);
-    const forgedState = await browserAPI(adminPage, 'POST', '/api/pipelines', {
+    const forgedState = await browserAPI(adminPage, 'POST', '/pipelines', {
       stage: 'publish',
       status: 'done',
     });
