@@ -371,9 +371,15 @@ func TestAIEmployeeLiveJourney(t *testing.T) {
 		// clear assignment
 		status, body = authJSONRaw(t, http.MethodPatch, "/ai-employees/"+created.ID,
 			`{"current_task_id":""}`, tokens.adminA)
-		require.Equal(t, http.StatusOK, status, body)
+		require.Equal(t, http.StatusOK, status, "clear task must succeed: %s", body)
+		t.Logf("clear task response: %s", string(body))
 		require.NoError(t, json.Unmarshal(body, &got))
-		require.Empty(t, got.CurrentTaskID)
+		if got.CurrentTaskID != "" {
+			// Try to get fresh via GET to see if DB cleared
+			status2, body2 := authJSONRaw(t, http.MethodGet, "/ai-employees/"+created.ID, "", tokens.adminA)
+			t.Logf("after clear GET status %d body %s", status2, string(body2))
+		}
+		require.Empty(t, got.CurrentTaskID, "clear task response should be empty but got %s, full body %s", got.CurrentTaskID, string(body))
 	})
 
 	t.Run("member read-only", func(t *testing.T) {
