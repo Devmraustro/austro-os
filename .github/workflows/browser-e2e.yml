@@ -161,6 +161,8 @@ jobs:
             --data "{\"username\":\"$BROWSER_E2E_FOUNDER_USERNAME\",\"password\":\"$BROWSER_E2E_FOUNDER_PASSWORD\"}" \
             http://127.0.0.1:8080/api/auth/login)
           if [ "$login_status" != 200 ]; then
+            login_error=$(tr '\n' ' ' < "$login_body" | cut -c 1-900)
+            echo "::error title=Real browser identity login failed::HTTP $login_status: $login_error"
             echo "real browser identity login returned HTTP $login_status"
             cat "$login_body"
             tail -n 160 /tmp/austro-api.log
@@ -181,6 +183,8 @@ jobs:
             --header "Authorization: Bearer $access_token" \
             http://127.0.0.1:8080/api/me)
           if [ "$me_status" != 200 ]; then
+            me_error=$(tr '\n' ' ' < /tmp/browser-e2e-me.json | cut -c 1-900)
+            echo "::error title=Real browser identity profile failed::HTTP $me_status: $me_error"
             echo "real browser identity profile returned HTTP $me_status"
             cat /tmp/browser-e2e-me.json
             tail -n 160 /tmp/austro-api.log
