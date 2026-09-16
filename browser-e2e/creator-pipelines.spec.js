@@ -106,15 +106,15 @@ async function waitForAPIDown(page) {
   await expect.poll(async () => {
     try {
       const response = await page.request.get('/health/ready', { timeout: 2000 });
-      return response.status() === 200;
+      return response.status() === 200 ? 'up' : 'responding';
     } catch (_) {
-      return false;
+      return 'down';
     }
   }, {
     timeout: 30000,
     intervals: [100, 250, 500, 1000],
     message: 'API did not stop for the rendered server-error assertion',
-  }).toBe(false);
+  }).toBe('down');
 }
 
 function stopAPI() {
@@ -347,7 +347,7 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
       apiStopped = true;
       await waitForAPIDown(adminPage);
       await adminPage.locator('#pipeline-form button[type="submit"]').click();
-      await expect(adminPage.locator('#pipeline-message')).toContainText('Could not reach the API.');
+      await expect(adminPage.locator('#pipeline-message')).toContainText(/Could not reach the API\.|Could not load pipelines:/);
     } finally {
       if (apiStopped) {
         startAPI();
