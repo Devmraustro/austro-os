@@ -315,6 +315,10 @@ func (h *AIEmployeeHandler) Update(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, claims, "update-ai-employee", id, err)
 		return
 	}
+	// Defense-in-depth: if client requested clear via empty string, ensure response reflects cleared state
+	if req.CurrentTaskID != nil && strings.TrimSpace(*req.CurrentTaskID) == "" {
+		emp.CurrentTaskID = nil
+	}
 	h.record(r, claims, "update-ai-employee", emp.ID, ws, "success", "")
 	writeJSON(w, http.StatusOK, toAIEmployeeResponse(emp))
 }
