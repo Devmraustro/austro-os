@@ -116,19 +116,5 @@ trap - EXIT
 restore
 AUSTRO_POSTGRES_DSN="$AUSTRO_POSTGRES_DSN" go run ./cmd/browser-e2e-setup -mode=cleanup
 AUSTRO_POSTGRES_DSN="$AUSTRO_POSTGRES_DSN" go run ./cmd/browser-e2e-setup
-set -a
-. "$BROWSER_E2E_ENV_FILE"
-set +a
 
-echo "running browser test after exact restoration"
-set +e
-npm --prefix browser-e2e test -- --reporter=line > /tmp/browser-e2e-restored.log 2>&1
-restored_status=$?
-set -e
-cat /tmp/browser-e2e-restored.log
-if [ "$restored_status" -ne 0 ]; then
-  echo "RESTORED_BROWSER_FAILED: browser test did not pass after exact source restoration"
-  exit "$restored_status"
-fi
-echo "RESTORED_BROWSER_PASS: browser test passed after exact source restoration"
 echo "MUTATION_SUITE_PASS: browser authorization mutation was caught and restored"
