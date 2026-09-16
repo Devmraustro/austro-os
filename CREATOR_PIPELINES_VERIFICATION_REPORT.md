@@ -1,163 +1,214 @@
-# Creator/Pipelines Verification Report
+# Creator/Pipelines Browser E2E Verification Report
 
-**Date:** 2026-09-15 (Europe/Paris)
+**Date:** 2026-09-16 (Europe/London)
 **Branch:** `arena/01a0a5ea-austro-os`
-**Verification/report HEAD:** `340e56e11dd511e00c8c93dc1d85f17e1f66fefa`
-**Implementation under verification:** unchanged from `48fd16936d66ee00181aa239a6da39ccd77428b1`; the report commit is documentation-only.
-**Final status:** `INCOMPLETE — browser evidence unavailable`
+**Implementation evidence HEAD:** `8d3e0afbe60fb5f8474316041f7c30b24cdfc2d2`
+**Final status:** `COMPLETE`
 
-This report records the remaining Creator/Pipelines verification work. Claims
-are explicitly classified as `VERIFIED BY EXECUTION`, `STATICALLY VERIFIED`,
-`CI VERIFIED`, `ENVIRONMENTALLY UNAVAILABLE`, or `CONFIGURATION REQUIRED`.
-The implementation was not reimplemented or refactored for this verification.
+This report records the real browser verification requested for the existing
+Creator/Pipelines application. Claims are classified as `VERIFIED BY
+EXECUTION`, `CI VERIFIED`, `STATICALLY VERIFIED`, or `ENVIRONMENTALLY
+UNAVAILABLE`; no browser result is inferred from HTTP-only tests.
 
-## 1. Mutation evidence
+## 1. Framework and environment
 
-**CI VERIFIED —** Creator/Pipelines Independent Verification runs
-`35024929546` and `35024934390` completed successfully at the
-report HEAD (the latter is the latest run). The matrix executed every required mutation independently, with
-`fail-fast: false`:
+**CI VERIFIED —** the job uses the repository's smallest production-appropriate
+browser stack: Playwright Test `1.63.0` with headless Chromium. The test uses
+stable application selectors (`#auth-view`, `#app-view`, `#pipeline-body-rows`,
+`#audit-body`, and form/button IDs), Playwright eventual assertions, and bounded
+polling. It does not use arbitrary sleeps for application state.
 
-| Mutation | Temporary change | Expected regression | Result |
-|---|---|---|---|
-| `transition` | Permit a skipped research-to-review transition | `TestInvalidAndSkippedTransitions` | Caught; restored byte-for-byte |
-| `rbac` | Invert the valid-role authorization guard | `TestAuthorizeMeAllRolesGranted` | Caught; restored byte-for-byte |
-| `workspace` | Remove the pipeline workspace ownership check | `TestWorkspaceIsolation` | Caught; restored byte-for-byte |
-| `client_state` | Accept client `stage` and `status` fields on create | `TestPipelineCreateRejectsClientControlledStageStatus` | Caught; restored byte-for-byte |
-| `route` | Add an undocumented arbitrary pipeline PATCH route | `TestOpenAPIMatchesRegisteredRoutes` | Caught; restored byte-for-byte |
-| `approval` | Break the already-approved idempotent approval branch | `TestApprovalIsIdempotentAndRepublishesEvent` | Caught; restored byte-for-byte |
-| `worker_ack` | Replace successful `Ack` with requeued `Nack` | `TestProcessMessageSettling` | Caught; restored byte-for-byte |
-| `retry` | Increment retry count by two | `TestFailedStageCanOnlyRecoverThroughRetry` | Caught; restored byte-for-byte |
-| `audit` | Ignore durable audit persistence failure during login | `TestLoginFailsClosedWhenAuditSinkFails` | Caught; restored byte-for-byte |
-| `duplicate` | Suppress follower-event repair on duplicate delivery | `TestDuplicateWorkerDeliveryRepairsLostFollowerEvent` | Caught; restored byte-for-byte |
+**VERIFIED BY EXECUTION —** GitHub Actions job `Real Chromium Creator/Pipelines
+E2E` runs the embedded production browser application against a real local
+stack on `ubuntu-latest`:
 
-The committed harness is `scripts/creator-pipeline-mutation.sh`. Each case
-requires exactly one source match, runs the focused test, requires that the
-mutated test fail, restores the saved file, compares it byte-for-byte, and
-runs a final diff check. **CI VERIFIED —** no mutation survived, and no
-mutation was classified as semantic equivalence, missing coverage, or
-architecturally impossible.
+- PostgreSQL/pgvector `pgvector/pgvector:pg16`;
+- Redis `redis:7-alpine`;
+- RabbitMQ `rabbitmq:3-alpine`;
+- the built AUSTRO API binary;
+- the built AUSTRO worker binary; and
+- real Playwright Chromium.
 
-## 2. Browser journey
+The workflow waits for both API health endpoints and for the worker's
+`worker-started` log event. It calls the real `/api/auth/bootstrap` endpoint to
+initialize the configured Founder, then provisions fresh per-run workspace and
+identity records through `cmd/browser-e2e-setup`. Credentials and identifiers
+are generated per run and masked; no existing IDs or warm state are assumed.
+The browser uses the existing login/token/refresh/logout semantics, not a fake
+browser authentication mechanism.
 
-**ENVIRONMENTALLY UNAVAILABLE —** actual browser execution could not be run in
-the available agent environment: no Chromium, Chrome, Firefox, Playwright,
-Selenium, or equivalent browser runtime is installed. No browser success is
-claimed.
+The workflow has a 45-minute bound, a bounded Chromium install, a required
+non-zero test-list guard, and no `continue-on-error`, `|| true`, or `exit 0`
+shortcuts. Playwright is configured with `screenshot: only-on-failure`,
+`trace: retain-on-failure`, and `video: retain-on-failure`. On failure the job
+uploads `test-results/`, the Playwright HTML report, and diagnostic logs as the
+`austro-browser-e2e-failure-*` artifact. Cleanup and API/worker shutdown run
+with `always()`.
 
-**CI VERIFIED — partial equivalent evidence only:** the live-stack CI suite
-exercised the HTTP/API and worker portions of the requested journey, including:
+The local agent image has no Go or Chromium runtime, so local browser execution
+was not substituted. The actual browser execution below ran in GitHub Actions.
 
-- authentication, refresh rotation, logout/revocation, and deny-by-default;
-- workspace selection and workspace isolation;
-- pipeline creation with server-owned state;
-- worker research/script progression to review and approval handoff;
-- approval, publication, completion, retry, idempotency, duplicate delivery,
-  and audit visibility/persistence;
-- static browser document, JavaScript, stylesheet, CSP, and public-surface
-  checks in `tests/webui_live_test.go`.
+## 2. Exact DOM journey
 
-**STATICALLY VERIFIED —** `internal/webui/static/app.js` contains explicit
-loading/error states, one refresh attempt followed by sign-out on an expired
-session, role-gated actions, server-authoritative pipeline state, workspace
-error handling, and logout token clearing. These are code-review findings, not
-browser execution evidence.
+**VERIFIED BY EXECUTION —** `browser-e2e/creator-pipelines.spec.js` runs one
+real Chromium test and completed on the final implementation HEAD. The
+rendered journey is:
 
-**CI VERIFIED —** HTTP tests cover the corresponding permission, error,
-refresh/logout, and cross-workspace responses. **ENVIRONMENTALLY UNAVAILABLE —**
-CI has no real browser job and therefore does not prove DOM event execution,
-rendered loading/error transitions, or the complete browser journey as a user
-would perform it. This limitation prevents `COMPLETE` status under the stated
-acceptance criteria.
+1. Founder opens the login view, submits a wrong password, and sees the real
+   rendered validation/authentication error.
+2. Founder logs in with the configured credentials, sees the dashboard identity
+   and both freshly-created workspaces, then logs out; session storage is
+   cleared.
+3. Founder logs in again without a workspace binding, refreshes Pipelines, and
+   sees the rendered authorization-denied message (`Pipelines require a
+   workspace identity.`).
+4. Workspace admin signs in to workspace A and sees the real Creator/Pipeline
+   empty state and loading transition.
+5. The admin submits the Creator/Pipeline create control. The UI shows the
+   success message and one rendered pipeline row. There is no stage/status
+   input or arbitrary lifecycle control.
+6. Bounded polling observes the real worker-owned states in the rendered table:
+   `research`, then `script`, then `review` with `awaiting_approval`, including
+   research/script/review artifacts. This crosses the real API, RabbitMQ,
+   worker, PostgreSQL, and orchestration state machine.
+7. Workspace member A sees the review state but no Approve/Publish/Complete
+   control. A same-origin browser request attempting the restricted approval
+   command receives HTTP 403.
+8. Workspace-admin B authenticates in workspace B and sees an empty pipeline
+   view. Browser requests for workspace A's pipeline receive HTTP 404 for both
+   read and approval attempts.
+9. A browser request attempting to create a pipeline with client-controlled
+   `stage: publish` and `status: done` receives HTTP 400. A bounded rendered
+   refresh proves the original pipeline remains at review/awaiting approval.
+10. Admin A sees exactly the supported `Approve` control; unsupported direct
+    publish/complete controls and client state controls are absent.
+11. The actual API process is stopped. The rendered admin UI exercises its real
+    server-error path and shows the connection/load failure message. The API is
+    started again and readiness is polled before continuing.
+12. Admin approves through the rendered `Approve` button. The worker/publishing
+    boundary advances the persisted pipeline through approval, publication, and
+    completion. The UI observes `complete`/`done`, publication artifact state,
+    and rendered `published` publication state. No browser-side status mutation
+    is used.
+13. A second browser logs in, replaces its bearer material with stale access and
+    refresh values, refreshes Pipelines, and is returned to the rendered login
+    view after the real 401/failed-refresh path.
+14. Founder logs in, filters the rendered organization audit view for
+    `pipeline.advance`, sees persisted audit rows, and verifies the rendered
+    hash-chain result (`Chain intact:`).
+15. Founder logs out through the real revocation endpoint. Both session values
+    are cleared; reusing the saved refresh token receives HTTP 401, and reload
+    returns to the login view.
 
-## 3. Independent security signal
+## 3. Rendered state and security coverage
 
-**CI VERIFIED —** run `35024934390` completed the independent security job:
+**VERIFIED BY EXECUTION —** the browser test covers the required UI states:
 
-- `gosec` v2.22.8: no high or critical findings;
-- `govulncheck` v1.1.4: passed;
-- `staticcheck` 2026.1: passed.
+| State | Rendered evidence |
+|---|---|
+| Loading | pipeline-loading is observed during the initial admin load and each bounded refresh |
+| Success | pipeline-created, approval, completion, publication, audit rows, and chain verification messages |
+| Empty | isolated workspace A before creation and workspace B after cross-workspace isolation |
+| Validation error | required publication title submission exposes the browser validation message |
+| Authorization denied | workspace-less Founder sees the real rendered 403 message; member has no restricted control and a real approval request gets 403 |
+| Server error | stopped API produces the real UI connection/load failure state, then the stack is restored |
+| Session expiry | stale bearer/refresh values cause the real refresh failure and rendered return to login |
 
-**VERIFIED BY EXECUTION —** the security job fails on high/critical gosec
-findings, fails on govulncheck findings, preserves scanner output, and does
-not suppress staticcheck diagnostics. The prior incompatible staticcheck
-version and its `SA1019` finding were corrected before the successful runs.
+Security scenarios include unauthorized restricted action, cross-workspace
+read/action denial, stale and invalid session handling, local logout plus
+server refresh-token invalidation, rejection of client-controlled pipeline
+stage/status, and absence of unsupported actions. The negative API probes are
+same-origin `fetch` calls from the real authenticated browser contexts; they do
+not mock responses. Positive operations and all state assertions use rendered
+controls and DOM state.
 
-**CI VERIFIED —** live security tests also covered RLS policy/runtime-role
-constraints, audit persistence and tamper detection, secret redaction,
-workspace isolation, route parity, authentication, and public WebUI surface
-non-disclosure. **STATICALLY VERIFIED —** no `SET row_security=off`, arbitrary
-client-controlled pipeline state, approval bypass, or client-controlled worker
-completion path was found in the reviewed implementation.
+## 4. Mutation proof
 
-**CI VERIFIED —** no unresolved critical or high application/security finding
-was reported by the executed tools. **CONFIGURATION REQUIRED —** a separate
-Semgrep/secret-scanning job was not added because the independent Go tooling
-and live security suites supplied the available signal; adding an additional
-organization-approved scanner would be a follow-up configuration task, not a
-claim of completion here.
+**VERIFIED BY EXECUTION —** the workflow runs the unmutated browser journey
+first. `scripts/browser-e2e-mutation.sh` then makes one temporary UI
+authorization mutation in `internal/webui/static/app.js`, changing the
+workspace-member approval visibility guard. It creates a fresh fixture, rebuilds
+and starts the real API, runs the same required Chromium test, and requires that
+the mutated test fail. It then restores the exact source byte-for-byte,
+rebuilds the API, and prepares a fresh fixture before returning success.
+
+**CI VERIFIED —** the mutation step succeeded in final browser runs, so the
+member approval authorization assertion was caught by the browser test. The
+independent Creator/Pipelines matrix also caught and restored the route, RBAC,
+duplicate, audit, retry, worker acknowledgment, workspace, approval,
+transition, and client-state mutations.
+
+## 5. CI execution evidence
+
+**CI VERIFIED —** on implementation HEAD `8d3e0afbe60fb5f8474316041f7c30b24cdfc2d2`:
+
+- Browser push run `35126868345`: success. Real Chromium setup, API/worker
+  readiness, founder bootstrap, isolated fixture, selector guard, DOM journey,
+  temporary authorization mutation, cleanup, and shutdown all succeeded.
+- Browser pull-request run `35126874497`: success.
+- Phase 1 run `35126874501`: success.
+- Phase 2 run `35126874498`: success. Its build/vet/unit/race job and full
+  Phase 1 + Phase 2 live regression both succeeded, including runtime RLS and
+  persistent-audit suites.
+- Independent Verification run `35126874537`: success. The independent Go
+  security tooling and all ten Creator/Pipelines mutation jobs succeeded.
+- Independent push verification run `35126868330`: success.
+
+The final browser job did not merely report a zero-test success: its explicit
+Playwright selector guard passed before the DOM journey. The mutation proof
+also completed rather than being skipped.
+
+## 6. Defects found and fixes
+
+The first real browser run reached the journey but reported the Founder app as
+hidden. This was classified before changing production code: API/worker
+startup, isolated provisioning, Chromium installation, selector matching, and
+zero-test protection had passed; the failure was authenticated fixture state.
+The cause was that configured Founder credentials do not create the Founder
+implicitly—the application requires the real unauthenticated bootstrap
+endpoint. The workflow now calls that endpoint and verifies HTTP 201 before
+browser execution. No production backend logic was changed.
+
+During expansion of browser negative coverage, an added same-origin probe first
+used `/api/pipelines`; the protected application routes are `/pipelines` (only
+authentication routes carry the `/api` prefix). This was classified as a
+browser-test route defect from the 403 diagnostic and corrected without
+changing production code. A transient immediate DOM-cell assertion was also
+replaced with the existing bounded rendered-state poll. The final push and
+pull-request browser executions passed after these exact fixes.
 
 The remaining GitHub Actions Node.js 20 deprecation messages are external
-action-runtime warnings, not application security findings.
+runner-action warnings, not application failures or security findings.
 
-## 4. Independent review and resilience
+## 7. Required regression and repository gates
 
-**STATICALLY VERIFIED —** the review covered approval, publication, worker
-acknowledgement, failed delivery, retry, duplicate delivery, workspace
-isolation, authorization, audit attribution/persistence, idempotency, and
-TOCTOU/concurrency boundaries. The review found no new defect requiring a
-production-code change.
-
-**CI VERIFIED —** bounded checks cover:
-
-- concurrent budget/event behavior and race-detector execution;
-- duplicate worker delivery and lost-follower-event repair;
-- successful ACK, permanent failure handling, and failure settlement;
-- RabbitMQ reconnect and re-registration after connection loss;
-- bounded retry/backoff and explicit retry recovery;
-- API/worker live-stack startup and shutdown;
-- audit writer restart/head recovery without a second genesis or chain fork;
-- persisted audit/hash-chain verification and cross-workspace RLS isolation.
-
-**CI VERIFIED —** the full live Phase 1 + Phase 2 regression completed in
-Phase 2 run `35024934372`, including the live database schema/RLS checks,
-API/worker stack, frozen-gate check, runtime-role checks, and persistent audit
-suites.
-
-## 5. Regression, frozen gate, and repository state
-
-**CI VERIFIED —** Phase 1 Exit Criteria run `35024934295` completed successfully
-at the report HEAD. **CI VERIFIED —** Phase 2 CI run `35024934372`
-completed successfully, including the race detector and full live regression.
-**CI VERIFIED —** Creator/Pipelines Independent Verification run
-`35024934390` completed successfully.
+**CI VERIFIED —** the final implementation evidence includes Phase 1, Phase 2
+(full regression and race detector), independent security tooling, and the
+Creator/Pipelines mutation matrix listed above. The Phase 2 live run exercised
+real PostgreSQL/pgvector, Redis, RabbitMQ, API, and worker behavior; runtime
+role/RLS and persistent audit checks passed.
 
 **VERIFIED BY EXECUTION —** the frozen file
-`tests/phase1_exit_criteria_test.go` has an empty diff against baseline
-`6e2ea73c7870d1bd8f028714e58ace1c3aa56c54`. **VERIFIED BY EXECUTION —**
-`git diff --check` passed. **VERIFIED BY EXECUTION —** the branch was pushed
-without force-pushing or rewriting history.
+`tests/phase1_exit_criteria_test.go` remains byte-identical to baseline
+`6e2ea73c7870d1bd8f028714e58ace1c3aa56c54`; its requested diff is empty.
+`git diff --check` passed. Changes were committed in focused commits and pushed
+normally to `arena/01a0a5ea-austro-os`; no force push, reset, destructive
+cleanup, or history rewrite was used.
 
-**VERIFIED BY EXECUTION —** after publishing this report, the repository is
-on `arena/01a0a5ea-austro-os`, at report HEAD
-`340e56e11dd511e00c8c93dc1d85f17e1f66fefa`, with a clean working tree. The
-report publication changed documentation only; no Creator/Pipelines production
-implementation changed.
+## 8. Limitations and disposition
 
-## 6. Limitations and disposition
+- Local execution of Go/Chromium was unavailable in the agent image; this is
+  explicitly not used to weaken the result because real GitHub Chromium runs
+  completed.
+- The test uses the configured stub AI/publishing adapters in CI so the
+  workflow is deterministic, but it still crosses the real HTTP, database,
+  queue, worker, approval, publishing, completion, and audit boundaries. It
+  does not mock the critical browser journey or replace the worker state
+  machine.
+- Screenshots, traces, and videos are failure artifacts by design; successful
+  runs do not manufacture them. The workflow retains the diagnostic report and
+  logs when a run fails.
 
-- **ENVIRONMENTALLY UNAVAILABLE —** no actual browser runtime was available;
-  no browser journey result is being fabricated.
-- **CI VERIFIED —** live HTTP/API/worker evidence is substantial and covers the
-  server-side equivalents, but it is not a real browser execution record.
-- **CONFIGURATION REQUIRED —** provide a browser-capable runner (or an
-  organization-approved equivalent browser CI job) and execute the complete
-  login → dashboard → workspace → Creator/Pipeline → create → status → review
-  → approval → publish → completion → audit → logout journey, including the
-  required loading/error/permission/session-expiry/cross-workspace checks.
-
-**Final status: INCOMPLETE — browser evidence unavailable.** All other listed
-verification gates are green; the status must not be upgraded to `COMPLETE`
-until the browser criterion is satisfied or the acceptance owner explicitly
-accepts a conclusively unavailable browser infrastructure result with equivalent
-CI evidence.
+**Final status: COMPLETE — real browser end-to-end verification passed, the
+required browser mutation was caught, and the required regression/security
+matrix is green.**
