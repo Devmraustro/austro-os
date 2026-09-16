@@ -151,6 +151,44 @@ jobs:
           go run ./cmd/browser-e2e-setup
           cat "$BROWSER_E2E_ENV_FILE" >> "$GITHUB_ENV"
 
+      - name: Verify real browser identity can authenticate
+        shell: bash
+        run: |
+          set -euo pipefail
+          login_body=$(mktemp)
+          login_status=$(curl --silent --show-error --output "$login_body" --write-out '%{http_code}' \
+            --header 'Content-Type: application/json' \
+            --data "{\"username\":\"$BROWSER_E2E_FOUNDER_USERNAME\",\"password\":\"$BROWSER_E2E_FOUNDER_PASSWORD\"}" \
+            http://127.0.0.1:8080/api/auth/login)
+          if [ "$login_status" != 200 ]; then
+            echo "real browser identity login returned HTTP $login_status"
+            cat "$login_body"
+            tail -n 160 /tmp/austro-api.log
+            exit 1
+          fi
+          access_token=$(python3 - "$login_body" <<'PY'
+          import json
+          import sys
+          with open(sys.argv[1], encoding='utf-8') as f:
+              body = json.load(f)
+          token = body.get('access_token', '')
+          if not token:
+              raise SystemExit('login response did not contain an access token')
+          print(token)
+          PY
+          )
+          me_status=$(curl --silent --show-error --output /tmp/browser-e2e-me.json --write-out '%{http_code}' \
+            --header "Authorization: Bearer $access_token" \
+            http://127.0.0.1:8080/api/me)
+          if [ "$me_status" != 200 ]; then
+            echo "real browser identity profile returned HTTP $me_status"
+            cat /tmp/browser-e2e-me.json
+            tail -n 160 /tmp/austro-api.log
+            exit 1
+          fi
+          rm -f "$login_body" /tmp/browser-e2e-me.json
+          echo "real browser identity authentication and profile lookup are ready"
+
       - name: Install headless Chromium and system dependencies
         working-directory: browser-e2e
         run: timeout 900 npm exec playwright -- install --with-deps chromium
