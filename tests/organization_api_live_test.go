@@ -373,13 +373,20 @@ func TestAIEmployeeLiveJourney(t *testing.T) {
 			`{"current_task_id":""}`, tokens.adminA)
 		require.Equal(t, http.StatusOK, status, "clear task must succeed: %s", body)
 		t.Logf("clear task response: %s", string(body))
-		require.NoError(t, json.Unmarshal(body, &got))
-		if got.CurrentTaskID != "" {
+		var cleared aiEmployeeLive
+		require.NoError(t, json.Unmarshal(body, &cleared))
+		if cleared.CurrentTaskID != "" {
 			// Try to get fresh via GET to see if DB cleared
 			status2, body2 := authJSONRaw(t, http.MethodGet, "/ai-employees/"+created.ID, "", tokens.adminA)
 			t.Logf("after clear GET status %d body %s", status2, string(body2))
 		}
-		require.Empty(t, got.CurrentTaskID, "clear task response should be empty but got %s, full body %s", got.CurrentTaskID, string(body))
+		require.Empty(t, cleared.CurrentTaskID, "clear task response should be empty but got %s, full body %s", cleared.CurrentTaskID, string(body))
+		// also verify GET after clear has no task
+		status, body = authJSONRaw(t, http.MethodGet, "/ai-employees/"+created.ID, "", tokens.adminA)
+		require.Equal(t, http.StatusOK, status)
+		var after aiEmployeeLive
+		require.NoError(t, json.Unmarshal(body, &after))
+		require.Empty(t, after.CurrentTaskID, "GET after clear should have empty current_task_id")
 	})
 
 	t.Run("member read-only", func(t *testing.T) {
