@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-16 (Europe/London)
 **Branch:** `arena/01a0a5ea-austro-os`
-**Implementation evidence HEAD:** `8d3e0afbe60fb5f8474316041f7c30b24cdfc2d2`
+**Implementation evidence HEAD:** `d6b7b1c611603771384587e43db2c572fed8cb48`
 **Final status:** `COMPLETE`
 
 This report records the real browser verification requested for the existing
@@ -140,19 +140,19 @@ transition, and client-state mutations.
 
 ## 5. CI execution evidence
 
-**CI VERIFIED —** on implementation HEAD `8d3e0afbe60fb5f8474316041f7c30b24cdfc2d2`:
+**CI VERIFIED —** on implementation HEAD `d6b7b1c611603771384587e43db2c572fed8cb48`:
 
-- Browser push run `35126868345`: success. Real Chromium setup, API/worker
+- Browser push run `35127362309`: success. Real Chromium setup, API/worker
   readiness, founder bootstrap, isolated fixture, selector guard, DOM journey,
   temporary authorization mutation, cleanup, and shutdown all succeeded.
-- Browser pull-request run `35126874497`: success.
-- Phase 1 run `35126874501`: success.
-- Phase 2 run `35126874498`: success. Its build/vet/unit/race job and full
-  Phase 1 + Phase 2 live regression both succeeded, including runtime RLS and
-  persistent-audit suites.
-- Independent Verification run `35126874537`: success. The independent Go
+- Browser pull-request run `35127367147`: success.
+- Phase 1 run `35127367127`: success.
+- Phase 2 run `35127367144`: success. Its build/vet/unit/race job and full
+  Phase 1 + Phase 2 live regression (job `104900246058`) both succeeded,
+  including runtime RLS and persistent-audit suites.
+- Independent Verification run `35127367117`: success. The independent Go
   security tooling and all ten Creator/Pipelines mutation jobs succeeded.
-- Independent push verification run `35126868330`: success.
+- Independent push verification run `35127362279`: success.
 
 The final browser job did not merely report a zero-test success: its explicit
 Playwright selector guard passed before the DOM journey. The mutation proof
