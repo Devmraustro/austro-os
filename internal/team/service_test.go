@@ -45,14 +45,20 @@ func (f *fakeStore) Delete(ctx context.Context, workspaceID, id uuid.UUID) error
 }
 
 func TestTeamCreateRequiresDepartment(t *testing.T) {
-	store := &fakeStore{}
-	svc := NewService(store, &fakeDeptResolver{shouldFail: false})
-	ws := uuid.New()
-	dept := uuid.New()
-	_, err := svc.Create(context.Background(), ws, uuid.Nil, "team")
+	// Domain-level check: Team must have a department
+	_, err := New(uuid.Nil, uuid.New(), "team")
 	require.Error(t, err, "team without department must be rejected")
 	require.ErrorIs(t, err, ErrInvalidInput)
 
+	// Service-level check also rejects
+	store := &fakeStore{}
+	svc := NewService(store, &fakeDeptResolver{shouldFail: false})
+	ws := uuid.New()
+	_, err = svc.Create(context.Background(), ws, uuid.Nil, "team")
+	require.Error(t, err, "team without department must be rejected")
+	require.ErrorIs(t, err, ErrInvalidInput)
+
+	dept := uuid.New()
 	_, err = svc.Create(context.Background(), uuid.Nil, dept, "team")
 	require.Error(t, err, "team without workspace must be rejected")
 }

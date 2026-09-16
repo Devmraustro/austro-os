@@ -58,3 +58,16 @@ func TestDepartmentUpdateRequiresName(t *testing.T) {
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrInvalidInput)
 }
+
+func TestDepartmentCreateRejectsTooLongName(t *testing.T) {
+	store := &fakeStore{}
+	svc := NewService(store)
+	ws := uuid.New()
+	long := ""
+	for i := 0; i < 101; i++ {
+		long += "a"
+	}
+	_, err := svc.Create(context.Background(), ws, long)
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrInvalidInput)
+}

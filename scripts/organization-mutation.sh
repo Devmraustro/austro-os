@@ -66,18 +66,18 @@ run_rbac() {
 run_team_without_dept() {
   mutate_and_expect_failure \
     "allow Team without Department - nil department check removed" \
-    internal/team/service.go \
-    'if workspaceID == uuid.Nil || departmentID == uuid.Nil {' \
-    'if workspaceID == uuid.Nil && departmentID == uuid.Nil {' \
+    internal/team/team.go \
+    'if departmentID == uuid.Nil {' \
+    'if false {' \
     go test ./internal/team -run '^TestTeamCreateRequiresDepartment$' -count=1
 }
 
 run_employee_without_team() {
   mutate_and_expect_failure \
     "allow AI Employee without Team - nil team check removed" \
-    internal/aiemployee/service.go \
-    'if workspaceID == uuid.Nil || teamID == uuid.Nil {' \
-    'if workspaceID == uuid.Nil && teamID == uuid.Nil {' \
+    internal/aiemployee/aiemployee.go \
+    'if teamID == uuid.Nil {' \
+    'if false {' \
     go test ./internal/aiemployee -run '^TestAIEmployeeCreateRequiresTeam$' -count=1
 }
 
@@ -110,11 +110,11 @@ run_unauthorized_move() {
 
 run_bypass_uniqueness() {
   mutate_and_expect_failure \
-    "bypass uniqueness - department blank name allowed" \
+    "bypass uniqueness - department name too long allowed" \
     internal/department/service.go \
-    $'func (svc *Service) Create(ctx context.Context, workspaceID uuid.UUID, name string) (*Department, error) {\n\tname = strings.TrimSpace(name)\n\tif name == "" {' \
-    $'func (svc *Service) Create(ctx context.Context, workspaceID uuid.UUID, name string) (*Department, error) {\n\tname = strings.TrimSpace(name)\n\tif false {' \
-    go test ./internal/department -run '^TestDepartmentCreateRequiresName$' -count=1
+    $'func (svc *Service) Create(ctx context.Context, workspaceID uuid.UUID, name string) (*Department, error) {\n\tname = strings.TrimSpace(name)\n\tif name == "" {\n\t\treturn nil, ErrInvalidInput\n\t}\n\tif utf8.RuneCountInString(name) > NameMaxRunes {' \
+    $'func (svc *Service) Create(ctx context.Context, workspaceID uuid.UUID, name string) (*Department, error) {\n\tname = strings.TrimSpace(name)\n\tif name == "" {\n\t\treturn nil, ErrInvalidInput\n\t}\n\tif false {' \
+    go test ./internal/department -run '^TestDepartmentCreateRejectsTooLongName$' -count=1
 }
 
 run_remove_audit() {

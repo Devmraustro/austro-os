@@ -45,10 +45,16 @@ func (f *fakeStore) Delete(ctx context.Context, workspaceID, id uuid.UUID) error
 }
 
 func TestAIEmployeeCreateRequiresTeam(t *testing.T) {
+	// Domain-level check
+	_, err := New(uuid.Nil, uuid.New(), uuid.New(), "emp", "role")
+	require.Error(t, err, "employee without team must be rejected")
+	require.ErrorIs(t, err, ErrInvalidInput)
+
+	// Service-level check
 	store := &fakeStore{}
 	svc := NewService(store, &fakeTeamResolver{})
 	ws := uuid.New()
-	_, err := svc.Create(context.Background(), ws, uuid.Nil, "emp", "role", nil)
+	_, err = svc.Create(context.Background(), ws, uuid.Nil, "emp", "role", nil)
 	require.Error(t, err, "employee without team must be rejected")
 	require.ErrorIs(t, err, ErrInvalidInput)
 
