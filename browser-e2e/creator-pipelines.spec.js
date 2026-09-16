@@ -333,7 +333,9 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
     });
     console.log('BROWSER_STEP client-state-mutation-denied', JSON.stringify({ status: forgedState.status }));
     expect(forgedState.status, `forged pipeline state response: ${JSON.stringify(forgedState)}`).toBe(400);
-    await expect(adminPage.locator('#pipeline-body-rows')).toContainText('review awaiting_approval');
+    const currentPipelineRow = adminPage.locator('#pipeline-body-rows tr');
+    await expect(currentPipelineRow.locator('td').nth(0)).toHaveText('review');
+    await expect(currentPipelineRow.locator('td').nth(1)).toHaveText('awaiting_approval');
 
     // UI SERVER-ERROR STATE. Stop the actual API, use the already-rendered
     // authenticated page, and exercise its real failed fetch path. Always
