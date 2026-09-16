@@ -260,7 +260,20 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x scripts/browser-e2e-mutation.sh
-          scripts/browser-e2e-mutation.sh
+          set +e
+          scripts/browser-e2e-mutation.sh > /tmp/browser-e2e-mutation.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/browser-e2e-mutation.log
+          if [ "$status" -ne 0 ]; then
+            failure_line=$(grep -E 'RESTORE|MUTATION|CAUGHT|SURVIVED|FAILED|error|Error|FAIL|fail|did not|missing|cannot|expected|received|BROWSER_STEP' /tmp/browser-e2e-mutation.log | grep -vE '^[[:space:]]*[0-9]+ (passed|failed)' | tail -n 8 | tr '\\n' ' ' | cut -c 1-900)
+            if [ -n "$failure_line" ]; then
+              echo "::error title=Browser authorization mutation failure::$failure_line"
+            else
+              echo "::error title=Browser authorization mutation failure::script exited with status $status; see the uploaded mutation log"
+            fi
+          fi
+          exit "$status"
 
       - name: Publish fresh browser E2E data identifiers
         run: |
@@ -276,6 +289,7 @@ jobs:
             browser-e2e/test-results/
             browser-e2e/playwright-report/
             /tmp/browser-e2e.log
+            /tmp/browser-e2e-mutation.log
             /tmp/browser-e2e-test-list.log
           if-no-files-found: warn
 
