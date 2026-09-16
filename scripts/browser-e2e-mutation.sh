@@ -55,6 +55,8 @@ start_api() {
 restore() {
   echo "restoring browser authorization source"
   cp -- "$backup" "$file"
+  sync
+  sleep 1
   if ! cmp -s -- "$backup" "$file"; then
     echo "browser mutation restore failed"
     exit 1
@@ -64,14 +66,20 @@ restore() {
     git diff -- "$file"
     exit 1
   fi
+  if grep -q "workspace_member" "$file"; then
+    echo "RESTORE_FILE_CHECK_FAILED: restored source still contains mutated string"
+    exit 1
+  fi
   echo "RESTORE_SOURCE_PASS: browser authorization source matches HEAD"
   stop_api
   rm -f /tmp/austro-api
+  echo "building restored API (bounded)"
   go build -o /tmp/austro-api .
   if [ ! -x /tmp/austro-api ]; then
     echo "RESTORE_BUILD_FAILED: API binary not created"
     exit 1
   fi
+  echo "RESTORE_BUILD_PASS: binary created, size $(stat -c%s /tmp/austro-api 2>/dev/null || wc -c < /tmp/austro-api)"
   start_api
   echo "RESTORE_API_PASS: API rebuilt from restored source and ready"
   rm -f -- "$backup"
@@ -91,13 +99,33 @@ if text.count(old) != 1:
 path.write_text(text.replace(old, new, 1))
 PY
 
+# Ensure file system sync after mutation
+sync
+sleep 1
+
+if ! grep -q "workspace_member" "$file"; then
+  echo "MUTATION_FILE_CHECK_FAILED: mutated source does not contain expected string after write"
+  exit 1
+fi
+echo "MUTATED_SOURCE_PASS: mutation applied to $file"
+
 echo "preparing fresh fixture for the temporarily mutated browser test"
 stop_api
+if [ ! -f "$BROWSER_E2E_ENV_FILE" ]; then
+  echo "ENV_FILE_MISSING_BEFORE_CLEANUP: $BROWSER_E2E_ENV_FILE not found"
+  ls -lh "$BROWSER_E2E_ENV_FILE" || true
+  echo "contents of RUNNER_TEMP:"
+  ls -lh "$RUNNER_TEMP" | head -20 || true
+fi
+echo "running cleanup with env file $BROWSER_E2E_ENV_FILE"
 AUSTRO_POSTGRES_DSN="$AUSTRO_POSTGRES_DSN" go run ./cmd/browser-e2e-setup -mode=cleanup
+echo "cleanup done, running setup"
 AUSTRO_POSTGRES_DSN="$AUSTRO_POSTGRES_DSN" go run ./cmd/browser-e2e-setup
+echo "setup done, sourcing env"
 set -a
 . "$BROWSER_E2E_ENV_FILE"
 set +a
+echo "env sourced, workspace A: $BROWSER_E2E_WORKSPACE_A"
 
 echo "building and starting temporarily mutated API"
 rm -f /tmp/austro-api
@@ -106,12 +134,9 @@ if [ ! -x /tmp/austro-api ]; then
   echo "MUTATED_BUILD_FAILED: API binary not created"
   exit 1
 fi
-if ! grep -q "workspace_member" "$file"; then
-  echo "MUTATION_FILE_CHECK_FAILED: mutated source does not contain expected string"
-  exit 1
-fi
-echo "MUTATED_SOURCE_PASS: mutation applied"
+echo "MUTATED_BUILD_PASS: binary created, size $(stat -c%s /tmp/austro-api 2>/dev/null || wc -c < /tmp/austro-api)"
 start_api
+echo "MUTATED_API_PASS: mutated API ready"
 
 echo "running browser test; failure is required for this mutation"
 set +e
@@ -129,7 +154,17 @@ echo "CAUGHT: browser unauthorized approval-control mutation"
 # fresh isolated dataset for the non-mutated browser journey.
 trap - EXIT
 restore
+echo "restore completed, preparing fresh fixture for restored journey"
+if [ ! -f "$BROWSER_E2E_ENV_FILE" ]; then
+  echo "ENV_FILE_MISSING_BEFORE_FINAL_CLEANUP: $BROWSER_E2E_ENV_FILE"
+fi
 AUSTRO_POSTGRES_DSN="$AUSTRO_POSTGRES_DSN" go run ./cmd/browser-e2e-setup -mode=cleanup
+echo "final cleanup done"
 AUSTRO_POSTGRES_DSN="$AUSTRO_POSTGRES_DSN" go run ./cmd/browser-e2e-setup
-
+echo "final setup done"
+if [ ! -f "$BROWSER_E2E_ENV_FILE" ]; then
+  echo "ENV_FILE_MISSING_AFTER_FINAL_SETUP"
+  exit 1
+fi
+cat "$BROWSER_E2E_ENV_FILE"
 echo "MUTATION_SUITE_PASS: browser authorization mutation was caught and restored"
