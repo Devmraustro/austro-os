@@ -276,6 +276,8 @@ jobs:
             browser-e2e/test-results/
             browser-e2e/playwright-report/
             /tmp/browser-e2e.log
+            /tmp/browser-e2e-mutation.log
+            /tmp/browser-e2e-restored.log
             /tmp/browser-e2e-test-list.log
           if-no-files-found: warn
 
