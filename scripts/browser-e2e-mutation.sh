@@ -5,7 +5,7 @@
 # rebuilt from the restored source before the script returns.
 set -euo pipefail
 
-repo=$(CDPATH= cd -- "$(dirname -- "$0")/.. && pwd)
+repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repo"
 
 file=internal/webui/static/app.js
