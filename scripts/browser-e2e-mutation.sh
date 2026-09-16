@@ -59,9 +59,16 @@ restore() {
     echo "browser mutation restore failed"
     exit 1
   fi
+  if ! git diff --quiet -- "$file"; then
+    echo "browser mutation left a tracked source diff after restore"
+    git diff -- "$file"
+    exit 1
+  fi
+  echo "RESTORE_SOURCE_PASS: browser authorization source matches HEAD"
   stop_api
-  go build -o /tmp/austro-api .
+  go build -a -o /tmp/austro-api .
   start_api
+  echo "RESTORE_API_PASS: API rebuilt from restored source and ready"
   rm -f -- "$backup"
 }
 trap restore EXIT
