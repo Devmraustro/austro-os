@@ -31,6 +31,9 @@ func (svc *Service) Create(ctx context.Context, workspaceID uuid.UUID, name stri
 	if utf8.RuneCountInString(name) > NameMaxRunes {
 		return nil, ErrInvalidInput
 	}
+	if workspaceID == uuid.Nil {
+		return nil, ErrInvalidInput
+	}
 	d, err := New(workspaceID, name)
 	if err != nil {
 		return nil, err

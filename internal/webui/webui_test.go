@@ -217,6 +217,14 @@ func TestOpeningThePageIsNotASideEffect(t *testing.T) {
 		// Creator: start is the explicit form; approve/retry are row actions.
 		`"/pipelines"`:  true,
 		`"/pipelines/"`: true,
+		// Organization hierarchy: Departments → Teams → AI Employees.
+		// Create forms and edit/delete row actions, same concatenation reasoning.
+		`"/departments"`:   true,
+		`"/departments/"`:  true,
+		`"/teams"`:         true,
+		`"/teams/"`:        true,
+		`"/ai-employees"`:  true,
+		`"/ai-employees/"`: true,
 	}
 	re := regexp.MustCompile(`(?:request|authenticated)\(\s*"(POST|PUT|PATCH|DELETE)"\s*,\s*("[^"]*")`)
 	seen := map[string]int{}
