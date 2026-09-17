@@ -345,3 +345,95 @@ func TestTaskLiveInputValidation(t *testing.T) {
 		require.LessOrEqual(t, len(page.Tasks), page.Limit)
 	})
 }
+
+// TestTaskLiveClientSuppliedWorkspaceIsIgnored proves the create path takes the
+// workspace from the verified token and never from the request.
+//
+// The listing path already refuses a workspace_id query parameter (it is one of
+// the cases in TestTaskLiveInputValidation). This covers the write vector, which
+// is the one that could actually place a row inside another tenant.
+//
+// The value is a well-formed uuid, so the refusal is a policy decision rather
+// than a parse failure -- a malformed id would prove only that the decoder
+// rejects nonsense.
+func TestTaskLiveClientSuppliedWorkspaceIsIgnored(t *testing.T) {
+	tokens := auditWorkspaceTokens(t)
+	title := "cross-tenant-" + uuid.NewString()[:8]
+
+	status, body := authJSONRaw(t, http.MethodPost, "/tasks",
+		fmt.Sprintf(`{"title":%q,"workspace_id":%q}`, title, uuid.NewString()),
+		tokens.memberA)
+	require.True(t, status >= 400 && status < 500,
+		"a client-supplied workspace must be refused with a client error, got %d: %s",
+		status, body)
+
+	// The refusal must also be real: nothing was written under the caller's own
+	// workspace either, so a rejected request cannot leave a stray row behind.
+	status, body = authJSONRaw(t, http.MethodGet, "/tasks?limit=200", "", tokens.memberA)
+	require.Equal(t, http.StatusOK, status, body)
+	var page taskPageLive
+	require.NoError(t, json.Unmarshal(body, &page))
+	for _, existing := range page.Tasks {
+		require.NotEqual(t, title, existing.Title,
+			"a refused create must not have written a task")
+	}
+}
+
+// TestTaskLiveFailedMutationIsNotAuditedAsSuccess pins the fail-closed half of
+// the audit contract.
+//
+// A refused write must leave a record saying it was refused, and must not add a
+// success row for a change that never happened. That distinction is the whole
+// value of the trail: an audit log that records intent as achievement is worse
+// than no log at all, because it is believed. The existing journey test proves a
+// successful mutation is audited; this proves the other direction, which a
+// success-only reading of the same table cannot detect.
+func TestTaskLiveFailedMutationIsNotAuditedAsSuccess(t *testing.T) {
+	tokens := auditWorkspaceTokens(t)
+	founder := auditFounderToken(t)
+
+	task := createTaskLive(t, tokens.memberA, "refused-"+uuid.NewString()[:8])
+
+	successBefore := countTaskTransitionAudits(t, founder, "success")
+	failedBefore := countTaskTransitionAudits(t, founder, "failed")
+
+	// backlog -> completed skips three lifecycle stages. The domain refuses it,
+	// and the handler classifies the refusal as the client's mistake.
+	status, body := authJSONRaw(t, http.MethodPost, "/tasks/"+task.ID+"/transition",
+		`{"status":"completed"}`, tokens.memberA)
+	require.Equal(t, http.StatusBadRequest, status,
+		"a shortcut through the lifecycle must be refused: %s", body)
+
+	// Guard against the assertion below going blind rather than passing: a full
+	// page cannot show a delta.
+	require.Less(t, successBefore, 200,
+		"the audit page is saturated, so this test can no longer observe a change")
+
+	require.Equal(t, successBefore, countTaskTransitionAudits(t, founder, "success"),
+		"a refused transition must not add a success audit row")
+	require.Equal(t, failedBefore+1, countTaskTransitionAudits(t, founder, "failed"),
+		"the refusal itself must be recorded, so the omission is visible in the trail")
+
+	// The stored task is the fact a misleading success row would have denied.
+	status, body = authJSONRaw(t, http.MethodGet, "/tasks/"+task.ID, "", tokens.memberA)
+	require.Equal(t, http.StatusOK, status, body)
+	var after taskLive
+	require.NoError(t, json.Unmarshal(body, &after))
+	require.Equal(t, "backlog", after.Status,
+		"a refused transition must leave the stored status alone")
+	require.ElementsMatch(t, []string{"planned", "cancelled", "failed"}, after.Transitions,
+		"the refused destination must not become an offered move")
+}
+
+// countTaskTransitionAudits counts task.transition rows carrying one outcome. It
+// reads through the founder because only a founder may read the organization-wide
+// trail. Callers compare successive counts, so pre-existing rows cancel out.
+func countTaskTransitionAudits(t *testing.T, token, outcome string) int {
+	t.Helper()
+	status, body := authJSONRaw(t, http.MethodGet,
+		"/audit/events?event_type=task.transition&outcome="+outcome+"&limit=200", "", token)
+	require.Equal(t, http.StatusOK, status, "the audit read must succeed: %s", body)
+	var page auditPage
+	require.NoError(t, json.Unmarshal(body, &page))
+	return len(page.Events)
+}
