@@ -282,38 +282,18 @@ jobs:
           echo "PASS: compose refuses to resolve without AUSTRO_JWT_SECRET"
 
   # ---------------------------------------------------------------------------
-  # Security scanning. Complements, and does not replace, the Phase 2 gates.
+  # Security scanning: NOT DUPLICATED HERE.
   # ---------------------------------------------------------------------------
-  security-scan:
-    name: Security scanning (gosec, govulncheck)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.25.13"
-          cache: true
-
-      - name: Run govulncheck
-        # Reports vulnerabilities that are actually reachable from this code, so
-        # a finding is actionable rather than a list of everything in the graph.
-        run: |
-          set -euo pipefail
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          "$(go env GOPATH)/bin/govulncheck" ./...
-
-      - name: Run gosec
-        # High severity AND high confidence only. A scanner that reports style
-        # gets switched off; a scanner that reports real defects gets read.
-        run: |
-          set -euo pipefail
-          go install github.com/securego/gosec/v2/cmd/gosec@latest
-          "$(go env GOPATH)/bin/gosec" -severity=high -confidence=high -quiet ./...
+  # gosec, govulncheck and staticcheck are already run on every pull request by
+  # .github/workflows/creator-pipeline-verification.yml ("Independent Go security
+  # tooling"), with pinned tool versions and a high/critical severity policy that
+  # fails the job. That gate passes on this change.
+  #
+  # An earlier revision of this workflow re-ran govulncheck and gosec in a
+  # separate job. It was removed: it duplicated an existing, working gate, added
+  # no coverage, and its first run failed for reasons the pinned invocation does
+  # not hit. Duplicating a security scanner is not the same as adding a security
+  # control.
 
   # ---------------------------------------------------------------------------
   # The real stack, brought up the way production brings it up.

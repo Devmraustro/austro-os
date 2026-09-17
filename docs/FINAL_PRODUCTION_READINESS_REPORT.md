@@ -8,12 +8,18 @@
 **Verdict: READY FOR A CONTROLLED DEPLOYMENT EXERCISE — NOT DEPLOYED, NOT
 PROVEN END TO END.**
 
-The deployment layer is complete, internally consistent and statically
-verified. It has **not** been run. No container was started, no database was
-migrated, no TLS handshake was performed, and no restore was exercised, because
-the environment this work was authored in has no Docker daemon and no Go
-toolchain (both recorded as `BLOCKED` below). Every claim in this report is
-marked with what actually backs it.
+The deployment layer is complete and statically verified, and CI has now
+independently confirmed the parts the authoring environment could not: the image
+**builds** and is non-root, and `docker compose` **accepts** the topology with its
+security properties asserted against the resolved configuration. CI also found
+and fixed a real bug that broke the default deployment path (§8, Finding 1).
+
+It has still **not been run as a deployment**: no production target was reached,
+no TLS handshake was performed, and no restore has been exercised. The
+authoring environment has no Docker daemon and no Go toolchain, so anything that
+requires them is marked `BLOCKED` locally and, where it has since executed in
+CI, is marked as CI evidence rather than as a local pass. Every claim in this
+report is marked with what actually backs it.
 
 Vocabulary used throughout: `PASS`, `VERIFIED`, `BLOCKED`, `FAIL`,
 `CONFIGURATION REQUIRED`, `NOT TESTED`, `NOT SUPPORTED`.
@@ -65,7 +71,7 @@ Everything in this section was executed in the authoring environment.
 
 | Verification | Result | Evidence |
 |---|---|---|
-| Static deployment verification (10 sections, 150 checks) | **PASS** | `scripts/verify-production-deployment.sh` — 150 passed, 0 failed |
+| Static deployment verification (10 sections, 152 checks) | **PASS** | `scripts/verify-production-deployment.sh` — 152 passed, 0 failed |
 | Frozen gate hash | **PASS** | asserted in the same script |
 | Compose YAML structural lint | **PASS** | embedded linter, plus a **negative control** that injects faults and requires rejection |
 | CI workflow YAML structural lint | **PASS** | same linter, workflow top-level key set |
@@ -87,13 +93,12 @@ outputs were fabricated by the stub.
 
 ---
 
-## 4. What could NOT be verified here
+## 4. What could NOT be verified in the authoring environment
 
-| Verification | Result | Why |
+| Verification | Local result | Why |
 |---|---|---|
 | `go test ./...` | **BLOCKED** | No Go toolchain; no network egress to install one |
-| `go build ./...`, `go vet ./...` | **BLOCKED** | Same |
-| `gofmt -l .` | **BLOCKED** | Same |
+| `go build`, `go vet`, `gofmt` | **BLOCKED** | Same |
 | `gosec`, `govulncheck`, `staticcheck` | **BLOCKED** | Not installed; no egress |
 | `docker build` | **BLOCKED** | No Docker daemon |
 | `docker compose config -q` | **BLOCKED** | No Docker daemon |
@@ -103,14 +108,15 @@ outputs were fabricated by the stub.
 | ShellCheck | **BLOCKED** | Not installed |
 | Arm64 image build | **NOT TESTED** | Dockerfile builds `GOARCH=amd64` |
 
-Per the project's own rules, none of these are recorded as passes. They are
-wired into CI (§8) and will run on the pull request.
+Per the project's own rules, none of these were recorded as passes locally. Most
+of them have since run in CI — see §8, which is the authoritative record of what
+has actually executed.
 
-**The environment probe that produced these results:** `command -v go docker
-gosec govulncheck staticcheck gofmt shellcheck psql` all failed; `apt-get`
-could not reach `deb.debian.org`; `curl https://proxy.golang.org` returned
-`SSL_ERROR_SYSCALL`. Only git and the GitHub API were reachable, which is how
-the branch was pushed.
+**The environment probe that produced these local results:** `command -v go docker
+gosec govulncheck staticcheck gofmt shellcheck psql` all failed; `apt-get` could
+not reach `deb.debian.org`; `curl https://proxy.golang.org` returned
+`SSL_ERROR_SYSCALL`. Only git and the GitHub API were reachable, which is how the
+branch was pushed.
 
 ---
 
@@ -206,7 +212,7 @@ discover.
 
 | File | Why |
 |---|---|
-| `scripts/verify-production-deployment.sh` | The requested scripts all require Docker, so in an environment without it **nothing** could be checked. This script gives the deployment layer a real, runnable gate (150 checks) that needs neither Docker nor Go, and it includes a negative control so a pass is meaningful. CI runs it. |
+| `scripts/verify-production-deployment.sh` | The requested scripts all require Docker, so in an environment without it **nothing** could be checked. This script gives the deployment layer a real, runnable gate (152 checks) that needs neither Docker nor Go, and it includes a negative control so a pass is meaningful. CI runs it. |
 | `.github/workflows/production-deployment.yml` | The request asks that CI validate docker build, compose config, security scanning, the frozen hash and production smoke. Nothing existing covered those. It **complements** `phase2-ci.yml` (which owns gofmt/build/vet/unit/regression/RLS) rather than duplicating or replacing it. |
 
 Two variables I initially documented (`AUSTRO_PROXY_MAX_BODY_SIZE`,
@@ -217,31 +223,86 @@ that do nothing. The body limit and timeouts live in the proxy config files, and
 
 ---
 
-## 8. CI/CD status
+## 8. CI/CD status — what has actually executed
 
-`phase2-ci.yml` triggers on `pull_request: branches: [main]`, so a PR into
-`main` **does** run the existing Go gates (gofmt, build, vet, unit, full
-regression, frozen-gate hash, live RLS and runtime-role assertions, migration
-idempotency). Nothing existing was weakened or removed.
+`phase2-ci.yml` triggers on `pull_request: branches: [main]`, so this PR does run
+the existing Go gates. Nothing existing was weakened, removed or narrowed.
 
-New gates in `.github/workflows/production-deployment.yml`:
+### Results from the first CI run on PR #4
 
-| Job | Covers | Local result |
+| Job | Result | What it proves |
 |---|---|---|
-| `static-verification` | frozen hash, 150-check script, `bash -n`, shellcheck, no committed secrets, no Kubernetes/Vercel | **PASS** locally (except shellcheck: **BLOCKED**) |
-| `docker-build` | image builds; non-root at runtime; both binaries executable; healthcheck present; exec-form CMD; no compiler in the runtime image | **BLOCKED** locally |
-| `compose-config` | `docker compose config -q`; `AUSTRO_ENV=production`; only the proxy publishes ports; internal network; no privileged service; no socket mount; **negative control** that a missing secret fails the parse | **BLOCKED** locally — the un-resolved file passes the static checks |
-| `security-scan` | `govulncheck ./...`, `gosec -severity=high -confidence=high` | **BLOCKED** locally |
-| `production-smoke` | brings the real stack up with `--wait`, runs `scripts/healthcheck.sh`, asserts the API and datastores are **not** reachable from the host, asserts the API logged a verified topology | **BLOCKED** locally |
+| Static verification of the deployment layer | **PASS** | the 152-check script, the frozen hash, `bash -n`, and **shellcheck on every script** all pass on a real runner |
+| Resolve and assert the production compose configuration | **PASS** | **`docker compose config` accepts the file.** AUSTRO_ENV=production, only the reverse proxy publishes ports, `austro_internal` is internal, no privileged service, no socket mount — asserted against the **resolved** configuration, and the negative control (a missing secret must fail the parse) behaved correctly |
+| Build the runtime image and assert its hardening | **PASS** | the image **builds**, runs as uid 10001 (not root), both `/app/main` and `/app/worker` are present and executable, the healthcheck targets `/health/live`, CMD is exec-form, and the runtime image carries no compiler |
+| Build, Vet, and Unit Tests | **PASS** | gofmt, `go build ./...`, `go vet ./...` and the unit suites |
+| Independent Go security tooling | **PASS** | the pre-existing gate, which runs **gosec, govulncheck and staticcheck** |
+| Phase 1 Core Foundation Exit Criteria | **PASS** | the frozen gate's own suite |
+| Full Phase 1 + Phase 2 Regression | ran | the live-stack regression suite |
+| Real Chromium Creator/Pipelines E2E | ran | browser journey |
+| Production smoke | **FAIL (first run) — fixed** | see below |
+| Security scanning (gosec, govulncheck) — *added by this change* | **FAIL — job removed** | it duplicated the pre-existing security job above; see below |
 
-**Honest risk statement about the new CI jobs.** They have never been executed.
-`production-smoke`, `docker-build` and `security-scan` are the most likely to
-need a first-run fix — a compose flag, a scanner finding, a timing assumption.
-They are written to fail loudly with diagnostics rather than to pass quietly,
-but a green check on the first run should be *read*, not assumed. The smoke job
-deliberately excludes the reverse proxy, because the proxy requires
-operator-issued TLS material (`CONFIGURATION REQUIRED`) and a smoke run should
-test the application topology rather than a certificate.
+### Finding 1 — a real deployment bug, caught by CI and fixed
+
+The production smoke job failed in 5 seconds, at its very first step
+(`docker compose config -q`), while the compose-config job passed the same
+command. The difference was the environment file: the smoke job omitted the
+Caddy variables.
+
+**Root cause:** Compose interpolates the **whole** file, including services
+behind an **inactive profile**. The Caddy service declared
+`AUSTRO_PUBLIC_HOSTNAME` and `AUSTRO_ACME_EMAIL` with `:?`, so *every* command
+that merely resolved the compose file failed — including a plain nginx
+deployment that never starts the Caddy profile. `scripts/deploy.sh` would have
+hit the same wall on its validation step. **The default production deployment
+path was broken, and only a real `docker compose` invocation could have shown
+it.**
+
+**Fix:** those two variables are no longer `:?` in the compose file. The
+requirement is enforced where it actually applies — `scripts/deploy.sh` requires
+`AUSTRO_PUBLIC_HOSTNAME` for either proxy and `AUSTRO_ACME_EMAIL` when the Caddy
+profile is selected. A **regression guard** was added to
+`scripts/verify-production-deployment.sh` asserting that the profiled service
+declares no `:?` variable, and it was verified to fail when the original defect
+is re-injected.
+
+This is the clearest possible illustration of why the `BLOCKED` items were not
+written up as passes: the static checks all passed on the broken file.
+
+### Finding 2 — I added a duplicate security job, and removed it
+
+My first revision added a `security-scan` job running `govulncheck` and `gosec`.
+It failed, and on inspection the reason mattered less than the finding:
+`.github/workflows/creator-pipeline-verification.yml` **already runs gosec,
+govulncheck and staticcheck** on every pull request, with pinned tool versions
+and a high/critical policy that fails the job — and it **passed**. My job
+duplicated an existing working gate, added no coverage, and would have put a
+second, differently-configured scanner in the path. It was removed, and the
+workflow now documents where that coverage lives. Duplicating a scanner is not
+the same as adding a security control.
+
+### The workflow as shipped
+
+| Job | Covers |
+|---|---|
+| `static-verification` | frozen hash, 152-check verification script (with negative control), `bash -n`, shellcheck, no committed secrets, no Kubernetes/Vercel |
+| `docker-build` | image builds; non-root at runtime; both entrypoints executable; healthcheck target; exec-form CMD; no compiler in the runtime image |
+| `compose-config` | `docker compose config -q`; production env; port exposure; internal network; no privileged/socket; negative control on required secrets |
+| `production-smoke` | brings the real stack up with `--wait`, runs the operator's own healthcheck script, asserts the API and datastores are **not** reachable from the host, asserts the API logged a verified topology on `austro_app` |
+
+**Remaining honest caveat:** the `production-smoke` job's first run failed, its
+cause was diagnosed and fixed, and the guard was verified locally — but the
+fixed version had **not** re-run at the time this report was written. Treat its
+green state as pending confirmation. The reverse proxy is deliberately excluded
+from the smoke run because it requires operator-issued TLS material
+(`CONFIGURATION REQUIRED`).
+
+**Unrelated pre-existing failure:** the pull request also shows a failing
+`Vercel` check from an existing Vercel integration on the repository. It is not
+part of this change, and Vercel is **NOT SUPPORTED** as a production target here.
+Note that the request explicitly forbids adding Vercel as a required production
+check; this change adds none.
 
 ---
 

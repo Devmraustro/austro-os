@@ -387,9 +387,20 @@ services:
       api:
         condition: service_healthy
     environment:
-      # CONFIGURATION REQUIRED when this profile is used.
-      AUSTRO_PUBLIC_HOSTNAME: "${AUSTRO_PUBLIC_HOSTNAME:?AUSTRO_PUBLIC_HOSTNAME is required when the caddy profile is used}"
-      AUSTRO_ACME_EMAIL: "${AUSTRO_ACME_EMAIL:?AUSTRO_ACME_EMAIL is required when the caddy profile is used}"
+      # CONFIGURATION REQUIRED when this profile is used — but deliberately NOT
+      # declared with `:?` like the secrets above.
+      #
+      # Compose interpolates the WHOLE file, including services behind an
+      # inactive profile. A `:?` here therefore breaks every command that merely
+      # resolves the file — including a plain nginx deployment that never starts
+      # this service. A CI smoke run that omitted these two variables failed
+      # exactly this way, which is the bug this comment exists to prevent.
+      #
+      # The requirement is enforced where it actually applies instead:
+      # scripts/deploy.sh refuses to select this profile without both values, and
+      # Caddy itself fails to start on an empty site address.
+      AUSTRO_PUBLIC_HOSTNAME: "${AUSTRO_PUBLIC_HOSTNAME:-}"
+      AUSTRO_ACME_EMAIL: "${AUSTRO_ACME_EMAIL:-}"
     ports:
       - "${AUSTRO_HTTP_PORT:-80}:80"
       - "${AUSTRO_HTTPS_PORT:-443}:443"

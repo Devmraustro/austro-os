@@ -236,6 +236,24 @@ assert_grep "rabbitmq healthcheck uses rabbitmqctl status" 'rabbitmqctl' "$COMPO
 assert_grep "redis healthcheck is an authenticated ping" 'redis-cli .*ping' "$COMPOSE"
 assert_no_grep "rabbitmq management image is not used" 'rabbitmq:[0-9.]+-management' "$COMPOSE"
 
+# Regression guard. Compose interpolates the WHOLE file, including services
+# behind an inactive profile, so a `:?` required variable on a profiled service
+# makes every command that merely resolves the file fail — including a plain
+# nginx deployment that never enables that profile. CI found exactly this: the
+# production smoke job's minimal environment file could not resolve the compose
+# file because the Caddy service demanded its ACME variables. Required variables
+# belong to services on the default path; a profile-only requirement is enforced
+# by scripts/deploy.sh, where it actually applies.
+# Comments are stripped first: the block deliberately NAMES the `:?` form it
+# is avoiding, and scanning raw text would flag that explanation as the defect.
+if strip_comments <(service_block reverse-proxy-caddy) | grep -qF ':?'; then
+    fail "reverse-proxy-caddy declares a ':?' required variable, which breaks the default nginx path"
+else
+    pass "profiled Caddy service declares no ':?' variable (the default path stays resolvable)"
+fi
+
+assert_grep "deploy.sh enforces the proxy prerequisites where they apply" 'AUSTRO_PUBLIC_HOSTNAME is required' scripts/deploy.sh
+
 # ---------------------------------------------------------------------------
 printf '\n=== 5b. Production compose — structural lint ===\n'
 # ---------------------------------------------------------------------------

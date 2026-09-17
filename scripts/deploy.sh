@@ -163,8 +163,24 @@ if ! compose config -q; then
 fi
 
 # ---------------------------------------------------------------------------
-# 4. TLS material (nginx variant only)
+# 4. Reverse proxy prerequisites
 # ---------------------------------------------------------------------------
+# AUSTRO_PUBLIC_HOSTNAME is required for either variant: the Caddyfile uses it as
+# the site address, and scripts/healthcheck.sh uses it to resolve the HTTPS probe
+# against the local proxy.
+[[ -n "${AUSTRO_PUBLIC_HOSTNAME:-}" ]] \
+    || die "AUSTRO_PUBLIC_HOSTNAME is required (the public hostname the proxy serves)"
+
+if [[ "$PROXY_SERVICE" == "reverse-proxy-caddy" ]]; then
+    # The compose file does not declare these with `:?`, because a required
+    # variable on a profiled service breaks every compose command that merely
+    # resolves the file — including deployments that never start that profile.
+    # The requirement is therefore enforced here, where it applies.
+    [[ -n "${AUSTRO_ACME_EMAIL:-}" ]] \
+        || die "AUSTRO_ACME_EMAIL is required when AUSTRO_PROXY_SERVICE=reverse-proxy-caddy"
+    log "reverse proxy: Caddy with automatic TLS for ${AUSTRO_PUBLIC_HOSTNAME}"
+fi
+
 if [[ "$PROXY_SERVICE" == "reverse-proxy" ]]; then
     CERT_DIR="${AUSTRO_TLS_CERT_DIR:-./deploy/tls}"
     for f in fullchain.pem privkey.pem; do
