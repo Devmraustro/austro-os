@@ -476,6 +476,42 @@ jobs:
         # — the same script an operator runs on the host.
         run: scripts/deploy.sh
 
+      - name: Assert postgres enforces the managed pg_hba.conf
+        # Proves the LIVE server, not the repository, enforces host
+        # authentication: pg_hba_file_rules reflects the file the running
+        # postmaster loaded and pg_settings.hba_file names its path. The image
+        # default trusts loopback TCP — the very path the wrong-runtime-credential
+        # negative control below exercises — so no host (TCP) rule may trust, all
+        # host rules must require scram-sha-256, and the operator local socket
+        # must stay trust as documented in docs/backups-and-restore.md.
+        run: |
+          set -euo pipefail
+          pg() {
+            docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T postgres \
+              psql -U austro -d austro -tAc "$1"
+          }
+          file_path="$(pg "SELECT setting FROM pg_settings WHERE name = 'hba_file'")"
+          test "$file_path" = "/etc/postgresql/pg_hba.conf" || {
+            echo "::error::postgres is not running with the managed hba_file ($file_path)"
+            exit 1
+          }
+          host_trust="$(pg "SELECT count(*) FROM pg_hba_file_rules WHERE type = 'host' AND auth_method = 'trust'")"
+          test "$host_trust" = "0" || {
+            echo "::error::a host (TCP) rule still trusts without a password"
+            exit 1
+          }
+          host_scram="$(pg "SELECT count(*) FROM pg_hba_file_rules WHERE type = 'host' AND auth_method = 'scram-sha-256'")"
+          test "$host_scram" = "3" || {
+            echo "::error::expected 3 scram-sha-256 host rules, saw $host_scram"
+            exit 1
+          }
+          local_trust="$(pg "SELECT count(*) FROM pg_hba_file_rules WHERE type = 'local' AND auth_method = 'trust'")"
+          test "$local_trust" = "1" || {
+            echo "::error::the operator local-socket trust rule is missing"
+            exit 1
+          }
+          echo "PASS: live postgres applies the managed pg_hba.conf (no host trust, scram-sha-256 on TCP)"
+
       - name: Assert the API is NOT reachable from the host
         run: |
           set -euo pipefail

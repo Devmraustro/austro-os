@@ -117,6 +117,15 @@ service), and append the provider's required TLS parameters — for example
 `?sslmode=require`. Note that the derived DSNs use `sslmode=disable`, which is
 correct only on the private compose bridge.
 
+The bundled `postgres` service enforces host authentication through the managed
+`deploy/postgres/pg_hba.conf` (`hba_file` applied at every server start): `trust`
+only on the in-container Unix socket, `scram-sha-256` on loopback and on every
+other host — so the healthcheck's runtime-credential check really authenticates.
+That contract is internal to the bundled deployment. With an external provider,
+authorization is the provider's configuration: the application never relies on
+`trust`, and a provider-issued credential that does not authenticate simply fails
+the DSN connection at startup.
+
 ---
 
 ## Not supported

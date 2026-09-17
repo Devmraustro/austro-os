@@ -116,11 +116,20 @@ services:
       # rebuild, so they are set here on the first initialisation. They turn a
       # silently corrupted page into a detected one.
       POSTGRES_INITDB_ARGS: "--data-checksums"
+    # Host authentication is enforced by the managed file, not whatever initdb
+    # wrote on first boot. The image default hardcodes loopback TCP as `trust`,
+    # so a wrong runtime password would be silently accepted on 127.0.0.1 —
+    # the path scripts/healthcheck.sh uses to authenticate the runtime role.
+    # `hba_file` is a postmaster-start GUC: it applies at every start, survives
+    # container recreation, and also covers an already-seeded postgres_data
+    # volume — it does not depend on initdb. See deploy/postgres/pg_hba.conf.
+    command: ["postgres", "-c", "hba_file=/etc/postgresql/pg_hba.conf"]
     # No `ports:` — the database is reachable only by service name from
     # austro_internal. Publishing it, even on loopback, would put the
     # authoritative datastore one host-side mistake away from exposure.
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./deploy/postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
     # PostgreSQL 16 uses shared memory for parallel workers and for the vector
     # index builds; the 64MB container default is small enough that a large
     # similarity search can fail with a shared-memory error.

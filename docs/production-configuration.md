@@ -100,6 +100,28 @@ gates the worker on the API being healthy, which serialises them.
 **CONFIGURATION REQUIRED to change this:** if you start the worker and API
 simultaneously by other means, preserve that ordering yourself.
 
+**Host authentication.** `docker-compose.production.yml` starts PostgreSQL with
+`-c hba_file=/etc/postgresql/pg_hba.conf` and mounts
+`deploy/postgres/pg_hba.conf` there read-only. `hba_file` is a postmaster-start
+GUC, so this file is the effective host authentication at every start **and**
+reload, including an already-seeded `postgres_data` volume — it does not depend
+on initdb, and it survives container recreation.
+
+The image's own initdb default hardcodes loopback TCP as `trust` no matter what
+auth method you pass to it, which would silently accept *any* password on
+`127.0.0.1`. That matters because `scripts/healthcheck.sh` authenticates the
+runtime role over that exact path. The managed file removes the loophole:
+
+| Rule | Method | Who uses it |
+|---|---|---|
+| `local all all` (Unix socket) | `trust` | Operator sessions and `scripts/backup.sh` / `scripts/restore.sh` inside the container. The socket is not reachable from outside; see `docs/backups-and-restore.md`. |
+| `host all all 127.0.0.1/32`, `::1/128` | `scram-sha-256` | The healthcheck's runtime-credential check. A wrong password now fails authentication instead of round-tripping. |
+| `host all all all` | `scram-sha-256` | The API and worker over the private bridge (the DSNs they actually use). |
+
+Expected values are asserted at runtime by the production deployment workflow
+(`pg_hba_file_rules` / `pg_settings.hba_file`) and in the wrong-credential
+negative control.
+
 ---
 
 ## Cache and broker
