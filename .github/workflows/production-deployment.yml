@@ -549,7 +549,7 @@ jobs:
             SELECT id, 'ci-rehearsal-task', 'backlog'
             FROM workspaces WHERE name = 'ci-rehearsal-workspace';
           INSERT INTO knowledge_documents (workspace_id, kind, title, content)
-            SELECT id, 'note', 'ci-rehearsal-doc',
+            SELECT id, 'document', 'ci-rehearsal-doc',
               'persisted content that must survive backup and restore'
             FROM workspaces WHERE name = 'ci-rehearsal-workspace';
           SQL
