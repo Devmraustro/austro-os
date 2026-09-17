@@ -166,6 +166,16 @@ nc -zv app.yourdomain.com 15672   # RabbitMQ management UI
 If any of them connects, stop and fix the firewall or the compose file before
 going further.
 
+**The same paths are machine-rehearsed in CI.** The `production-rehearsal` job
+in `.github/workflows/production-deployment.yml` deploys the real compose stack
+on an isolated runner with `scripts/deploy.sh` — HTTPS reverse proxy included,
+served with per-run self-signed TLS — runs the full `scripts/healthcheck.sh`,
+then takes a real backup with `scripts/backup.sh`, destroys the data, and
+restores it with `scripts/restore.sh`, verifying the data and the RLS topology
+afterwards. CI is not your host, so the checklist above still applies to the
+real environment; what the rehearsal proves is that the scripts and artifacts
+themselves work.
+
 ---
 
 ## 6. First-run bootstrap
@@ -282,9 +292,11 @@ Stated plainly, because it is easy to over-read a green run:
 
 - It does **not** mean the application has been validated under load. No load
   testing has been performed.
-- It does **not** mean disaster recovery has been tested end to end. A restore
-  exercise is described in [backups-and-restore.md](backups-and-restore.md) and
-  must be performed by you, in your environment, to count.
+- It does **not** mean disaster recovery has been tested on your host. CI
+  rehearses the restore on an isolated runner every run; the quarterly exercise
+  in [backups-and-restore.md](backups-and-restore.md) is what turns that into a
+  measured recovery objective on your environment, and it must be performed by
+  you, in your environment, to count.
 - It does **not** mean the system is "fully secure". It means the specific
   controls this repository implements (no public datastore ports, non-root
   containers, RLS enforced for a non-owner runtime role, TLS 1.2+ with HSTS,

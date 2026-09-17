@@ -42,6 +42,9 @@ vendor/
 docker-compose.override.yml
 *.log
 
+# Database backup artifacts (scripts/backup.sh default directory)
+/backups/
+
 # OS / temp
 .DS_Store
 Thumbs.db

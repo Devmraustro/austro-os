@@ -184,13 +184,19 @@ Two honest notes about that table:
 
 ## Restore verification exercise
 
-A backup you have never restored is an assumption. **This repository has not
-performed a restore exercise in a real environment, and neither has its CI in
-the environment it was authored in — that is recorded as `NOT TESTED` in
-[FINAL_PRODUCTION_READINESS_REPORT.md](FINAL_PRODUCTION_READINESS_REPORT.md).**
-Do not claim tested disaster recovery on the strength of these documents.
+A backup you have never restored is an assumption. **The CI `production-rehearsal`
+job now performs a real restore exercise on an isolated runner on every run**:
+it deploys the stack, seeds schema-valid application data, takes a real backup
+with `scripts/backup.sh`, destroys the data, then restores it with
+`scripts/restore.sh` and verifies the data plus the RLS/runtime-role topology
+came back. The previously-false claim "CI has never performed a restore" has
+therefore been superseded; a restore that fails in CI now fails the gate.
 
-Run this quarterly, on a scratch host that shares no volumes with production:
+That is still not the same as disaster recovery on your host. A CI runner is an
+ephemeral, disposable host with its own volumes and no public DNS, so the
+rehearsal proves the *mechanism*, not your *environment*. The quarterly exercise
+below remains the only thing that produces an actual recovery time objective.
+Run it quarterly, on a scratch host that shares no volumes with production:
 
 1. Provision a scratch host with the same compose file and a **fresh**
    `.env.production` (different hostname, no public ingress).

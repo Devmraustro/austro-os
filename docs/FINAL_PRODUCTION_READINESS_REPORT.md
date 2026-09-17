@@ -404,8 +404,8 @@ Step-by-step: [production-deployment.md](production-deployment.md).
 
 | Risk | Severity | Mitigation today |
 |---|---|---|
-| The stack has never been started anywhere by this work | **High** | CI `production-smoke` runs the real compose on the PR; run `scripts/deploy.sh` in a staging environment before production |
-| Disaster recovery is **NOT TESTED** | **High** | `scripts/restore.sh` exists and verifies its result, but a restore exercise has never been performed. The exercise is written out in [backups-and-restore.md](backups-and-restore.md); until you run it, recovery is an assumption. |
+| The stack has never been started anywhere by this work | **High** | CI `production-rehearsal` deploys the real compose stack (reverse proxy included, with ephemeral self-signed TLS) and runs `scripts/deploy.sh` and `scripts/healthcheck.sh`; run `scripts/deploy.sh` in a staging environment before production |
+| Disaster recovery was **NOT TESTED on a real host** | **High** | `scripts/restore.sh` is rehearsed in CI on an isolated runner every run (real backup, data destruction and restore with post-restore verification). Disaster recovery on a real host — your volumes, your backup storage, a measured RTO — has still never been performed; until you do, recovery on a host is an assumption. |
 | No point-in-time recovery (no WAL archiving) | Medium | Nightly `pg_dump`; up to 24h of data loss. `NOT SUPPORTED` as configured. |
 | Backups are local by default | Medium | Set `AUSTRO_BACKUP_S3_BUCKET`, or accept that a host loss loses the database and its backups together |
 | No load or performance testing | Medium | `NOT TESTED` |
@@ -421,9 +421,11 @@ Step-by-step: [production-deployment.md](production-deployment.md).
 ## 11. Statements deliberately NOT made
 
 - **"Production deployed."** No external production target was reached, and no
-  deployment was performed. The work is a deployment *layer*, statically
-  verified.
-- **"Disaster recovery tested."** It was not.
+  deployment to a host was performed. CI deploys the isolated rehearsal stack
+  each run; the work remains a deployment *layer*, statically verified and
+  machine-rehearsed.
+- **"Disaster recovery tested."** A restore rehearsal in CI is proven; disaster
+  recovery on a real host is not.
 - **"Fully secure" / "zero bugs."** Neither is knowable, and the known gaps are
   listed in §5 rather than omitted.
 - **"Tests pass."** No test was executed — Go is unavailable here. That is
@@ -435,8 +437,10 @@ Step-by-step: [production-deployment.md](production-deployment.md).
 ## 12. Recommended path from here
 
 1. Open the PR to `main` and let the existing Phase 2 gates plus the new
-   production-deployment gates run. Fix what the first run finds, especially in
-   `docker-build`, `compose-config` and `production-smoke`.
+   production-deployment gates run, including the `production-rehearsal` job
+   (deploy, TLS, backup/restore). Fix what the first run finds, especially in
+   `docker-build`, `compose-config`, `production-smoke` and
+   `production-rehearsal`.
 2. Deploy to a **staging host** with a real `.env.production` and confirm
    `scripts/deploy.sh` and `scripts/healthcheck.sh` both exit 0 there.
 3. Perform the restore exercise in

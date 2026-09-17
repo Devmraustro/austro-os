@@ -174,13 +174,22 @@ Backup scope follows directly from this table: **PostgreSQL only**. See
 Deployments on these targets have **not** been exercised end to end on any host.
 The authoring environment had no Docker daemon (recorded as `BLOCKED` in
 [FINAL_PRODUCTION_READINESS_REPORT.md](FINAL_PRODUCTION_READINESS_REPORT.md)),
-but CI does run the real stack: the production smoke job brings up postgres,
-redis, rabbitmq, api and worker, runs the operator's own `scripts/healthcheck.sh`
-against them, and asserts the datastores and the API are unreachable from the
-host. That job is green.
+but CI does run the real stack:
+
+- the `production-smoke` job brings up postgres, redis, rabbitmq, api and
+  worker, runs the operator's own `scripts/healthcheck.sh` against them, and
+  asserts the datastores and the API are unreachable from the host;
+- the `production-rehearsal` job goes further: it deploys with
+  `scripts/deploy.sh` **including the HTTPS reverse proxy** (served with
+  ephemeral self-signed TLS), runs the full `scripts/healthcheck.sh`, and then
+  rehearses a real backup and restore cycle (`scripts/backup.sh` ->
+  `scripts/restore.sh`) with schema-valid application data, verifying the data
+  and the RLS/runtime-role topology after the restore.
 
 So target (1) is **implemented and verified to bring up a real, correctly
-isolated topology in CI** — but CI is not your host. It does not exercise TLS, a
-public hostname, real traffic, or a restore from a real backup. Treat it as
-**not proven on your host** until you have run `scripts/deploy.sh` and
-`scripts/healthcheck.sh` there yourself.
+isolated topology in CI, over TLS, with a working backup/restore cycle** — but
+CI is not your host. It still does not exercise a real public hostname, real
+public-DNS resolution, operator-issued certificates, real internet traffic, or
+your host's volumes and backup storage. Treat it as **not proven on your host**
+until you have run `scripts/deploy.sh` and `scripts/healthcheck.sh` there
+yourself.

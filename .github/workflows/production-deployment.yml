@@ -392,3 +392,315 @@ jobs:
       - name: Remove the generated environment file
         if: always()
         run: rm -f "$ENV_FILE"
+
+  # ---------------------------------------------------------------------------
+  # The full production deployment rehearsal. On a fresh runner it runs the very
+  # scripts an operator runs — scripts/deploy.sh, scripts/healthcheck.sh,
+  # scripts/backup.sh, scripts/restore.sh — against the same compose file, with
+  # ephemeral per-run secrets, ephemeral self-signed TLS served by the reverse
+  # proxy, real PostgreSQL backup/restore artifacts, and negative controls that
+  # must fail closed. Nothing here is a mock: the containers, the artifacts and
+  # the failures are real.
+  #
+  # What it is NOT: a real host. This runner brings its own volumes, has no DNS
+  # and no operator, so it proves the deployment layer works end to end but
+  # cannot prove YOUR host, YOUR certificates, or YOUR backup storage. Those
+  # remain CONFIGURATION REQUIRED on the production host.
+  # ---------------------------------------------------------------------------
+  production-rehearsal:
+    name: Production rehearsal — deploy, TLS, backup and restore
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Generate a CI production environment file
+        # Placeholder-free, per-run random secrets (owner vs runtime and access
+        # vs refresh differ), plus the deployment-layer values scripts/deploy.sh
+        # needs. Only names are printed, never values.
+        run: |
+          set -euo pipefail
+          {
+            echo "AUSTRO_POSTGRES_PASSWORD=$(openssl rand -hex 24)"
+            echo "AUSTRO_POSTGRES_RUNTIME_PASSWORD=$(openssl rand -hex 24)"
+            echo "AUSTRO_REDIS_PASSWORD=$(openssl rand -hex 24)"
+            echo "AUSTRO_RABBITMQ_PASSWORD=$(openssl rand -hex 24)"
+            echo "AUSTRO_JWT_SECRET=$(openssl rand -hex 32)"
+            echo "AUSTRO_JWT_REFRESH_SECRET=$(openssl rand -hex 32)"
+            echo "AUSTRO_FOUNDER_USERNAME=ci-founder"
+            echo "AUSTRO_FOUNDER_PASSWORD=$(openssl rand -hex 16)"
+            echo "AUSTRO_AI_BACKEND=stub"
+            echo "AUSTRO_PUBLISH_BACKEND=stub"
+            echo "AUSTRO_RABBITMQ_QUEUE=austro.events"
+            echo "AUSTRO_PUBLIC_HOSTNAME=ci-rehearsal.invalid"
+            echo "AUSTRO_TLS_CERT_DIR=./deploy/tls"
+          } > "$ENV_FILE"
+
+      - name: Negative control — a placeholder secret must be rejected
+        # Before the stack exists, in a copy of the otherwise-valid environment:
+        # scripts/deploy.sh must refuse to start anything and fail closed.
+        run: |
+          set -euo pipefail
+          bad_env="$ENV_FILE.placeholder"
+          sed 's/^AUSTRO_JWT_SECRET=.*/AUSTRO_JWT_SECRET=change-me-for-the-negative-control/' \
+            "$ENV_FILE" > "$bad_env"
+          if AUSTRO_ENV_FILE="$bad_env" scripts/deploy.sh >/tmp/rehearsal-placeholder.log 2>&1; then
+            echo "::error::deploy.sh accepted a placeholder AUSTRO_JWT_SECRET"
+            exit 1
+          fi
+          grep -q 'AUSTRO_JWT_SECRET is still a placeholder' /tmp/rehearsal-placeholder.log \
+            || { echo "::error::deploy.sh failed, but not on the placeholder check"; cat /tmp/rehearsal-placeholder.log; exit 1; }
+          echo "PASS: a placeholder secret is rejected before anything starts"
+
+      - name: Generate ephemeral self-signed TLS material
+        # The proxy starts from the real deploy/nginx/nginx.conf and must load a
+        # certificate and key; this is valid material issued for the CI hostname
+        # only. *.pem is git-ignored and the key never leaves the runner.
+        run: |
+          set -euo pipefail
+          mkdir -p deploy/tls
+          openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
+            -keyout deploy/tls/privkey.pem \
+            -out deploy/tls/fullchain.pem \
+            -subj "/CN=ci-rehearsal.invalid" \
+            -addext "subjectAltName=DNS:ci-rehearsal.invalid" 2>/dev/null
+          chmod 600 deploy/tls/privkey.pem
+          openssl x509 -in deploy/tls/fullchain.pem -noout -subject -enddate
+
+      - name: Deploy with scripts/deploy.sh — the operator deployment path
+        # Validates the configuration, resolves the compose file, brings the
+        # stack up in dependency order (postgres, redis, rabbitmq, api, worker,
+        # reverse proxy) and runs scripts/healthcheck.sh with the proxy included
+        # — the same script an operator runs on the host.
+        run: scripts/deploy.sh
+
+      - name: Assert the API is NOT reachable from the host
+        run: |
+          set -euo pipefail
+          if curl -sS --max-time 5 http://127.0.0.1:8080/health/live >/dev/null 2>&1; then
+            echo "::error::the API is reachable on the host port 8080 but must not be published"
+            exit 1
+          fi
+          echo "PASS: the API is not published to the host"
+
+      - name: Assert the datastores are NOT reachable from the host
+        run: |
+          set -euo pipefail
+          fail=0
+          for port in 5432 6379 5672 15672; do
+            if timeout 3 bash -c "</dev/tcp/127.0.0.1/$port" 2>/dev/null; then
+              echo "::error::port $port is reachable from the host but must not be published"
+              fail=1
+            else
+              echo "PASS: port $port is not published"
+            fi
+          done
+          exit "$fail"
+
+      - name: Assert the reverse proxy is the only ingress
+        run: |
+          set -euo pipefail
+          for port in 80 443; do
+            if timeout 3 bash -c "</dev/tcp/127.0.0.1/$port" 2>/dev/null; then
+              echo "PASS: port $port is served by the reverse proxy"
+            else
+              echo "::error::port $port is expected to be published by the reverse proxy"
+              exit 1
+            fi
+          done
+
+      - name: Assert the API verified its database topology
+        run: |
+          set -euo pipefail
+          docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs api \
+            | grep -q '"message":"database-topology-ready"'
+          docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs api \
+            | grep -q '"runtime_role":"austro_app"'
+          echo "PASS: the API reported a verified topology on the austro_app runtime role"
+
+      - name: Assert the worker started and attached to the expected queue
+        run: |
+          set -euo pipefail
+          docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs worker \
+            | grep -q '"message":"worker-started"'
+          docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs worker \
+            | grep -q '"queue":"austro.events"'
+          echo "PASS: the worker reported worker-started on the austro.events queue"
+
+      - name: Seed representative persisted application data
+        # Schema-valid rows written by the owner role, the same path a migration
+        # or operator session uses. They are the rehearsal's evidence that the
+        # backup captured real application data rather than an empty database.
+        run: |
+          set -euo pipefail
+          docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
+            exec -T postgres psql -U austro -d austro -v ON_ERROR_STOP=1 <<'SQL'
+          INSERT INTO workspaces (name) VALUES ('ci-rehearsal-workspace');
+          INSERT INTO tasks (workspace_id, title, status)
+            SELECT id, 'ci-rehearsal-task', 'backlog'
+            FROM workspaces WHERE name = 'ci-rehearsal-workspace';
+          INSERT INTO knowledge_documents (workspace_id, kind, title, content)
+            SELECT id, 'note', 'ci-rehearsal-doc',
+              'persisted content that must survive backup and restore'
+            FROM workspaces WHERE name = 'ci-rehearsal-workspace';
+          SQL
+          w=$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T postgres \
+            psql -U austro -d austro -tAc \
+            "SELECT count(*) FROM workspaces WHERE name = 'ci-rehearsal-workspace'")
+          t=$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T postgres \
+            psql -U austro -d austro -tAc \
+            "SELECT count(*) FROM tasks WHERE title = 'ci-rehearsal-task'")
+          d=$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T postgres \
+            psql -U austro -d austro -tAc \
+            "SELECT count(*) FROM knowledge_documents WHERE title = 'ci-rehearsal-doc'")
+          test "$w$t$d" = "111" || {
+            echo "::error::seeded data mismatch: workspaces=$w tasks=$t docs=$d"
+            exit 1
+          }
+          echo "seeded 1 workspace, 1 task, 1 knowledge document"
+
+      - name: Take a real backup with scripts/backup.sh
+        run: |
+          set -euo pipefail
+          backup_output="$(scripts/backup.sh)"
+          backup_file="$(printf '%s' "$backup_output" \
+            | grep -oE 'backups/austro-postgres-[0-9TZ]+\.sql\.gz' | tail -1)"
+          test -n "$backup_file" || { echo "::error::no backup artifact produced"; exit 1; }
+          test -s "$backup_file" || { echo "::error::backup artifact is empty: $backup_file"; exit 1; }
+          gzip -t "$backup_file" || { echo "::error::backup is not a valid gzip stream"; exit 1; }
+          gzip -dc "$backup_file" | head -40 | grep -q 'PostgreSQL database dump' \
+            || { echo "::error::backup does not contain a PostgreSQL dump header"; exit 1; }
+          test -f "$backup_file.sha256" || { echo "::error::backup has no .sha256 checksum"; exit 1; }
+          (cd backups && sha256sum -c "$(basename "$backup_file").sha256")
+          echo "backup artifact verified: $backup_file ($(wc -c <"$backup_file") bytes)"
+          echo "AUSTRO_CI_BACKUP=$backup_file" >> "$GITHUB_ENV"
+
+      - name: Destroy the seeded data
+        # The loss the restore exists to undo. All three rows must be gone
+        # before the restore is attempted, so the restore cannot be fooled by
+        # data that was never actually lost.
+        run: |
+          set -euo pipefail
+          docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
+            exec -T postgres psql -U austro -d austro -v ON_ERROR_STOP=1 <<'SQL'
+          DELETE FROM knowledge_documents WHERE title = 'ci-rehearsal-doc';
+          DELETE FROM tasks WHERE title = 'ci-rehearsal-task';
+          DELETE FROM workspaces WHERE name = 'ci-rehearsal-workspace';
+          SQL
+          w=$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T postgres \
+            psql -U austro -d austro -tAc \
+            "SELECT count(*) FROM workspaces WHERE name = 'ci-rehearsal-workspace'")
+          t=$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T postgres \
+            psql -U austro -d austro -tAc \
+            "SELECT count(*) FROM tasks WHERE title = 'ci-rehearsal-task'")
+          d=$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T postgres \
+            psql -U austro -d austro -tAc \
+            "SELECT count(*) FROM knowledge_documents WHERE title = 'ci-rehearsal-doc'")
+          test "$w$t$d" = "000" || {
+            echo "::error::data was not destroyed: workspaces=$w tasks=$t docs=$d"
+            exit 1
+          }
+          echo "seeded data destroyed: 0 workspaces, 0 tasks, 0 knowledge documents"
+
+      - name: Restore with scripts/restore.sh
+        # Destructive by design, confirmed non-interactively here. It validates
+        # the artifact, quiesces the application, restores, re-applies the
+        # schema bootstrap through the API, verifies tables / vector extension /
+        # RLS / runtime role / audit, restarts the worker and runs the full
+        # healthcheck — so this step passing is the post-restore verification.
+        run: |
+          AUSTRO_RESTORE_CONFIRM=yes scripts/restore.sh "$AUSTRO_CI_BACKUP"
+
+      - name: Verify the restored data and a post-restore topology
+        run: |
+          set -euo pipefail
+          w=$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T postgres \
+            psql -U austro -d austro -tAc \
+            "SELECT count(*) FROM workspaces WHERE name = 'ci-rehearsal-workspace'")
+          t=$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T postgres \
+            psql -U austro -d austro -tAc \
+            "SELECT count(*) FROM tasks WHERE title = 'ci-rehearsal-task'")
+          d=$(docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" exec -T postgres \
+            psql -U austro -d austro -tAc \
+            "SELECT count(*) FROM knowledge_documents WHERE title = 'ci-rehearsal-doc'")
+          test "$w$t$d" = "111" || {
+            echo "::error::restored data mismatch: workspaces=$w tasks=$t docs=$d"
+            exit 1
+          }
+          . "$ENV_FILE"
+          code=$(curl -s -o /dev/null -w '%{http_code}' -k --max-time 15 --noproxy '*' \
+            --resolve "${AUSTRO_PUBLIC_HOSTNAME}:443:127.0.0.1" \
+            "https://${AUSTRO_PUBLIC_HOSTNAME}/health/ready" || true)
+          test "$code" = "200" || {
+            echo "::error::API not ready over HTTPS after restore (HTTP $code)"
+            exit 1
+          }
+          echo "PASS: 1 workspace, 1 task, 1 knowledge document restored; API ready over HTTPS"
+
+      - name: Negative control — a wrong runtime credential must fail the healthcheck
+        # The stack is still running; only the env file is tampered, so the only
+        # check that can fail is the runtime-database one. A pass here would mean
+        # the healthcheck never actually authenticated against the live database.
+        run: |
+          set -euo pipefail
+          bad_env="$ENV_FILE.wrong-runtime"
+          sed 's/^AUSTRO_POSTGRES_RUNTIME_PASSWORD=.*/AUSTRO_POSTGRES_RUNTIME_PASSWORD=definitely-not-the-right-runtime-password/' \
+            "$ENV_FILE" > "$bad_env"
+          if AUSTRO_ENV_FILE="$bad_env" scripts/healthcheck.sh >/tmp/rehearsal-wrong-runtime.log 2>&1; then
+            echo "::error::healthcheck passed with a wrong runtime credential"
+            exit 1
+          fi
+          grep -q 'PostgreSQL did not answer a query as the runtime role' /tmp/rehearsal-wrong-runtime.log \
+            || { echo "::error::healthcheck failed, but not on the runtime credential check"; cat /tmp/rehearsal-wrong-runtime.log; exit 1; }
+          echo "PASS: a wrong runtime credential fails the healthcheck"
+
+      - name: Negative control — an unexpected queue expectation must fail the healthcheck
+        run: |
+          set -euo pipefail
+          bad_env="$ENV_FILE.wrong-queue"
+          sed 's/^AUSTRO_RABBITMQ_QUEUE=.*/AUSTRO_RABBITMQ_QUEUE=no.such.queue.ci/' \
+            "$ENV_FILE" > "$bad_env"
+          if AUSTRO_ENV_FILE="$bad_env" scripts/healthcheck.sh >/tmp/rehearsal-wrong-queue.log 2>&1; then
+            echo "::error::healthcheck passed with an unexpected queue expectation"
+            exit 1
+          fi
+          grep -q 'expected queue is missing' /tmp/rehearsal-wrong-queue.log \
+            || { echo "::error::healthcheck failed, but not on the queue check"; cat /tmp/rehearsal-wrong-queue.log; exit 1; }
+          echo "PASS: an unexpected queue expectation fails the healthcheck"
+
+      - name: Negative control — invalid TLS material must be rejected by the proxy
+        # Bounded and deterministic: the real nginx config with garbage
+        # certificate files must fail `nginx -t` in a disposable container,
+        # proving the proxy fails closed on a broken configuration.
+        run: |
+          set -euo pipefail
+          bad_tls_dir="$(mktemp -d)"
+          printf 'not a private key\n' > "$bad_tls_dir/privkey.pem"
+          printf 'not a certificate\n' > "$bad_tls_dir/fullchain.pem"
+          if docker run --rm \
+              --add-host=api:127.0.0.1 \
+              -v "$(pwd)/deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro" \
+              -v "$bad_tls_dir:/etc/nginx/tls:ro" \
+              nginx:1.27-alpine nginx -t >/tmp/rehearsal-bad-tls.log 2>&1; then
+            echo "::error::nginx accepted invalid TLS material"
+            exit 1
+          fi
+          grep -qE '\[emerg\].*nginx/tls|test failed' /tmp/rehearsal-bad-tls.log \
+            || { echo "::error::nginx failed, but not on the TLS material"; cat /tmp/rehearsal-bad-tls.log; exit 1; }
+          echo "PASS: the reverse proxy rejects invalid TLS material"
+
+      - name: Dump the container logs on failure
+        if: failure()
+        run: docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs --tail=200 || true
+
+      - name: Tear down
+        if: always()
+        run: docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" down -v || true
+
+      - name: Remove the generated environment files, TLS material and backups
+        if: always()
+        run: |
+          rm -f "$ENV_FILE" "$ENV_FILE".placeholder "$ENV_FILE".wrong-runtime "$ENV_FILE".wrong-queue
+          rm -rf deploy/tls backups
