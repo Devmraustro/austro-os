@@ -4,6 +4,7 @@ import (
 	"austro-os/internal/event"
 	logger "austro-os/internal/log"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -15,6 +16,25 @@ import (
 type WorkerConfig struct {
 	URL       string
 	QueueName string
+}
+
+// ErrPermanent marks a handler failure that can never succeed on retry: a
+// message that is structurally invalid rather than one that hit a transient
+// dependency failure.
+//
+// Without this distinction every handler error is requeued, and a message that
+// can never be processed is redelivered forever. Because the consumer runs with
+// a prefetch of 1, that single message also blocks every message behind it, so
+// one malformed event wedges the whole queue.
+//
+// A permanent failure is still a failure: it is logged at error level with its
+// own event name and then acknowledged only to take it off the queue. It is
+// never reported as successfully processed.
+var ErrPermanent = errors.New("permanent message failure")
+
+// PermanentErrorf wraps a formatted error as permanent.
+func PermanentErrorf(format string, args ...interface{}) error {
+	return fmt.Errorf("%w: %s", ErrPermanent, fmt.Sprintf(format, args...))
 }
 
 type WorkerOption func(*Worker)
@@ -83,11 +103,21 @@ func (w *Worker) Stop() {
 // CloseBrokerConnection force-closes the current broker connection so the
 // supervisor immediately reconnects and re-registers the consumer. Exposed for
 // operational reconnection and for tests that exercise the recovery path.
+func logCloseError(component string, err error) {
+	logger.NewEntry("worker-close-error").
+		SetLevel("error").
+		With("component", component).
+		WithError(err).
+		Log()
+}
+
 func (w *Worker) CloseBrokerConnection() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.connection != nil {
-		w.connection.Close()
+		if err := w.connection.Close(); err != nil {
+			logCloseError("connection", err)
+		}
 	}
 }
 
@@ -99,23 +129,31 @@ func (w *Worker) dial() error {
 
 	ch, err := conn.Channel()
 	if err != nil {
-		conn.Close()
+		if closeErr := conn.Close(); closeErr != nil {
+			logCloseError("connection-after-channel-failure", closeErr)
+		}
 		return fmt.Errorf("failed to open channel: %w", err)
 	}
 
 	if _, err := ch.QueueDeclare(w.config.QueueName, true, false, false, false, nil); err != nil {
-		conn.Close()
+		if closeErr := conn.Close(); closeErr != nil {
+			logCloseError("connection-after-queue-failure", closeErr)
+		}
 		return fmt.Errorf("failed to declare queue: %w", err)
 	}
 
 	if err := ch.Qos(1, 0, false); err != nil {
-		conn.Close()
+		if closeErr := conn.Close(); closeErr != nil {
+			logCloseError("connection-after-qos-failure", closeErr)
+		}
 		return fmt.Errorf("failed to set QoS: %w", err)
 	}
 
 	msgs, err := ch.Consume(w.config.QueueName, "", false, false, false, false, nil)
 	if err != nil {
-		conn.Close()
+		if closeErr := conn.Close(); closeErr != nil {
+			logCloseError("connection-after-consumer-failure", closeErr)
+		}
 		return fmt.Errorf("failed to register consumer: %w", err)
 	}
 
@@ -208,14 +246,27 @@ func (w *Worker) dropConnection() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.channel != nil {
-		w.channel.Close()
+		if err := w.channel.Close(); err != nil {
+			logCloseError("channel", err)
+		}
 	}
 	if w.connection != nil {
-		w.connection.Close()
+		if err := w.connection.Close(); err != nil {
+			logCloseError("connection", err)
+		}
 	}
 	w.channel = nil
 	w.connection = nil
 	w.consumeDone = nil
+}
+
+func logSettlementError(action string, msg amqp.Delivery, err error) {
+	logger.NewEntry("worker-message-settlement-error").
+		SetLevel("error").
+		With("action", action).
+		With("message_id", msg.MessageId).
+		WithError(err).
+		Log()
 }
 
 func (w *Worker) processMessage(msg amqp.Delivery) {
@@ -232,10 +283,13 @@ func (w *Worker) processMessage(msg amqp.Delivery) {
 	var env event.UniversalEnvelope
 	if err := json.Unmarshal(msg.Body, &env); err != nil {
 		logger.NewEntry("worker-json-decode-error").
+			SetLevel("error").
 			With("message_id", msg.MessageId).
 			With("error", err.Error()).
 			Log()
-		msg.Ack(false)
+		if err := msg.Ack(false); err != nil {
+			logSettlementError("ack", msg, err)
+		}
 		return
 	}
 
@@ -268,17 +322,41 @@ func (w *Worker) processMessage(msg amqp.Delivery) {
 
 	if w.handler != nil {
 		if err := w.handler(&env); err != nil {
+			if errors.Is(err, ErrPermanent) {
+				// This message can never be processed. Requeueing it would
+				// redeliver it forever and, with a prefetch of 1, block every
+				// message behind it. It is logged at error level under its own
+				// event name and acknowledged only to take it off the queue;
+				// it is never reported as successfully processed.
+				logger.NewEntry("worker-message-rejected-permanent").
+					SetLevel("error").
+					With("message_id", msg.MessageId).
+					With("event_type", string(env.EventType)).
+					With("error", err.Error()).
+					Log()
+				if err := msg.Ack(false); err != nil {
+					logSettlementError("ack", msg, err)
+				}
+				return
+			}
+			// Transient failure: leave it for redelivery.
 			logger.NewEntry("worker-handler-error").
+				SetLevel("error").
 				With("message_id", msg.MessageId).
 				With("event_type", string(env.EventType)).
 				With("error", err.Error()).
 				Log()
-			msg.Nack(false, true)
+			if err := msg.Nack(false, true); err != nil {
+				logSettlementError("nack", msg, err)
+			}
 			return
 		}
 	}
 
-	msg.Ack(false)
+	if err := msg.Ack(false); err != nil {
+		logSettlementError("ack", msg, err)
+		return
+	}
 
 	duration := time.Since(start)
 	logger.NewEntry("worker-message-processed").
@@ -288,17 +366,31 @@ func (w *Worker) processMessage(msg amqp.Delivery) {
 		Log()
 }
 
+// WithTraceID stamps a fixed trace id onto the envelope and starts a fresh
+// span. A trace id that is not a UUID is reported as an error rather than
+// panicking: uuid.MustParse would abort the process on malformed input.
 func WithTraceID(traceID string, workerID string) func(*event.UniversalEnvelope) error {
 	return func(ev *event.UniversalEnvelope) error {
-		ev.TraceID = uuid.MustParse(traceID)
+		parsed, err := uuid.Parse(traceID)
+		if err != nil {
+			return fmt.Errorf("invalid trace id %q: %w", traceID, err)
+		}
+		ev.TraceID = parsed
 		ev.SpanID = uuid.New()
 		return nil
 	}
 }
 
+// WithCorrelationID attaches a correlation id to the envelope details. The
+// payload is marshalled rather than concatenated, so a correlation id
+// containing a quote or brace cannot break out of the JSON document.
 func WithCorrelationID(correlationID string) func(*event.UniversalEnvelope) error {
 	return func(ev *event.UniversalEnvelope) error {
-		ev.Details = json.RawMessage(`{"correlation_id": "` + correlationID + `"}`)
+		b, err := json.Marshal(map[string]string{"correlation_id": correlationID})
+		if err != nil {
+			return fmt.Errorf("encode correlation id: %w", err)
+		}
+		ev.Details = b
 		return nil
 	}
 }

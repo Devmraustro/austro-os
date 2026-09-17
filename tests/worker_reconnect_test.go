@@ -60,7 +60,7 @@ func TestWorkerReconnectsAfterConnectionLoss(t *testing.T) {
 	// Drop the broker connection. The supervisor must redial and re-register.
 	w.CloseBrokerConnection()
 	require.Eventually(t, func() bool {
-		info, err := ch.QueueInspect(q)
+		info, err := ch.QueueDeclarePassive(q, true, false, false, false, nil)
 		if err != nil {
 			return false
 		}

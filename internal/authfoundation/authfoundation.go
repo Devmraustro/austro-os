@@ -11,19 +11,19 @@ import (
 
 // PasswordHash represents a hashed password with salt
 type PasswordHash struct {
-	Hash     string    `json:"hash"`
-	Salt     string    `json:"salt"`
-	Iterations int     `json:"iterations"`
+	Hash       string `json:"hash"`
+	Salt       string `json:"salt"`
+	Iterations int    `json:"iterations"`
 }
 
 // HashPassword hashes a plaintext password using SHA256 with salt
 func HashPassword(plaintext string) (*PasswordHash, error) {
 	salt := generateSalt(16)
 	hash := sha256Sum([]byte(plaintext + string(salt)))
-	
+
 	return &PasswordHash{
-		Hash:     base64.URLEncoding.EncodeToString(hash),
-		Salt:     base64.URLEncoding.EncodeToString(salt),
+		Hash:       base64.URLEncoding.EncodeToString(hash),
+		Salt:       base64.URLEncoding.EncodeToString(salt),
 		Iterations: 1,
 	}, nil
 }
@@ -90,15 +90,15 @@ func (rt *RefreshToken) Rotate() (*RefreshToken, error) {
 	if !rt.IsValid() {
 		return nil, fmt.Errorf("cannot rotate invalid refresh token")
 	}
-	
+
 	// Mark old token as used
 	rt.Used = true
 	rt.Revoked = true
-	
+
 	// Create new token
 	newToken := GenerateRefreshToken(rt.UserID, 30*24*time.Hour)
 	newToken.ID = fmt.Sprintf("rt-new-%s-%d", rt.UserID, time.Now().Unix())
-	
+
 	return newToken, nil
 }
 
@@ -116,8 +116,8 @@ type AuthAuditEvent struct {
 	SpanID    string    `json:"span_id,omitempty"`
 	ActorType string    `json:"actor_type"`
 	ActorID   string    `json:"actor_id"`
-	Action    string    `json:"action"` // login, logout, token_refresh, token_revoke, password_change, password_verify
-	Outcome   string    `json:"outcome"` // success, failure
+	Action    string    `json:"action"`            // login, logout, token_refresh, token_revoke, password_change, password_verify
+	Outcome   string    `json:"outcome"`           // success, failure
 	Details   string    `json:"details,omitempty"` // e.g., "password_verify_success", "refresh_rotation"
 }
 
@@ -132,11 +132,11 @@ func NewAuthAuditEvent(actorType, actorID, action, outcome string, details ...st
 		Action:    action,
 		Outcome:   outcome,
 	}
-	
+
 	if len(details) > 0 {
 		event.Details = details[0]
 	}
-	
+
 	return event
 }
 
@@ -145,21 +145,21 @@ type Authenticator interface {
 	// Password operations
 	HashPassword(plaintext string) (*PasswordHash, error)
 	VerifyPassword(plaintext string, stored *PasswordHash) bool
-	
+
 	// Session operations
 	CreateSession(userID string, ttl time.Duration) *Session
 	ValidateSession(session *Session) bool
 	RevokeSession(session *Session)
-	
+
 	// Refresh token operations
 	CreateRefreshToken(userID string, ttl time.Duration) *RefreshToken
 	ValidateRefreshToken(rt *RefreshToken) bool
 	RotateRefreshToken(rt *RefreshToken) (*RefreshToken, error)
 	RevokeRefreshToken(rt *RefreshToken)
-	
+
 	// Authentication audit
 	LogAuthEvent(event *AuthAuditEvent)
-	
+
 	// User operations (stubbed for foundation)
 	CreateUser(username, password, email string) error
 	GetUser(username string) (*User, error)
@@ -167,12 +167,12 @@ type Authenticator interface {
 
 // User represents a system user
 type User struct {
-	ID        string
-	Username  string
-	Email     string
+	ID           string
+	Username     string
+	Email        string
 	PasswordHash *PasswordHash
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 // NewUser creates a new user with hashed password
@@ -181,13 +181,13 @@ func NewUser(username, password, email string) (*User, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return &User{
-		Username:    username,
-		Email:       email,
+		Username:     username,
+		Email:        email,
 		PasswordHash: ph,
-		CreatedAt:   time.Now().UTC(),
-		UpdatedAt:   time.Now().UTC(),
+		CreatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now().UTC(),
 	}, nil
 }
 

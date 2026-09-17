@@ -49,3 +49,12 @@ CREATE POLICY workspace_isolation_policy ON audit_events
 ```
 
 This can be deployed as a Phase 3 migration step without downtime, as the policy is checked on every SELECT operation and the default behavior (no policy matching) preserves existing read access until the policy is actively in place.
+## Implementation status
+
+This decision was recorded but not implemented: `audit_events` had no
+`workspace_id` column, no row level security, and no rows — nothing wrote to it.
+It is implemented by ADR-021, with two refinements recorded there: `workspace_id`
+is nullable so organization-level authentication events stay reachable, and a
+second policy restricted to the administrative role gives chain verification the
+whole chain. The policy is named `audit_workspace_policy`, so the count of
+`workspace_isolation_policy` declarations remains ten.

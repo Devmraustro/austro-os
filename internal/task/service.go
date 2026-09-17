@@ -5,16 +5,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	logger "austro-os/internal/log"
+	"github.com/google/uuid"
 )
 
 // Service is the task application service. It enforces workspace ownership
 // (deny-by-default), lifecycle transitions, and emits audit events and
 // structured logs with optional trace/span propagation.
 type Service struct {
-	store TaskStore
-	audit AuditSink
+	store  TaskStore
+	audit  AuditSink
 	events EventSink
 }
 
@@ -79,6 +79,23 @@ func (s *Service) Get(ctx context.Context, workspaceID, id uuid.UUID) (*Task, er
 // List returns tasks in the workspace, optionally filtered by status.
 func (s *Service) List(ctx context.Context, workspaceID uuid.UUID, status *Status) ([]*Task, error) {
 	return s.store.List(ctx, workspaceID, status)
+}
+
+// ListPage returns one bounded page of the workspace's tasks, newest first.
+//
+// This is the listing meant to back an HTTP route. The workspace argument is
+// always the caller's own verified workspace, so the store's RLS binding and
+// this call agree; a filter naming a different workspace is not expressible
+// here, which is the point.
+func (s *Service) ListPage(ctx context.Context, workspaceID uuid.UUID, q ListQuery) (Page, error) {
+	if workspaceID == uuid.Nil {
+		return Page{}, ErrWorkspaceMismatch
+	}
+	if q.Status != nil && !ValidStatus(*q.Status) {
+		return Page{}, ErrStatus
+	}
+	q.Normalize()
+	return s.store.ListPage(ctx, workspaceID, q)
 }
 
 // Transition applies an explicit, validated lifecycle transition.

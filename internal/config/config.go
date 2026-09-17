@@ -3,7 +3,9 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -36,8 +38,24 @@ const (
 )
 
 type Config struct {
-	ServerAddress    string
-	PostgresDSN      string
+	ServerAddress string
+	PostgresDSN   string
+
+	// PostgresRuntimeDSN is the connection the application actually serves
+	// traffic on. It must resolve to a role that is NOT a superuser, does NOT
+	// have BYPASSRLS, and does NOT own the workspace-scoped tables, so the
+	// row level security policies genuinely constrain it. PostgresDSN, by
+	// contrast, is the schema owner used only to bootstrap and migrate.
+	//
+	// Leaving it empty derives a runtime DSN from PostgresDSN (same host,
+	// database and password, role AUSTRO_POSTGRES_RUNTIME_USER or
+	// "austro_app"), which is what keeps a developer running with no extra
+	// configuration still on the unprivileged path: infrastructure/database
+	// provisions the role and then verifies the live connection is
+	// unprivileged before serving a single request. Deployments set it
+	// explicitly so the runtime role has its own credential.
+	PostgresRuntimeDSN string
+
 	RedisAddr        string
 	RabbitMQURL      string
 	RabbitMQQueue    string
@@ -94,7 +112,29 @@ type Config struct {
 	// pacing (non-stub only). Zero uses the adapter defaults.
 	PublishRetryBackoffBase time.Duration
 	PublishRetryBackoffMax  time.Duration
+
+	// Raw environment text for the settings above. Strict validation rejects a
+	// value that does not parse rather than silently substituting the default,
+	// because a typo in a retry budget would otherwise be indistinguishable
+	// from an intentionally unset one.
+	publishMaxAttemptsRaw string
+	publishBackoffBaseRaw string
+	publishBackoffMaxRaw  string
 }
+
+// Minimum accepted lengths for credentials.
+const (
+	// minHMACKeyBytes is the floor for the JWT signing secrets. RFC 7518 §3.2
+	// requires a key used with a MAC algorithm to be at least as long as the
+	// hash output, so HS256 needs 32 bytes; a shorter key is below the
+	// algorithm's design strength regardless of how random it looks.
+	minHMACKeyBytes = 32
+	// minFounderPasswordBytes is the floor for the single founder credential.
+	// It is the only interactive credential in the system and gates
+	// organization-level authority, so it is held to a password floor rather
+	// than a key floor.
+	minFounderPasswordBytes = 16
+)
 
 var globalConfig *Config
 
@@ -110,16 +150,22 @@ func defaults() *Config {
 			usageLimit = v
 		}
 	}
+	ownerDSN := getEnv("AUSTRO_POSTGRES_DSN", "postgres://austro:austro@localhost:5432/austro?sslmode=disable")
 	return &Config{
-		ServerAddress:    getEnv("AUSTRO_SERVER_ADDR", "0.0.0.0:8080"),
-		PostgresDSN:      getEnv("AUSTRO_POSTGRES_DSN", "postgres://austro:austro@localhost:5432/austro?sslmode=disable"),
-		RedisAddr:        getEnv("AUSTRO_REDIS_ADDR", "localhost:6379"),
-		RabbitMQURL:      getEnv("AUSTRO_RABBITMQ_URL", "amqp://austro:austro@localhost:5672"),
-		RabbitMQQueue:    getEnv("AUSTRO_RABBITMQ_QUEUE", "austro.events"),
-		JWTSecret:        getEnv("AUSTRO_JWT_SECRET", "change-me-in-production"),
-		JWTRefreshSecret: getEnv("AUSTRO_JWT_REFRESH_SECRET", "change-me-in-production"),
-		Environment:      getEnv("AUSTRO_ENV", "development"),
-		WorkspaceID:      getEnv("AUSTRO_WORKSPACE_ID", "default"),
+		ServerAddress: getEnv("AUSTRO_SERVER_ADDR", "0.0.0.0:8080"),
+		PostgresDSN:   ownerDSN,
+		// Derived rather than defaulted to a constant so there is exactly one
+		// place a deployment states its database location, and so forgetting
+		// the runtime DSN lands on the unprivileged role instead of quietly
+		// serving traffic as the schema owner.
+		PostgresRuntimeDSN: getEnv("AUSTRO_POSTGRES_RUNTIME_DSN", DeriveRuntimeDSN(ownerDSN)),
+		RedisAddr:          getEnv("AUSTRO_REDIS_ADDR", "localhost:6379"),
+		RabbitMQURL:        getEnv("AUSTRO_RABBITMQ_URL", "amqp://austro:austro@localhost:5672"),
+		RabbitMQQueue:      getEnv("AUSTRO_RABBITMQ_QUEUE", "austro.events"),
+		JWTSecret:          getEnv("AUSTRO_JWT_SECRET", "change-me-in-production"),
+		JWTRefreshSecret:   getEnv("AUSTRO_JWT_REFRESH_SECRET", "change-me-in-production"),
+		Environment:        getEnv("AUSTRO_ENV", "development"),
+		WorkspaceID:        getEnv("AUSTRO_WORKSPACE_ID", "default"),
 
 		FounderUsername: os.Getenv("AUSTRO_FOUNDER_USERNAME"),
 		FounderPassword: os.Getenv("AUSTRO_FOUNDER_PASSWORD"),
@@ -138,6 +184,10 @@ func defaults() *Config {
 		PublishMaxAttempts:      envInt("AUSTRO_PUBLISH_MAX_ATTEMPTS", 0),
 		PublishRetryBackoffBase: envDuration("AUSTRO_PUBLISH_RETRY_BACKOFF_BASE", 0),
 		PublishRetryBackoffMax:  envDuration("AUSTRO_PUBLISH_RETRY_BACKOFF_MAX", 0),
+
+		publishMaxAttemptsRaw: os.Getenv("AUSTRO_PUBLISH_MAX_ATTEMPTS"),
+		publishBackoffBaseRaw: os.Getenv("AUSTRO_PUBLISH_RETRY_BACKOFF_BASE"),
+		publishBackoffMaxRaw:  os.Getenv("AUSTRO_PUBLISH_RETRY_BACKOFF_MAX"),
 	}
 }
 
@@ -169,13 +219,39 @@ func LoadStrict() (*Config, error) {
 func (c *Config) Validate() error {
 	var missing []string
 	for name, value := range map[string]string{
-		"AUSTRO_POSTGRES_DSN":       c.PostgresDSN,
-		"AUSTRO_REDIS_ADDR":         c.RedisAddr,
-		"AUSTRO_RABBITMQ_URL":       c.RabbitMQURL,
+		"AUSTRO_POSTGRES_DSN": c.PostgresDSN,
+		"AUSTRO_REDIS_ADDR":   c.RedisAddr,
+		"AUSTRO_RABBITMQ_URL": c.RabbitMQURL,
+	} {
+		if isInsecure(value) {
+			missing = append(missing, name)
+		}
+	}
+
+	// The runtime DSN is optional (it is derived from the owner DSN when
+	// absent), so it is only checked when explicitly supplied. Two rules
+	// apply: it must not be a placeholder, and it must not be the owner DSN.
+	// Running application traffic as the schema owner is the exact defect
+	// this setting exists to prevent, and PostgreSQL silently skips row level
+	// security for a table's owner, so an owner connection would look
+	// correctly configured while enforcing nothing.
+	if c.PostgresRuntimeDSN != "" {
+		if isInsecure(c.PostgresRuntimeDSN) {
+			missing = append(missing, "AUSTRO_POSTGRES_RUNTIME_DSN")
+		}
+		if c.PostgresRuntimeDSN == c.PostgresDSN {
+			missing = append(missing, "AUSTRO_POSTGRES_RUNTIME_DSN")
+		}
+	}
+
+	// The JWT secrets carry an additional floor: a placeholder check alone
+	// would accept a one-byte secret, which is below the design strength of
+	// HS256 (RFC 7518 §3.2 requires the key to be at least the hash length).
+	for name, value := range map[string]string{
 		"AUSTRO_JWT_SECRET":         c.JWTSecret,
 		"AUSTRO_JWT_REFRESH_SECRET": c.JWTRefreshSecret,
 	} {
-		if isInsecure(value) {
+		if isInsecure(value) || len(value) < minHMACKeyBytes {
 			missing = append(missing, name)
 		}
 	}
@@ -188,6 +264,29 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// A value that was supplied but does not parse is a configuration error,
+	// not a request to use the default. envInt/envDuration fall back so the
+	// value is never half-applied; validation is what turns that into a
+	// fail-fast.
+	for name, raw := range map[string]string{
+		"AUSTRO_PUBLISH_MAX_ATTEMPTS":       c.publishMaxAttemptsRaw,
+		"AUSTRO_PUBLISH_RETRY_BACKOFF_BASE": c.publishBackoffBaseRaw,
+		"AUSTRO_PUBLISH_RETRY_BACKOFF_MAX":  c.publishBackoffMaxRaw,
+	} {
+		if raw == "" {
+			continue
+		}
+		if name == "AUSTRO_PUBLISH_MAX_ATTEMPTS" {
+			if _, err := strconv.Atoi(raw); err != nil {
+				missing = append(missing, name)
+			}
+			continue
+		}
+		if _, err := time.ParseDuration(raw); err != nil {
+			missing = append(missing, name)
+		}
+	}
+
 	if c.PublishMaxAttempts < 0 {
 		missing = append(missing, "AUSTRO_PUBLISH_MAX_ATTEMPTS")
 	}
@@ -197,18 +296,36 @@ func (c *Config) Validate() error {
 
 	// Founder bootstrap is optional, but both settings must be supplied
 	// together (a half-configured bootstrap would fail at runtime), and a
-	// configured password must never be a placeholder.
+	// configured password must never be a placeholder or shorter than the
+	// password floor.
 	if (c.FounderUsername == "") != (c.FounderPassword == "") {
 		missing = append(missing, "AUSTRO_FOUNDER_USERNAME/AUSTRO_FOUNDER_PASSWORD")
 	}
-	if c.FounderPassword != "" && isInsecure(c.FounderPassword) {
+	if c.FounderPassword != "" && (isInsecure(c.FounderPassword) || len(c.FounderPassword) < minFounderPasswordBytes) {
 		missing = append(missing, "AUSTRO_FOUNDER_PASSWORD")
 	}
 
 	if len(missing) > 0 {
-		return fmt.Errorf("%w: required settings missing or insecure: %s", ErrConfigInvalid, strings.Join(missing, ", "))
+		// Sorted and de-duplicated so the same misconfiguration always produces
+		// the same message instead of one in random map order.
+		return fmt.Errorf("%w: required settings missing or insecure: %s", ErrConfigInvalid, strings.Join(sortedUnique(missing), ", "))
 	}
 	return nil
+}
+
+// sortedUnique returns names in stable order with repeats collapsed. Several
+// rules can flag the same setting, and the error should name it once.
+func sortedUnique(names []string) []string {
+	seen := make(map[string]bool, len(names))
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		if !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // validateBackends enforces the cross-field rules for the AI and publishing
@@ -300,6 +417,32 @@ func MustLoad(cfg *Config) {
 
 // isInsecure reports whether a required setting is absent or still set to one
 // of the development placeholders/defaults that must never be used at runtime.
+// DeriveRuntimeDSN rewrites an owner DSN into the unprivileged application
+// runtime DSN: same host, port, database and query options, with the role
+// replaced by AUSTRO_POSTGRES_RUNTIME_USER (default "austro_app") and the
+// password replaced by AUSTRO_POSTGRES_RUNTIME_PASSWORD when that is set.
+//
+// A DSN that cannot be parsed yields an empty string rather than a guess:
+// Validate then rejects the configuration instead of the process silently
+// connecting as the owner.
+func DeriveRuntimeDSN(ownerDSN string) string {
+	u, err := url.Parse(ownerDSN)
+	if err != nil || u.User == nil {
+		return ""
+	}
+	user := getEnv("AUSTRO_POSTGRES_RUNTIME_USER", "austro_app")
+	password, hasPassword := u.User.Password()
+	if override := os.Getenv("AUSTRO_POSTGRES_RUNTIME_PASSWORD"); override != "" {
+		password, hasPassword = override, true
+	}
+	if hasPassword {
+		u.User = url.UserPassword(user, password)
+	} else {
+		u.User = url.User(user)
+	}
+	return u.String()
+}
+
 func isInsecure(v string) bool {
 	if v == "" {
 		return true

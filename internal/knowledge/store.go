@@ -11,12 +11,29 @@ import (
 // writes never cross workspace boundaries. It is implemented by an
 // infrastructure adapter; the domain never depends on the adapter.
 type DocumentStore interface {
-	// Upsert persists a document (with its embedding) and returns it.
+	// Upsert persists a document (with its embedding) and returns it. This is the
+	// create path: it is INSERT … ON CONFLICT (id) DO UPDATE, so it must not be
+	// used to modify an existing document, because a row deleted between the
+	// caller's read and this write would be resurrected rather than reported
+	// missing. Use Update for that.
 	Upsert(ctx context.Context, d *Document) (*Document, error)
+	// Update modifies the mutable fields of an existing document within the
+	// workspace and returns the stored row. It reports ErrNotFound when no row
+	// matched, so a concurrent delete surfaces as not-found rather than as a
+	// silently recreated document.
+	Update(ctx context.Context, d *Document) (*Document, error)
 	// Get returns a document by id within the given workspace.
 	Get(ctx context.Context, workspaceID, id uuid.UUID) (*Document, error)
 	// List returns documents in a workspace, optionally filtered by kind.
+	//
+	// Deprecated for API use: it is unbounded and unordered, which makes it both
+	// a denial-of-service vector and non-deterministic. ListPage is the bounded
+	// contract; this method is retained for the worker and test paths that want
+	// a whole small workspace.
 	List(ctx context.Context, workspaceID uuid.UUID, kind *Kind) ([]*Document, error)
+	// ListPage returns one bounded page of documents in newest-first order,
+	// optionally filtered by kind, positioned by a keyset cursor.
+	ListPage(ctx context.Context, workspaceID uuid.UUID, q ListQuery) (Page, error)
 	// Search returns the top-k documents by cosine similarity to the query
 	// embedding, restricted to the caller's workspace.
 	Search(ctx context.Context, workspaceID uuid.UUID, query []float32, kind *Kind, limit int) ([]*Document, error)

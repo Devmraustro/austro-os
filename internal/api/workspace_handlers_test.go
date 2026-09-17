@@ -101,7 +101,7 @@ func workspaceClaims(role rbac.Role, workspaceID string) *auth.Claims {
 // mux — so route denial semantics match the production server.
 func serveWorkspace(t *testing.T, f *fakeWorkspaceStore, claims *auth.Claims, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	h := NewWorkspaceHandler(f)
+	h := NewWorkspaceHandler(f).SetAuditSink(&recordingSink{})
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /workspaces", h.List)
 	mux.HandleFunc("POST /workspaces", h.Create)

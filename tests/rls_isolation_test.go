@@ -10,10 +10,10 @@ import (
 
 // isoFixture captures one workspace's hierarchy (department, team, employee).
 type isoFixture struct {
-	deptID   uuid.UUID
-	teamID   uuid.UUID
-	empID    uuid.UUID
-	empName  string
+	deptID  uuid.UUID
+	teamID  uuid.UUID
+	empID   uuid.UUID
+	empName string
 }
 
 // prepareIsolationData seeds an identical hierarchy (department + team + AI
@@ -24,15 +24,17 @@ func prepareIsolationData(t *testing.T, db *sql.DB) (a, b isoFixture) {
 	wsA := uuid.MustParse(workspaceA)
 	wsB := uuid.MustParse(workspaceB)
 
-	a = isoFixture{deptID: uuid.New(), teamID: uuid.New(), empID: uuid.New(), empName: "Emp A"}
-	b = isoFixture{deptID: uuid.New(), teamID: uuid.New(), empID: uuid.New(), empName: "Emp B"}
+	a = isoFixture{deptID: uuid.New(), teamID: uuid.New(), empID: uuid.New(), empName: "Emp A " + uuid.NewString()[:6]}
+	b = isoFixture{deptID: uuid.New(), teamID: uuid.New(), empID: uuid.New(), empName: "Emp B " + uuid.NewString()[:6]}
 
 	create := func(f *isoFixture, ws uuid.UUID) {
+		deptName := "dept-" + f.deptID.String()[:8]
+		teamName := "team-" + f.teamID.String()[:8]
 		_, err := db.Exec(`INSERT INTO departments (id, name, workspace_id) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING`,
-			f.deptID, "dept", ws)
+			f.deptID, deptName, ws)
 		require.NoError(t, err)
 		_, err = db.Exec(`INSERT INTO teams (id, name, department_id) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING`,
-			f.teamID, "team", f.deptID)
+			f.teamID, teamName, f.deptID)
 		require.NoError(t, err)
 		_, err = db.Exec(`INSERT INTO ai_employees (id, name, role, team_id) VALUES ($1, $2, 'analyst', $3) ON CONFLICT (id) DO NOTHING`,
 			f.empID, f.empName, f.teamID)
@@ -40,6 +42,11 @@ func prepareIsolationData(t *testing.T, db *sql.DB) (a, b isoFixture) {
 	}
 	create(&a, wsA)
 	create(&b, wsB)
+	t.Cleanup(func() {
+		_, _ = db.Exec(`DELETE FROM ai_employees WHERE id IN ($1,$2)`, a.empID, b.empID)
+		_, _ = db.Exec(`DELETE FROM teams WHERE id IN ($1,$2)`, a.teamID, b.teamID)
+		_, _ = db.Exec(`DELETE FROM departments WHERE id IN ($1,$2)`, a.deptID, b.deptID)
+	})
 	return a, b
 }
 
@@ -130,7 +137,8 @@ func TestWorkspaceIsolation(t *testing.T) {
 		dbA := connectRestricted(t, workspaceARole)
 		defer dbA.Close()
 		setWorkspace(t, dbA, workspaceA)
-		res, err := dbA.Exec(`UPDATE departments SET name='Dept A renamed' WHERE id=$1`, a.deptID)
+		newName := "Dept A renamed " + uuid.NewString()[:8]
+		res, err := dbA.Exec(`UPDATE departments SET name=$1 WHERE id=$2`, newName, a.deptID)
 		require.NoError(t, err)
 		aff, _ := res.RowsAffected()
 		require.Equal(t, int64(1), aff, "A must be able to update its own row")

@@ -13,11 +13,13 @@ import (
 
 // WorkspaceStore is the concrete PostgreSQL adapter for the workspace.Store
 // port. Workspaces are organization-level records, so operations run on the
-// plain connection (no app.current_workspace binding): the RLS policy on the
-// workspaces table only ever exposes a workspace to a restricted principal
-// whose session is bound to that exact workspace id, and the API process itself
-// runs as the table owner. Authorization for who may list/create/read is
-// enforced upstream by the RBAC layer, never here.
+// administrative handle rather than the runtime one: the runtime role is not
+// the table owner and row level security is forced, so an unbound runtime
+// session sees no workspace at all, which would make organization-level
+// listing and creation impossible. The administrative role's reach over this
+// table is exactly org_admin_policy -- it is not a superuser and has no
+// BYPASSRLS. Authorization for who may list/create/read is enforced upstream
+// by the RBAC layer, never here.
 type WorkspaceStore struct {
 	db *sql.DB
 }

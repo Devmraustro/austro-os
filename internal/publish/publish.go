@@ -48,6 +48,9 @@ const (
 	StatusReview    Status = "review"
 	StatusApproved  Status = "approved"
 	StatusPublished Status = "published"
+	// StatusFailed records a durable delivery failure. It is terminal until a
+	// future retry command is explicitly added; it is never reported as success.
+	StatusFailed    Status = "failed"
 	StatusRejected  Status = "rejected"
 	StatusCancelled Status = "cancelled"
 )
@@ -70,14 +73,17 @@ type Publication struct {
 	// IdempotencyKey is an optional stable delivery key for the external
 	// endpoint. When empty, a deterministic key derived from workspace|id|hash
 	// is used so retries of the same publication collide.
-	IdempotencyKey string     `json:"idempotency_key,omitempty"`
-	ApprovedBy     *string    `json:"approved_by,omitempty"`
-	ApprovedAt     *time.Time `json:"approved_at,omitempty"`
-	RejectedBy     *string    `json:"rejected_by,omitempty"`
-	RejectedAt     *time.Time `json:"rejected_at,omitempty"`
-	PublishedAt    *time.Time `json:"published_at,omitempty"`
-	CreatedAt      time.Time  `json:"created_at"`
-	UpdatedAt      time.Time  `json:"updated_at"`
+	IdempotencyKey    string     `json:"idempotency_key,omitempty"`
+	ApprovedBy        *string    `json:"approved_by,omitempty"`
+	ApprovedAt        *time.Time `json:"approved_at,omitempty"`
+	RejectedBy        *string    `json:"rejected_by,omitempty"`
+	RejectedAt        *time.Time `json:"rejected_at,omitempty"`
+	PublishedAt       *time.Time `json:"published_at,omitempty"`
+	PublishedBy       *string    `json:"published_by,omitempty"`
+	ExternalReference string     `json:"external_reference,omitempty"`
+	FailureReason     string     `json:"failure_reason,omitempty"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
 }
 
 // New validates inputs and returns a queued publication as a value aggregate
@@ -119,7 +125,7 @@ func ContentDigest(title, body string) string {
 // ValidStatus reports whether s is a recognized lifecycle status.
 func ValidStatus(s Status) bool {
 	switch s {
-	case StatusQueued, StatusReview, StatusApproved, StatusPublished,
+	case StatusQueued, StatusReview, StatusApproved, StatusPublished, StatusFailed,
 		StatusRejected, StatusCancelled:
 		return true
 	}
@@ -129,7 +135,7 @@ func ValidStatus(s Status) bool {
 // terminal reports whether the status is final (no outgoing transitions).
 func terminal(s Status) bool {
 	switch s {
-	case StatusPublished, StatusRejected, StatusCancelled:
+	case StatusPublished, StatusFailed, StatusRejected, StatusCancelled:
 		return true
 	}
 	return false
@@ -144,6 +150,9 @@ func allowedTransition(from, to Status) bool {
 	case StatusReview:
 		return to == StatusApproved || to == StatusRejected || to == StatusCancelled
 	case StatusApproved:
+		return to == StatusPublished || to == StatusFailed
+	case StatusFailed:
+		// Only the explicit Retry command may recover a failed delivery.
 		return to == StatusPublished
 	}
 	return false

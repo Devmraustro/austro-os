@@ -84,6 +84,117 @@ func (s *KnowledgeStore) Upsert(ctx context.Context, d *knowledge.Document) (*kn
 	return d, nil
 }
 
+// Update modifies an existing document. It is a real UPDATE rather than the
+// Upsert conflict path: routing an update through INSERT … ON CONFLICT would
+// resurrect a document deleted between the caller's read and this write, turning
+// a concurrent delete into a silent recreate. Zero affected rows is therefore
+// reported as not found.
+func (s *KnowledgeStore) Update(ctx context.Context, d *knowledge.Document) (*knowledge.Document, error) {
+	tx, err := s.beginTx(ctx, d.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	d.UpdatedAt = time.Now().UTC()
+	var id uuid.UUID
+	var createdAt, updatedAt time.Time
+	res := tx.QueryRowContext(ctx, `
+		UPDATE knowledge_documents
+		SET kind = $3, title = $4, content = $5, embedding = $6::vector, updated_at = $7
+		WHERE id = $1 AND workspace_id = $2
+		RETURNING id, created_at, updated_at`,
+		d.ID, d.WorkspaceID, string(d.Kind), d.Title, d.Content,
+		vectorLiteral(d.Embedding), d.UpdatedAt)
+	if err := res.Scan(&id, &createdAt, &updatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, knowledge.ErrNotFound
+		}
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	d.CreatedAt = createdAt
+	d.UpdatedAt = updatedAt
+	return d, nil
+}
+
+// ListPage returns one bounded page of documents, newest first.
+//
+// The ordering carries the id as a tie-break because created_at alone can repeat:
+// two documents written in the same microsecond would tie, and a tie at a page
+// boundary makes the boundary arbitrary, so a cursor walk could skip or repeat a
+// row. The same pair is what the cursor encodes, which is what keeps the walk
+// exact.
+//
+// limit+1 rows are fetched so that "there is a next page" is known rather than
+// inferred from a page that happened to come back full.
+func (s *KnowledgeStore) ListPage(ctx context.Context, workspaceID uuid.UUID, q knowledge.ListQuery) (knowledge.Page, error) {
+	q.Normalize()
+	tx, err := s.beginTx(ctx, workspaceID)
+	if err != nil {
+		return knowledge.Page{}, err
+	}
+	defer tx.Rollback()
+
+	// The workspace predicate is explicit even though row-level security already
+	// confines the query: the two are independent, and if one is ever weakened
+	// the other still holds.
+	query := `
+		SELECT id, workspace_id, kind, title, content, embedding::text, created_at, updated_at
+		FROM knowledge_documents WHERE workspace_id = $1`
+	args := []interface{}{workspaceID}
+	next := 2
+	if q.Kind != nil {
+		query += fmt.Sprintf(" AND kind = $%d", next)
+		args = append(args, string(*q.Kind))
+		next++
+	}
+	if q.Before.Set {
+		// Strictly after the cursor in (created_at DESC, id DESC). The second
+		// term is what makes the boundary exact when timestamps tie.
+		query += fmt.Sprintf(
+			" AND (created_at, id) < ($%d, $%d)", next, next+1)
+		args = append(args, q.Before.CreatedAt, q.Before.ID)
+		next += 2
+	}
+	query += fmt.Sprintf(
+		" ORDER BY created_at DESC, id DESC LIMIT $%d", next)
+	args = append(args, q.Limit+1)
+
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return knowledge.Page{}, err
+	}
+	defer rows.Close()
+
+	var docs []*knowledge.Document
+	for rows.Next() {
+		doc, err := scanDocument(rows)
+		if err != nil {
+			return knowledge.Page{}, err
+		}
+		docs = append(docs, doc)
+	}
+	if err := rows.Err(); err != nil {
+		return knowledge.Page{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return knowledge.Page{}, err
+	}
+
+	page := knowledge.Page{Limit: q.Limit}
+	if len(docs) > q.Limit {
+		docs = docs[:q.Limit]
+		// The cursor points at the last row actually returned, so the next page
+		// starts strictly after it.
+		page.NextCursor = knowledge.EncodeCursor(docs[len(docs)-1])
+	}
+	page.Documents = docs
+	return page, nil
+}
+
 func (s *KnowledgeStore) Get(ctx context.Context, workspaceID, id uuid.UUID) (*knowledge.Document, error) {
 	tx, err := s.beginTx(ctx, workspaceID)
 	if err != nil {

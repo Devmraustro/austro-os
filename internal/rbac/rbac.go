@@ -108,7 +108,7 @@ type Rule struct {
 // for the later Phase 3 steps that implement them, and remain denied until an
 // explicit rule plus a registered route both exist.
 func Rules() []Rule {
-	return []Rule{
+	rules := []Rule{
 		// /api/me: an authenticated principal's own safe profile. No database
 		// workspace is accessed, so no binding is required.
 		{
@@ -154,6 +154,274 @@ func Rules() []Rule {
 			Scope:           ScopePath,
 			Principle:       "Principle 10 - Privacy by Design",
 		},
+		// Task management (ADR-006). Tasks are workspace-scoped tenant data, so
+		// every route is ScopeSelf: the caller must be bound to a workspace in its
+		// verified claims, and that workspace -- never anything in the request --
+		// is what the store binds as app.current_workspace. There is no workspace
+		// segment in these paths to forge; the {id} they do carry is the task, and
+		// the store resolves it only inside the caller's workspace.
+		//
+		// The founder is absent by design rather than by omission. A founder has no
+		// home workspace -- users_founder_no_workspace makes that a database
+		// invariant -- so there is no workspace for the founder to act in and
+		// ScopeSelf denies. Granting a cross-workspace task write would be a new
+		// privilege the approved scope does not ask for.
+		{
+			Action:          "POST",
+			ResourcePattern: "/tasks",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 1 - Vision First",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/tasks",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 13 - Observability",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/tasks/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
+		{
+			Action:          "PATCH",
+			ResourcePattern: "/tasks/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 4 - Quality Over Speed",
+		},
+		{
+			Action:          "POST",
+			ResourcePattern: "/tasks/{id}/transition",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 11 - Human Oversight",
+		},
+
+		// Knowledge management (ADR-007, routing completed by ADR-023). Knowledge
+		// documents are workspace-scoped tenant data with embeddings, so every
+		// route is ScopeSelf for the same reason the task routes are: the caller
+		// must be bound to a workspace in its verified claims, and that workspace
+		// -- never anything in the request -- is what the store binds as
+		// app.current_workspace. There is no workspace segment in these paths to
+		// forge, and the {id} is the document, resolved only inside the caller's
+		// own workspace.
+		//
+		// Search is an explicitly granted action even though it only reads: a
+		// similarity query ranks the whole workspace corpus, and the ranking is
+		// computed in SQL against rows the policy already confines, so it can
+		// widen nothing -- but under deny-by-default an action that is not named
+		// is refused, so it has to be named.
+		//
+		// The founder is absent by design. A founder has no home workspace --
+		// users_founder_no_workspace makes that a database invariant -- so there
+		// is no workspace to act in and ScopeSelf denies.
+		{
+			Action:          "POST",
+			ResourcePattern: "/knowledge",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 1 - Vision First",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/knowledge",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 13 - Observability",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/knowledge/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
+		{
+			Action:          "PATCH",
+			ResourcePattern: "/knowledge/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 4 - Quality Over Speed",
+		},
+		{
+			Action:          "DELETE",
+			ResourcePattern: "/knowledge/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 9 - Security by Design",
+		},
+		{
+			Action:          "POST",
+			ResourcePattern: "/knowledge/search",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
+
+		// Memory is a key-based, workspace-scoped surface. The layer and key
+		// are resource segments, not workspace selectors; the workspace comes
+		// from the verified identity and the Bank derives the Redis partition.
+		{
+			Action:          "GET",
+			ResourcePattern: "/memory/{layer}/{key}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
+		{
+			Action:          "PUT",
+			ResourcePattern: "/memory/{layer}/{key}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 9 - Security by Design",
+		},
+
+		// Organization hierarchy: Departments → Teams → AI Employees.
+		// Workspace-scoped tenant data, ScopeSelf like tasks/knowledge.
+		// Founder has no workspace, so ScopeSelf denies founder by design.
+		// workspace_admin: full CRUD; workspace_member: read-only.
+		{
+			Action:          "POST",
+			ResourcePattern: "/departments",
+			Roles:           []Role{RoleWorkspaceAdmin},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 5 - Modular Design",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/departments",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 13 - Observability",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/departments/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
+		{
+			Action:          "PATCH",
+			ResourcePattern: "/departments/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 4 - Quality Over Speed",
+		},
+		{
+			Action:          "DELETE",
+			ResourcePattern: "/departments/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 9 - Security by Design",
+		},
+		{
+			Action:          "POST",
+			ResourcePattern: "/teams",
+			Roles:           []Role{RoleWorkspaceAdmin},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 5 - Modular Design",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/teams",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 13 - Observability",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/teams/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
+		{
+			Action:          "PATCH",
+			ResourcePattern: "/teams/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 4 - Quality Over Speed",
+		},
+		{
+			Action:          "DELETE",
+			ResourcePattern: "/teams/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 9 - Security by Design",
+		},
+		{
+			Action:          "POST",
+			ResourcePattern: "/ai-employees",
+			Roles:           []Role{RoleWorkspaceAdmin},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 5 - Modular Design",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/ai-employees",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 13 - Observability",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/ai-employees/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
+		{
+			Action:          "PATCH",
+			ResourcePattern: "/ai-employees/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 4 - Quality Over Speed",
+		},
+		{
+			Action:          "DELETE",
+			ResourcePattern: "/ai-employees/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 9 - Security by Design",
+		},
+	}
+	rules = append(rules, publicationRules()...)
+	return append(rules, pipelineRules()...)
+}
+
+// pipelineRules keeps the Creator contract explicit. Members may create/read
+// and recover their workspace's pipelines; only an admin may open the human
+// review handoff.
+func pipelineRules() []Rule {
+	return []Rule{
+		{Action: "POST", ResourcePattern: "/pipelines", Roles: []Role{RoleWorkspaceAdmin, RoleWorkspaceMember}, Scope: ScopeSelf, Principle: "Principle 1 - Vision First"},
+		{Action: "GET", ResourcePattern: "/pipelines", Roles: []Role{RoleWorkspaceAdmin, RoleWorkspaceMember}, Scope: ScopeSelf, Principle: "Principle 13 - Observability"},
+		{Action: "GET", ResourcePattern: "/pipelines/{id}", Roles: []Role{RoleWorkspaceAdmin, RoleWorkspaceMember}, Scope: ScopeSelf, Principle: "Principle 10 - Privacy by Design"},
+		{Action: "POST", ResourcePattern: "/pipelines/{id}/approve", Roles: []Role{RoleWorkspaceAdmin}, Scope: ScopeSelf, Principle: "Principle 11 - Human Oversight"},
+		{Action: "POST", ResourcePattern: "/pipelines/{id}/retry", Roles: []Role{RoleWorkspaceAdmin, RoleWorkspaceMember}, Scope: ScopeSelf, Principle: "Principle 13 - Observability"},
+	}
+}
+
+// publicationRules is the explicit tenant Publishing contract. Members may
+// draft, read and submit; only workspace admins may make the human approval,
+// rejection and release decisions. Founders have no workspace context and are
+// intentionally absent from every publication rule.
+func publicationRules() []Rule {
+	return []Rule{
+		{Action: "POST", ResourcePattern: "/publications", Roles: []Role{RoleWorkspaceAdmin, RoleWorkspaceMember}, Scope: ScopeSelf, Principle: "Principle 1 - Vision First"},
+		{Action: "GET", ResourcePattern: "/publications", Roles: []Role{RoleWorkspaceAdmin, RoleWorkspaceMember}, Scope: ScopeSelf, Principle: "Principle 10 - Privacy by Design"},
+		{Action: "GET", ResourcePattern: "/publications/{id}", Roles: []Role{RoleWorkspaceAdmin, RoleWorkspaceMember}, Scope: ScopeSelf, Principle: "Principle 10 - Privacy by Design"},
+		{Action: "POST", ResourcePattern: "/publications/{id}/submit", Roles: []Role{RoleWorkspaceAdmin, RoleWorkspaceMember}, Scope: ScopeSelf, Principle: "Principle 11 - Human Oversight"},
+		{Action: "POST", ResourcePattern: "/publications/{id}/approve", Roles: []Role{RoleWorkspaceAdmin}, Scope: ScopeSelf, Principle: "Principle 11 - Human Oversight"},
+		{Action: "POST", ResourcePattern: "/publications/{id}/reject", Roles: []Role{RoleWorkspaceAdmin}, Scope: ScopeSelf, Principle: "Principle 11 - Human Oversight"},
+		{Action: "POST", ResourcePattern: "/publications/{id}/publish", Roles: []Role{RoleWorkspaceAdmin}, Scope: ScopeSelf, Principle: "Principle 11 - Human Oversight"},
+		{Action: "POST", ResourcePattern: "/publications/{id}/retry", Roles: []Role{RoleWorkspaceAdmin}, Scope: ScopeSelf, Principle: "Principle 11 - Human Oversight"},
 	}
 }
 
@@ -163,7 +431,7 @@ func Rules() []Rule {
 // administration surface (GET/POST /workspaces, GET /workspaces/{id}) is
 // registered by the server, so its rules are seeded here.
 func ImplementedRules() []Rule {
-	return []Rule{
+	rules := []Rule{
 		{
 			Action:          "GET",
 			ResourcePattern: "/api/me",
@@ -199,7 +467,278 @@ func ImplementedRules() []Rule {
 			Scope:           ScopePath,
 			Principle:       "Principle 10 - Privacy by Design",
 		},
+
+		// Audit visibility. The organization-scoped reads are founder-only
+		// because they are served from the administrative handle, the only
+		// principal audit_org_policy names. Granting them to any other role
+		// would hand out a cross-tenant read the database would not refuse.
+		{
+			Action:          "GET",
+			ResourcePattern: "/audit/events",
+			Roles:           []Role{RoleFounder},
+			Scope:           ScopeNone,
+			Principle:       "Principle 11 - Human Oversight",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/audit/verification",
+			Roles:           []Role{RoleFounder},
+			Scope:           ScopeNone,
+			Principle:       "Principle 11 - Human Oversight",
+		},
+		// The workspace-scoped audit read is open to every workspace role.
+		// ScopePath makes the path workspace mandatory and equal to the claims
+		// workspace for admins and members, so a member cannot name another
+		// tenant's id; the founder's separate ScopeNone rule is what lets the
+		// founder read any workspace. Isolation for the non-founder path is
+		// enforced again in PostgreSQL by audit_workspace_policy.
+		{
+			Action:          "GET",
+			ResourcePattern: "/workspaces/{id}/audit/events",
+			Roles:           []Role{RoleFounder},
+			Scope:           ScopeNone,
+			Principle:       "Principle 11 - Human Oversight",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/workspaces/{id}/audit/events",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopePath,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
+		// Task management (ADR-006). Tasks are workspace-scoped tenant data, so
+		// every route is ScopeSelf: the caller must be bound to a workspace in its
+		// verified claims, and that workspace -- never anything in the request --
+		// is what the store binds as app.current_workspace. There is no workspace
+		// segment in these paths to forge; the {id} they do carry is the task, and
+		// the store resolves it only inside the caller's workspace.
+		//
+		// The founder is absent by design rather than by omission. A founder has no
+		// home workspace -- users_founder_no_workspace makes that a database
+		// invariant -- so there is no workspace for the founder to act in and
+		// ScopeSelf denies. Granting a cross-workspace task write would be a new
+		// privilege the approved scope does not ask for.
+		{
+			Action:          "POST",
+			ResourcePattern: "/tasks",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 1 - Vision First",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/tasks",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 13 - Observability",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/tasks/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
+		{
+			Action:          "PATCH",
+			ResourcePattern: "/tasks/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 4 - Quality Over Speed",
+		},
+		{
+			Action:          "POST",
+			ResourcePattern: "/tasks/{id}/transition",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 11 - Human Oversight",
+		},
+
+		// Knowledge management (ADR-007, routing completed by ADR-023). Knowledge
+		// documents are workspace-scoped tenant data with embeddings, so every
+		// route is ScopeSelf for the same reason the task routes are: the caller
+		// must be bound to a workspace in its verified claims, and that workspace
+		// -- never anything in the request -- is what the store binds as
+		// app.current_workspace. There is no workspace segment in these paths to
+		// forge, and the {id} is the document, resolved only inside the caller's
+		// own workspace.
+		//
+		// Search is an explicitly granted action even though it only reads: a
+		// similarity query ranks the whole workspace corpus, and the ranking is
+		// computed in SQL against rows the policy already confines, so it can
+		// widen nothing -- but under deny-by-default an action that is not named
+		// is refused, so it has to be named.
+		//
+		// The founder is absent by design. A founder has no home workspace --
+		// users_founder_no_workspace makes that a database invariant -- so there
+		// is no workspace to act in and ScopeSelf denies.
+		{
+			Action:          "POST",
+			ResourcePattern: "/knowledge",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 1 - Vision First",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/knowledge",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 13 - Observability",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/knowledge/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
+		{
+			Action:          "PATCH",
+			ResourcePattern: "/knowledge/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 4 - Quality Over Speed",
+		},
+		{
+			Action:          "DELETE",
+			ResourcePattern: "/knowledge/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 9 - Security by Design",
+		},
+		{
+			Action:          "POST",
+			ResourcePattern: "/knowledge/search",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
+
+		{
+			Action:          "GET",
+			ResourcePattern: "/memory/{layer}/{key}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
+		{
+			Action:          "PUT",
+			ResourcePattern: "/memory/{layer}/{key}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 9 - Security by Design",
+		},
+
+		// Organization hierarchy: Departments → Teams → AI Employees.
+		{
+			Action:          "POST",
+			ResourcePattern: "/departments",
+			Roles:           []Role{RoleWorkspaceAdmin},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 5 - Modular Design",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/departments",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 13 - Observability",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/departments/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
+		{
+			Action:          "PATCH",
+			ResourcePattern: "/departments/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 4 - Quality Over Speed",
+		},
+		{
+			Action:          "DELETE",
+			ResourcePattern: "/departments/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 9 - Security by Design",
+		},
+		{
+			Action:          "POST",
+			ResourcePattern: "/teams",
+			Roles:           []Role{RoleWorkspaceAdmin},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 5 - Modular Design",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/teams",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 13 - Observability",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/teams/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
+		{
+			Action:          "PATCH",
+			ResourcePattern: "/teams/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 4 - Quality Over Speed",
+		},
+		{
+			Action:          "DELETE",
+			ResourcePattern: "/teams/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 9 - Security by Design",
+		},
+		{
+			Action:          "POST",
+			ResourcePattern: "/ai-employees",
+			Roles:           []Role{RoleWorkspaceAdmin},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 5 - Modular Design",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/ai-employees",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 13 - Observability",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/ai-employees/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 10 - Privacy by Design",
+		},
+		{
+			Action:          "PATCH",
+			ResourcePattern: "/ai-employees/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 4 - Quality Over Speed",
+		},
+		{
+			Action:          "DELETE",
+			ResourcePattern: "/ai-employees/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 9 - Security by Design",
+		},
 	}
+	rules = append(rules, publicationRules()...)
+	return append(rules, pipelineRules()...)
 }
 
 // PermissionsForRole returns the explicit permissions (HTTP action -> route
@@ -211,16 +750,34 @@ func PermissionsForRole(r Role) map[string][]string {
 	switch r {
 	case RoleFounder:
 		return map[string][]string{
-			"GET":  {"/api/me", "/workspaces", "/workspaces/{id}"},
+			"GET": {
+				"/api/me", "/workspaces", "/workspaces/{id}",
+				"/audit/events", "/audit/verification",
+				"/workspaces/{id}/audit/events",
+			},
 			"POST": {"/workspaces"},
 		}
 	case RoleWorkspaceAdmin:
 		return map[string][]string{
-			"GET": {"/api/me", "/workspaces/{id}"},
+			"GET": {"/api/me", "/workspaces/{id}", "/workspaces/{id}/audit/events",
+				"/tasks", "/tasks/{id}",
+				"/knowledge", "/knowledge/{id}", "/memory/{layer}/{key}", "/publications", "/publications/{id}", "/pipelines", "/pipelines/{id}",
+				"/departments", "/departments/{id}", "/teams", "/teams/{id}", "/ai-employees", "/ai-employees/{id}"},
+			"POST":   {"/tasks", "/tasks/{id}/transition", "/knowledge", "/knowledge/search", "/publications", "/publications/{id}/submit", "/publications/{id}/approve", "/publications/{id}/reject", "/publications/{id}/publish", "/publications/{id}/retry", "/pipelines", "/pipelines/{id}/approve", "/pipelines/{id}/retry", "/departments", "/teams", "/ai-employees"},
+			"PATCH":  {"/tasks/{id}", "/knowledge/{id}", "/departments/{id}", "/teams/{id}", "/ai-employees/{id}"},
+			"PUT":    {"/memory/{layer}/{key}"},
+			"DELETE": {"/knowledge/{id}", "/departments/{id}", "/teams/{id}", "/ai-employees/{id}"},
 		}
 	case RoleWorkspaceMember:
 		return map[string][]string{
-			"GET": {"/api/me"},
+			"GET": {"/api/me", "/workspaces/{id}/audit/events",
+				"/tasks", "/tasks/{id}",
+				"/knowledge", "/knowledge/{id}", "/memory/{layer}/{key}", "/publications", "/publications/{id}", "/pipelines", "/pipelines/{id}",
+				"/departments", "/departments/{id}", "/teams", "/teams/{id}", "/ai-employees", "/ai-employees/{id}"},
+			"POST":   {"/tasks", "/tasks/{id}/transition", "/knowledge", "/knowledge/search", "/publications", "/publications/{id}/submit", "/pipelines", "/pipelines/{id}/retry"},
+			"PATCH":  {"/tasks/{id}", "/knowledge/{id}"},
+			"PUT":    {"/memory/{layer}/{key}"},
+			"DELETE": {"/knowledge/{id}"},
 		}
 	default:
 		return nil

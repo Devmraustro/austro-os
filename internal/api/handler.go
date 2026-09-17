@@ -4,14 +4,24 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 
+	"austro-os/internal/audit"
 	"austro-os/internal/auth"
 	"austro-os/internal/config"
 	logger "austro-os/internal/log"
+	"austro-os/internal/middleware"
 	"austro-os/internal/rbac"
+
+	"github.com/google/uuid"
 )
+
+// errAuditUnavailable is returned by recordAudit when no durable sink is wired.
+// A security-relevant operation must not be able to report success without a
+// persisted record, so this is surfaced to the caller rather than logged.
+var errAuditUnavailable = errors.New("durable audit unavailable")
 
 const (
 	// accessTokenTTLSeconds must match the JWT lifetime minted by
@@ -30,6 +40,19 @@ type AuthHandler struct {
 	jwt     *auth.JWTService
 	users   auth.UserStore
 	limiter *RateLimiter
+	// auditSink persists authentication events to the append-only audit
+	// chain. It is nil only in unit tests; a production handler always has
+	// one, and every security-relevant outcome below fails closed when it is
+	// missing.
+	auditSink audit.Sink
+}
+
+// SetAuditSink attaches the persistent audit writer. It is a setter rather than
+// a constructor argument so that the many existing construction sites (mostly
+// tests with no database) stay valid, while main.go wires the real store.
+func (h *AuthHandler) SetAuditSink(s audit.Sink) *AuthHandler {
+	h.auditSink = s
+	return h
 }
 
 // NewAuthHandler builds the handler with the runtime config, the JWT service
@@ -98,6 +121,7 @@ func (h *AuthHandler) Bootstrap(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, auth.ErrUserExists) {
 			auditAuth(u.Username, "bootstrap", "failure", "already_initialized")
+			_ = h.recordAudit(r, authEvent("", "auth.bootstrap", "denied", "already_initialized"))
 			writeJSONError(w, http.StatusConflict, "already initialized")
 			return
 		}
@@ -105,6 +129,13 @@ func (h *AuthHandler) Bootstrap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	auditAuth(u.Username, "bootstrap", "success", "founder_created")
+	// The founder identity is the root of the whole authorization model.
+	// Creating it without a durable audit record must not be reported as a
+	// success, so a persistence failure becomes a 500 and the caller retries.
+	if err := h.recordAudit(r, authEvent(u.ID, "auth.bootstrap", "success", "founder_created")); err != nil {
+		h.serverError(w, "bootstrap", err)
+		return
+	}
 	writeJSON(w, http.StatusCreated, map[string]string{"status": "initialized"})
 }
 
@@ -130,6 +161,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, auth.ErrUserNotFound) {
 			_ = auth.CheckPasswordHash(auth.DummyPasswordHash(), req.Password)
 			auditAuth(req.Username, "login", "failure", "unknown_username")
+			_ = h.recordAudit(r, authEvent("", "auth.login", "denied", "invalid_credentials"))
 			writeJSONError(w, http.StatusUnauthorized, "invalid credentials")
 			return
 		}
@@ -138,6 +170,7 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 	if !auth.CheckPasswordHash(u.PasswordHash, req.Password) {
 		auditAuth(req.Username, "login", "failure", "wrong_password")
+		_ = h.recordAudit(r, authEvent(u.ID, "auth.login", "denied", "invalid_credentials"))
 		writeJSONError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
@@ -147,6 +180,10 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	auditAuth(u.Username, "login", "success", "issued")
+	if err := h.recordAudit(r, authEvent(u.ID, "auth.login", "success", "issued")); err != nil {
+		h.serverError(w, "login", err)
+		return
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -182,6 +219,16 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 	}
 	newRefresh, err := h.jwt.Refresh(req.RefreshToken)
 	if err != nil {
+		// A replayed token is a compromise signal, not a client error: it means
+		// a token already consumed by the legitimate holder was presented
+		// again, and the whole family has just been revoked. It is recorded
+		// under its own outcome so it can be alerted on, and the response stays
+		// uniform so the caller learns nothing.
+		detail := "token_rejected"
+		if errors.Is(err, auth.ErrRefreshTokenReused) {
+			detail = "replay_detected"
+		}
+		_ = h.recordAudit(r, authEvent(u.ID, "auth.refresh", "denied", detail))
 		writeJSONError(w, http.StatusUnauthorized, "invalid token")
 		return
 	}
@@ -191,6 +238,10 @@ func (h *AuthHandler) Refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	auditAuth(u.Username, "refresh", "success", "rotated")
+	if err := h.recordAudit(r, authEvent(u.ID, "auth.refresh", "success", "rotated")); err != nil {
+		h.serverError(w, "refresh", err)
+		return
+	}
 	writeJSON(w, http.StatusOK, &tokenResponse{
 		AccessToken:  access,
 		TokenType:    "bearer",
@@ -220,6 +271,10 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	auditAuth("", "logout", "success", "revoked")
+	if err := h.recordAudit(r, authEvent("", "auth.logout", "success", "revoked")); err != nil {
+		h.serverError(w, "logout", err)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -297,6 +352,15 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst interface{}) bool {
 		writeJSONError(w, http.StatusBadRequest, "invalid request body")
 		return false
 	}
+	// Reject trailing data. Without this a body carrying a second JSON value
+	// after the object we parsed is accepted, which lets a request smuggle
+	// content past anything that inspects only the parsed object and makes the
+	// accepted body differ from the one the client claims to have sent.
+	var extra interface{}
+	if err := dec.Decode(&extra); err != io.EOF {
+		writeJSONError(w, http.StatusBadRequest, "invalid request body")
+		return false
+	}
 	return true
 }
 
@@ -314,6 +378,70 @@ func (h *AuthHandler) serverError(w http.ResponseWriter, action string, err erro
 	auditAuth(action, action, "failure", "internal_error")
 	logger.NewEntry("auth-handler-error").SetLevel("error").With("action", action).WithError(err).Log()
 	writeJSONError(w, http.StatusInternalServerError, "internal error")
+}
+
+// recordAudit persists one security-relevant authentication event to the
+// append-only audit chain and returns any persistence failure.
+//
+// Correlation identifiers come from the request, but only when they parse as
+// UUIDs: a hostile or malformed header is dropped rather than stored, so the
+// audit record cannot be used to smuggle attacker-controlled text into a
+// tamper-evident log.
+//
+// These events are organization-level (WorkspaceID nil): authentication
+// happens before a workspace context is established, and the login history of
+// an identity must remain reachable from whichever workspace it later lands in.
+func (h *AuthHandler) recordAudit(r *http.Request, rec audit.Record) error {
+	if h.auditSink == nil {
+		return errAuditUnavailable
+	}
+	cv := middleware.ExtractContextValues(r)
+	if id, err := uuid.Parse(cv.TraceID); err == nil {
+		rec.TraceID = id
+	}
+	if id, err := uuid.Parse(cv.SpanID); err == nil {
+		rec.SpanID = id
+	}
+	if _, err := h.auditSink.Append(r.Context(), rec); err != nil {
+		logger.NewEntry("audit-persist-failed").SetLevel("error").
+			With("event_type", rec.EventType).
+			With("outcome", rec.Outcome).
+			WithError(err).Log()
+		return err
+	}
+	return nil
+}
+
+// authEvent is the audit record shape shared by the authentication endpoints.
+// Only the identity's UUID is recorded, never the username or any credential:
+// the password and the tokens are not passed in at all, and
+// audit.RedactDetails would strip them if they were.
+func authEvent(actorID string, eventType, outcome, detail string) audit.Record {
+	return audit.Record{
+		EventType:  eventType,
+		ActorType:  "user",
+		ActorID:    parseActorID(actorID),
+		TargetType: "user",
+		TargetID:   parseActorID(actorID),
+		Outcome:    outcome,
+		Principle:  "Security by Design",
+		Details:    map[string]any{"detail": detail},
+	}
+}
+
+// parseActorID converts a stored identity id into the UUID the audit schema
+// uses. An id that does not parse yields the nil UUID rather than an error: the
+// event is still worth recording, and failing an audit write over a malformed
+// identifier would be the worse outcome.
+func parseActorID(id string) uuid.UUID {
+	if id == "" {
+		return uuid.Nil
+	}
+	parsed, err := uuid.Parse(id)
+	if err != nil {
+		return uuid.Nil
+	}
+	return parsed
 }
 
 func auditAuth(actorID, action, outcome, detail string) {

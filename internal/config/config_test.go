@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -330,4 +331,103 @@ func TestLoadStubModeSafeAndDeterministic(t *testing.T) {
 	cfg2, err := LoadStrict()
 	require.NoError(t, err)
 	require.Equal(t, cfg, cfg2)
+}
+
+// TestValidateRejectsShortJWTSecrets verifies the HS256 key floor. A secret
+// that is not a known placeholder but is shorter than the hash output is still
+// below the algorithm's design strength (RFC 7518 §3.2), so it must fail fast
+// rather than be accepted because it merely looks random.
+func TestValidateRejectsShortJWTSecrets(t *testing.T) {
+	short := secureCore()
+	short.JWTSecret = "s3cr3t"
+	err := short.Validate()
+	require.ErrorIs(t, err, ErrConfigInvalid)
+	require.Contains(t, err.Error(), "AUSTRO_JWT_SECRET")
+	require.NotContains(t, err.Error(), "s3cr3t", "the secret value must never be echoed")
+
+	shortRefresh := secureCore()
+	shortRefresh.JWTRefreshSecret = "s3cr3t-refresh"
+	err = shortRefresh.Validate()
+	require.ErrorIs(t, err, ErrConfigInvalid)
+	require.Contains(t, err.Error(), "AUSTRO_JWT_REFRESH_SECRET")
+
+	// Exactly at the floor is accepted; one byte under is not.
+	atFloor := secureCore()
+	atFloor.JWTSecret = strings.Repeat("k", minHMACKeyBytes)
+	atFloor.JWTRefreshSecret = strings.Repeat("k", minHMACKeyBytes)
+	require.NoError(t, atFloor.Validate())
+
+	underFloor := secureCore()
+	underFloor.JWTSecret = strings.Repeat("k", minHMACKeyBytes-1)
+	err = underFloor.Validate()
+	require.ErrorIs(t, err, ErrConfigInvalid)
+	require.Contains(t, err.Error(), "AUSTRO_JWT_SECRET")
+}
+
+// TestValidateRejectsShortFounderPassword verifies the founder credential has a
+// password floor, not just a placeholder check.
+func TestValidateRejectsShortFounderPassword(t *testing.T) {
+	cfg := secureCore()
+	cfg.FounderUsername = "founder"
+	cfg.FounderPassword = "hunter2"
+	err := cfg.Validate()
+	require.ErrorIs(t, err, ErrConfigInvalid)
+	require.Contains(t, err.Error(), "AUSTRO_FOUNDER_PASSWORD")
+
+	ok := secureCore()
+	ok.FounderUsername = "founder"
+	ok.FounderPassword = strings.Repeat("p", minFounderPasswordBytes)
+	require.NoError(t, ok.Validate())
+}
+
+// TestLoadStrictRejectsUnparseableNumericSettings verifies a supplied-but
+// malformed budget setting fails fast instead of being silently replaced by the
+// default. A typo in a retry budget must not look like an intentional unset.
+func TestLoadStrictRejectsUnparseableNumericSettings(t *testing.T) {
+	t.Setenv("AUSTRO_POSTGRES_DSN", "postgres://austro:austro@db:5432/austro?sslmode=disable")
+	t.Setenv("AUSTRO_REDIS_ADDR", "redis:6379")
+	t.Setenv("AUSTRO_RABBITMQ_URL", "amqp://austro:austro@rabbitmq:5672")
+	t.Setenv("AUSTRO_JWT_SECRET", "prod-access-secret-1234567890-abcdef")
+	t.Setenv("AUSTRO_JWT_REFRESH_SECRET", "prod-refresh-secret-1234567890-abcdef")
+
+	t.Setenv("AUSTRO_PUBLISH_MAX_ATTEMPTS", "many")
+	_, err := LoadStrict()
+	require.ErrorIs(t, err, ErrConfigInvalid)
+	require.Contains(t, err.Error(), "AUSTRO_PUBLISH_MAX_ATTEMPTS")
+
+	t.Setenv("AUSTRO_PUBLISH_MAX_ATTEMPTS", "5")
+	t.Setenv("AUSTRO_PUBLISH_RETRY_BACKOFF_BASE", "soon")
+	_, err = LoadStrict()
+	require.ErrorIs(t, err, ErrConfigInvalid)
+	require.Contains(t, err.Error(), "AUSTRO_PUBLISH_RETRY_BACKOFF_BASE")
+
+	t.Setenv("AUSTRO_PUBLISH_RETRY_BACKOFF_BASE", "500ms")
+	t.Setenv("AUSTRO_PUBLISH_RETRY_BACKOFF_MAX", "30")
+	_, err = LoadStrict()
+	require.ErrorIs(t, err, ErrConfigInvalid)
+	require.Contains(t, err.Error(), "AUSTRO_PUBLISH_RETRY_BACKOFF_MAX")
+
+	// Well-formed values still load.
+	t.Setenv("AUSTRO_PUBLISH_RETRY_BACKOFF_MAX", "30s")
+	cfg, err := LoadStrict()
+	require.NoError(t, err)
+	require.Equal(t, 5, cfg.PublishMaxAttempts)
+	require.Equal(t, 500*time.Millisecond, cfg.PublishRetryBackoffBase)
+	require.Equal(t, 30*time.Second, cfg.PublishRetryBackoffMax)
+}
+
+// TestValidateErrorMessageIsDeterministicAndDeduplicated verifies the same
+// misconfiguration always renders the same message and names each offending
+// setting once, even when several rules flag it.
+func TestValidateErrorMessageIsDeterministicAndDeduplicated(t *testing.T) {
+	cfg := secureCore()
+	cfg.JWTSecret = "change-me" // flagged by both the placeholder and the length rule
+	first := cfg.Validate()
+	require.Error(t, first)
+	for i := 0; i < 25; i++ {
+		require.Equal(t, first.Error(), cfg.Validate().Error(),
+			"the validation error must not depend on map iteration order")
+	}
+	require.Equal(t, 1, strings.Count(first.Error(), "AUSTRO_JWT_SECRET"),
+		"a setting flagged by two rules must be named once")
 }

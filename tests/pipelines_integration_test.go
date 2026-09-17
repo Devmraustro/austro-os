@@ -82,6 +82,10 @@ func TestCreatorPipelineLifecycleIntegration(t *testing.T) {
 		orchestration.StagePublish,
 		orchestration.StageComplete,
 	} {
+		if want == orchestration.StagePublish {
+			_, err := svc.Approve(context.Background(), wsA, p.ID, "integration-admin")
+			require.NoError(t, err, "approve reviewed pipeline")
+		}
 		up, err := handler.AdvanceFromEvent(context.Background(), wsA, p.ID, next, "trace-pipe-1", "span-1")
 		require.NoError(t, err, "advance to %s", want)
 		require.Equal(t, want, up.Stage, "expected stage %s", want)

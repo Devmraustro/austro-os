@@ -28,9 +28,17 @@ var (
 	ErrTooLarge          = errors.New("knowledge: content exceeds the maximum length")
 )
 
-// maxContentLength caps a single knowledge document body (abuse control /
+// MaxContentLength caps a single knowledge document body (abuse control /
 // upload and embed limit, ROADMAP §8 knowledge row).
-const maxContentLength = 64 * 1024
+//
+// It is exported so the HTTP boundary can reject an oversized body before the
+// domain sees it, which is what turns the failure into a 400 naming the field
+// rather than a sentinel that has to be classified afterwards.
+const MaxContentLength = 64 * 1024
+
+// maxContentLength is the internal spelling, kept so existing references read
+// naturally.
+const maxContentLength = MaxContentLength
 
 // Kind classifies a knowledge document. Kinds are stored as text and validated
 // here (schema additive).

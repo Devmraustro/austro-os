@@ -3,6 +3,7 @@ package knowledge
 import (
 	"context"
 	"strings"
+	"time"
 
 	logger "austro-os/internal/log"
 	"github.com/google/uuid"
@@ -126,6 +127,130 @@ func (s *Service) Delete(ctx context.Context, workspaceID, id uuid.UUID) error {
 		Outcome: "success", WorkspaceID: workspaceID.String(), DocumentID: id.String(), ActorType: "system",
 	})
 	return nil
+}
+
+// Update modifies the mutable fields of an existing document.
+//
+// Fields are pointers so that "absent" is distinguishable from "set to empty":
+// a PATCH that omits the title must leave the title alone. Every supplied value
+// is validated by the same rules a create goes through, so an update cannot be
+// used to write a document that a create would have refused.
+//
+// The content is re-embedded only when it actually changes. Re-embedding on a
+// title-only edit would spend an AI call to produce a vector from unchanged
+// input, and the vector is what search ranks on, so it must track the content
+// and nothing else.
+func (s *Service) Update(ctx context.Context, workspaceID uuid.UUID, id uuid.UUID,
+	title, content *string, kind *Kind) (*Document, error) {
+
+	if workspaceID == uuid.Nil {
+		return nil, ErrWorkspaceMismatch
+	}
+	existing, err := s.store.Get(ctx, workspaceID, id)
+	if err != nil {
+		return nil, err
+	}
+	// The store is workspace-scoped, but the document carries its own workspace
+	// and comparing it is cheap: a store that ever returned the wrong row would
+	// be caught here rather than written back to.
+	if existing.WorkspaceID != workspaceID {
+		return nil, ErrWorkspaceMismatch
+	}
+
+	next := *existing
+	if kind != nil {
+		if !ValidKind(*kind) {
+			s.audit.Record(ctx, AuditRecord{
+				EventType: "knowledge.update", ConstitutionalPrinciple: "Vision First",
+				Outcome: "failed", WorkspaceID: workspaceID.String(), DocumentID: id.String(),
+				ActorType: "system", TraceID: traceOf(ctx), SpanID: spanOf(ctx),
+			})
+			return nil, ErrInvalidKind
+		}
+		next.Kind = *kind
+	}
+	if title != nil {
+		if strings.TrimSpace(*title) == "" {
+			s.audit.Record(ctx, AuditRecord{
+				EventType: "knowledge.update", ConstitutionalPrinciple: "Vision First",
+				Outcome: "failed", WorkspaceID: workspaceID.String(), DocumentID: id.String(),
+				ActorType: "system", TraceID: traceOf(ctx), SpanID: spanOf(ctx),
+			})
+			return nil, ErrInvalidInput
+		}
+		next.Title = strings.TrimSpace(*title)
+	}
+	contentChanged := false
+	if content != nil {
+		if strings.TrimSpace(*content) == "" {
+			s.audit.Record(ctx, AuditRecord{
+				EventType: "knowledge.update", ConstitutionalPrinciple: "Vision First",
+				Outcome: "failed", WorkspaceID: workspaceID.String(), DocumentID: id.String(),
+				ActorType: "system", TraceID: traceOf(ctx), SpanID: spanOf(ctx),
+			})
+			return nil, ErrInvalidInput
+		}
+		if len(*content) > maxContentLength {
+			s.audit.Record(ctx, AuditRecord{
+				EventType: "knowledge.update", ConstitutionalPrinciple: "Vision First",
+				Outcome: "failed", WorkspaceID: workspaceID.String(), DocumentID: id.String(),
+				ActorType: "system", TraceID: traceOf(ctx), SpanID: spanOf(ctx),
+			})
+			return nil, ErrTooLarge
+		}
+		contentChanged = *content != existing.Content
+		next.Content = *content
+	}
+
+	// The service sets updated_at rather than leaving it to the store. An
+	// invariant that only one adapter happens to enforce is not an invariant: a
+	// second implementation, or a test double, would return a document whose
+	// timestamp says it was never touched.
+	next.UpdatedAt = time.Now().UTC()
+
+	if contentChanged {
+		vec, err := s.embed.Embed(ctx, workspaceID, next.Content, s.dim)
+		if err != nil {
+			s.audit.Record(ctx, AuditRecord{
+				EventType: "knowledge.update", ConstitutionalPrinciple: "AI Independence",
+				Outcome: "failed", WorkspaceID: workspaceID.String(), DocumentID: id.String(),
+				ActorType: "system", TraceID: traceOf(ctx), SpanID: spanOf(ctx),
+			})
+			return nil, err
+		}
+		next.Embedding = vec
+	}
+
+	stored, err := s.store.Update(ctx, &next)
+	if err != nil {
+		s.audit.Record(ctx, AuditRecord{
+			EventType: "knowledge.update", ConstitutionalPrinciple: "Vision First",
+			Outcome: "failed", WorkspaceID: workspaceID.String(), DocumentID: id.String(),
+			ActorType: "system", TraceID: traceOf(ctx), SpanID: spanOf(ctx),
+		})
+		return nil, err
+	}
+	s.audit.Record(ctx, AuditRecord{
+		EventType: "knowledge.update", ConstitutionalPrinciple: "Vision First",
+		Outcome: "success", WorkspaceID: workspaceID.String(), DocumentID: stored.ID.String(),
+		ActorType: "system", TraceID: traceOf(ctx), SpanID: spanOf(ctx),
+	})
+	_ = s.events.Publish(ctx, "knowledge.updated", stored.ID, workspaceID, traceOf(ctx), spanOf(ctx))
+	log(workspaceID, "knowledge-updated").With("document_id", stored.ID).Log()
+	return stored, nil
+}
+
+// ListPage returns one bounded page of the workspace's documents, newest first.
+//
+// It is the API-facing listing. List is left in place for callers that genuinely
+// want a whole small workspace, but it has no bound and no order, so it is not
+// safe to put behind a route.
+func (s *Service) ListPage(ctx context.Context, workspaceID uuid.UUID, q ListQuery) (Page, error) {
+	if workspaceID == uuid.Nil {
+		return Page{}, ErrWorkspaceMismatch
+	}
+	q.Normalize()
+	return s.store.ListPage(ctx, workspaceID, q)
 }
 
 func log(workspaceID uuid.UUID, msg string) *logger.Entry {

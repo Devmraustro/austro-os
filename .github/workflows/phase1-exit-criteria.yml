@@ -41,64 +41,191 @@ jobs:
           fi
 
       - name: Verify RLS policies exist
+        # The authoritative schema must declare the workspace isolation policy
+        # for every workspace-scoped table. Previously this printed a note when
+        # nothing matched, so a deleted policy set still passed.
         run: |
           echo "=== Checking for proper RLS policies ==="
-          grep -r "CREATE POLICY" --include="*.py" --include="*.go" . || echo "Note: No RLS policies found in source"
+          count=$(grep -c "CREATE POLICY workspace_isolation_policy" infrastructure/database/database.go)
+          echo "workspace_isolation_policy declarations: $count"
+          if [ "$count" -lt 10 ]; then
+            echo "FAIL: expected at least 10 workspace_isolation_policy declarations, found $count"
+            exit 1
+          fi
+          if ! grep -q "ENABLE ROW LEVEL SECURITY" infrastructure/database/database.go; then
+            echo "FAIL: row level security is never enabled"
+            exit 1
+          fi
       - name: Verify audit hash chain genesis handling
+        # The genesis branch must not index events[i-1] at i==0. The audit
+        # verifier guards i==0 explicitly, so the pattern is only legitimate
+        # inside a branch that has already handled the genesis case.
         run: |
           echo "=== Checking audit hash chain genesis ==="
-          # Verify no events[i-1] when i==0 pattern
-          grep -rn "events\[i-1\]" --include="*.py" --include="*.go" . | grep -v "test" || echo "PASS: No unsafe events[i-1] pattern found"
+          if ! grep -q "GenesisPreimage" internal/audit/audit.go; then
+            echo "FAIL: the audit chain no longer exposes its genesis pre-image"
+            exit 1
+          fi
+          if ! grep -q "GENESIS_HASH" internal/audit/audit.go; then
+            echo "FAIL: the GENESIS_HASH chain constant is gone"
+            exit 1
+          fi
+          echo "PASS: genesis handling present (behaviour is asserted by TestAuditChainTamperDetected)"
         
       - name: Verify principle references in events
         run: |
           echo "=== Checking principle references ==="
-          # Every event should have constitutional_principle
-          grep -rn "constitutional_principle" --include="*.py" --include="*.go" . | head -20
+          # Every event carries constitutional_principle, declared both by the
+          # persisted schema and by the audit domain type.
+          #
+          # api/openapi.yaml used to be a third target, because the spec carried
+          # an AuditEvent schema enumerating the principles. That schema
+          # described an audit endpoint the server never routed, so it was
+          # removed as dead contract; a spec that documents unroutable
+          # operations is checked by TestOpenAPIMatchesRegisteredRoutes instead.
+          for target in infrastructure/database/database.go internal/audit/audit.go; do
+            if ! grep -q "constitutional_principle" "$target"; then
+              echo "FAIL: $target does not declare constitutional_principle"
+              exit 1
+            fi
+            echo "OK: $target"
+          done
           
       - name: Verify OpenAPI principle references
+        # The previous command grepped "openapi.yaml" at the repository root.
+        # The spec lives at api/openapi.yaml, so grep found no file and the step
+        # passed without checking anything.
         run: |
           echo "=== Checking OpenAPI principle references ==="
-          grep -A 5 "principles:" openapi.yaml | head -40
+          if [ ! -f api/openapi.yaml ]; then
+            echo "FAIL: api/openapi.yaml is missing"
+            exit 1
+          fi
+          count=$(grep -c "principles:" api/openapi.yaml)
+          # Derive the expectation instead of hardcoding it, so adding a
+          # capability does not require editing this step -- and so the step
+          # still fails when someone adds an operation and forgets the
+          # declaration. The rule is: every operation except the two
+          # unauthenticated health probes declares at least one principle.
+          ops=$(grep -cE '^    (get|post|put|patch|delete):$' api/openapi.yaml)
+          expected=$((ops - 2))
+          echo "operations: $ops, declaring principles: $count, expected: $expected"
+          if [ "$ops" -lt 3 ]; then
+            echo "FAIL: parsed only $ops operations from the spec; the operation grep is broken"
+            exit 1
+          fi
+          # The old floor of 17 was only reachable because the document also
+          # carried eight operations the server never routed; a lower bound that
+          # large cannot be met by an honest spec.
+          # TestOpenAPIDeclaresPrinciplesForAuthenticatedOperations asserts the
+          # same rule structurally, against the parsed document.
+          if [ "$count" -ne "$expected" ]; then
+            echo "FAIL: expected $expected principle declarations (every non-health operation), found $count"
+            exit 1
+          fi
           
       - name: Verify organization hierarchy invariants
+        # Founder→CEO→Workspace→Department→Team→AI Employee must be expressed as
+        # real foreign keys in the authoritative schema, not just described.
         run: |
           echo "=== Checking organization hierarchy ==="
-          # Verify Founder→CEO→Workspace→Department→Team→AI Employee
-          echo "Hierarchy invariants must be enforced"
+          schema=infrastructure/database/database.go
+          for fk in "REFERENCES workspaces(id)" "REFERENCES departments(id)" "REFERENCES teams(id)"; do
+            if ! grep -q "$fk" "$schema"; then
+              echo "FAIL: the schema is missing a $fk foreign key"
+              exit 1
+            fi
+            echo "OK: $fk"
+          done
           
       - name: Verify health endpoints
+        # The previous form passed a directory to grep without -r, so it could
+        # not match anything and fell through to the echo.
         run: |
           echo "=== Checking health endpoints ==="
-          grep -A 10 "/health/live" --include="*.yaml" . || echo "Check openapi.yaml"
-          grep -A 10 "/health/ready" --include="*.yaml" . || echo "Check openapi.yaml"
+          for probe in /health/live /health/ready; do
+            if ! grep -rq "$probe" api/openapi.yaml; then
+              echo "FAIL: $probe is not documented in api/openapi.yaml"
+              exit 1
+            fi
+            if ! grep -rq "$probe" main.go; then
+              echo "FAIL: $probe is not registered by the API"
+              exit 1
+            fi
+            echo "OK: $probe registered and documented"
+          done
           
       - name: Verify no plain-text logs
+        # `grep | head` exits with head's status, so this could never fail. The
+        # production tree is scanned for the plain-text standard library log
+        # calls the structured JSON logger replaces.
         run: |
           echo "=== Checking for structured logging ==="
-          grep -rn "fmt\.Printf\|log\.Printf" --include="*.go" . | head -10 || echo "Check Go source for structured JSON logging"
+          hits=$(grep -rn "log\.Println\|log\.Printf\|log\.Fatalf\|log\.Fatal(\|log\.Print(" \
+            --include="*.go" internal/ infrastructure/ cmd/ main.go || true)
+          if [ -n "$hits" ]; then
+            echo "FAIL: plain-text log calls found (use the structured JSON logger):"
+            echo "$hits"
+            exit 1
+          fi
+          echo "PASS: no plain-text log calls in production code"
           
       - name: Verify Redis workspace partitioning
         run: |
           echo "=== Checking Redis workspace partitioning ==="
-          grep -rn "workspace:" --include="*.go" . | head -10
+          # The partitioning helpers must exist and agree on the prefix; the
+          # behaviour is asserted by infrastructure/redis/redis_test.go.
+          if ! grep -q "workspaceKeyPrefix" infrastructure/redis/redis.go; then
+            echo "FAIL: the Redis workspace prefix constant is missing"
+            exit 1
+          fi
+          if ! grep -q "func IsPartitionedKey" infrastructure/redis/redis.go; then
+            echo "FAIL: IsPartitionedKey is missing"
+            exit 1
+          fi
+          echo "PASS: Redis workspace partitioning helpers present"
           
       - name: Verify PGVector workspace filtering
         run: |
           echo "=== Checking PGVector workspace filtering ==="
-          grep -rn "workspace_id" --include="*.go" . | head -10
+          # Both vector tables are workspace-scoped and carry an isolation
+          # policy; every similarity query filters on workspace_id.
+          for tbl in memory_embeddings knowledge_documents; do
+            if ! grep -q "CREATE POLICY workspace_isolation_policy ON $tbl" infrastructure/database/database.go; then
+              echo "FAIL: $tbl has no workspace isolation policy"
+              exit 1
+            fi
+            echo "OK: $tbl is workspace-scoped"
+          done
+          if ! grep -q "workspace_id = \$1" infrastructure/postgres/knowledge.go; then
+            echo "FAIL: knowledge similarity queries no longer filter by workspace_id"
+            exit 1
+          fi
           
       - name: Verify dependency direction (no circular deps)
+        # The domain layer must not reach down into infrastructure. Previously
+        # this step only echoed the rule; it now enforces it. go build/vet
+        # passing remains the structural proof that there are no import cycles.
         run: |
           echo "=== Checking dependency direction ==="
-          # Verify modular monolith dependency direction
-          echo "Dependency direction: Presentation→Application→Domain→Intelligence→Shared Services→Infrastructure"
-          echo "No circular dependencies allowed"
+          hits=$(grep -rn "austro-os/infrastructure" --include="*.go" internal/ || true)
+          if [ -n "$hits" ]; then
+            echo "FAIL: internal/ imports infrastructure (illegal dependency direction):"
+            echo "$hits"
+            exit 1
+          fi
+          echo "PASS: internal/ does not import infrastructure"
           
       - name: Verify JWT authentication
         run: |
           echo "=== Checking JWT authentication ==="
-          grep -rn "jwt\.\|JWT" --include="*.go" . | head -10
+          for required in "VerifyAccessToken" "IssueRefreshToken" "Refresh" "RevokeRefreshToken"; do
+            if ! grep -q "func (s \*JWTService) $required" internal/auth/auth.go; then
+              echo "FAIL: internal/auth no longer implements $required"
+              exit 1
+            fi
+            echo "OK: $required present"
+          done
           
       - name: Verify .env.example exists
         run: |
@@ -109,10 +236,50 @@ jobs:
         run: |
           echo "=== Checking constitutional principles ==="
           # All 18 principles must be present
-          principles="Vision First Architecture Before Implementation Documentation Is Part of the Product Quality Over Speed Modular Design Replaceability Separation of Concerns AI Independence Security by Design Privacy by Design Human Oversight Continuous Improvement Observability Backward Compatibility Simplicity Scalability Explicit Decisions Founder Authority"
-          for p in $principles; do
-            grep -q "$p" CONSTITUTION.md && echo "OK: $p" || echo "MISSING: $p"
-          done
+          # One principle per line: an unquoted space-separated list would word
+          # split, so the loop checked single words ("Vision", "First", ...) and
+          # passed without ever matching a full principle name.
+          principles="Vision First
+          Architecture Before Implementation
+          Documentation Is Part of the Product
+          Quality Over Speed
+          Modular Design
+          Replaceability
+          Separation of Concerns
+          AI Independence
+          Security by Design
+          Privacy by Design
+          Human Oversight
+          Continuous Improvement
+          Observability
+          Backward Compatibility
+          Simplicity
+          Scalability
+          Explicit Decisions
+          Founder Authority"
+          missing=0
+          checked=0
+          while IFS= read -r p; do
+            p=$(echo "$p" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            [ -z "$p" ] && continue
+            checked=$((checked + 1))
+            if grep -q "$p" CONSTITUTION.md; then
+              echo "OK: $p"
+            else
+              echo "MISSING: $p"
+              missing=$((missing + 1))
+            fi
+          done <<PRINCIPLES
+          $principles
+          PRINCIPLES
+          if [ "$checked" -ne 18 ]; then
+            echo "FAIL: expected to check 18 principles, checked $checked"
+            exit 1
+          fi
+          if [ "$missing" -ne 0 ]; then
+            echo "FAIL: $missing constitutional principles are not documented"
+            exit 1
+          fi
           
       - name: Phase 1 exit criteria summary
         run: |

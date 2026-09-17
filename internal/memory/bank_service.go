@@ -15,6 +15,14 @@ import (
 // four memory layers. It is satisfied by repository.Repository implementations
 // (and by fakes in tests). Keeping memory against a narrow port instead of the
 // whole repository preserves interface segregation (Separation of Concerns).
+// ErrorAuditSink is an optional stronger audit contract. Existing in-memory
+// sinks intentionally remain fire-and-forget, while the production adapter can
+// fail closed when a persistent audit append fails.
+type ErrorAuditSink interface {
+	AuditSink
+	RecordError(ctx context.Context, rec AuditRecord) error
+}
+
 type cellStore interface {
 	StoreSessionMemory(ctx context.Context, key string, value []byte, ttl time.Duration) error
 	RetrieveSessionMemory(ctx context.Context, key string) ([]byte, error)
@@ -68,7 +76,7 @@ func (b *Bank) Write(ctx context.Context, workspaceID uuid.UUID, layer MemoryLay
 		return ErrWorkspaceRequired
 	}
 	if !ValidLayer(layer) {
-		return ErrInvalidKey
+		return ErrInvalidLayer
 	}
 	if err := validateKey(key); err != nil {
 		return err
@@ -102,17 +110,24 @@ func (b *Bank) Write(ctx context.Context, workspaceID uuid.UUID, layer MemoryLay
 		err = b.store.StoreOrganizationalMemory(ctx, cell, value, ttl)
 	}
 	if err != nil {
-		b.audit.Record(ctx, AuditRecord{
-			EventType: "memory.write", ConstitutionalPrinciple: "Security by Design",
+		_ = b.recordAudit(ctx, AuditRecord{
+			EventType: "memory.write", ActorType: actorTypeOf(ctx), ActorID: actorIDOf(ctx), ConstitutionalPrinciple: "Security by Design",
 			Outcome: "failed", WorkspaceID: workspaceID.String(), Layer: layerString(layer), Key: key,
+			TraceID: traceOf(ctx), SpanID: spanOf(ctx),
 		})
 		return err
 	}
-	b.audit.Record(ctx, AuditRecord{
-		EventType: "memory.write", ConstitutionalPrinciple: "Privacy by Design",
+	if err := b.recordAudit(ctx, AuditRecord{
+		EventType: "memory.write", ActorType: actorTypeOf(ctx), ActorID: actorIDOf(ctx), ConstitutionalPrinciple: "Privacy by Design",
 		Outcome: "success", WorkspaceID: workspaceID.String(), Layer: layerString(layer), Key: key,
 		TraceID: traceOf(ctx), SpanID: spanOf(ctx),
-	})
+	}); err != nil {
+		// A successful write without its durable audit record is not a
+		// successful API mutation. Remove the cell best-effort before returning
+		// the failure so the Redis store does not retain an unaudited orphan.
+		_ = b.deleteCell(ctx, workspaceID, layer, cell)
+		return err
+	}
 	_ = b.events.Publish(ctx, "memory.written", workspaceID, layerString(layer), key, traceOf(ctx), spanOf(ctx))
 	log(workspaceID, "memory-written").With("layer", layerString(layer)).With("key", key).Log()
 	return nil
@@ -125,7 +140,7 @@ func (b *Bank) Read(ctx context.Context, workspaceID uuid.UUID, layer MemoryLaye
 		return nil, ErrWorkspaceRequired
 	}
 	if !ValidLayer(layer) {
-		return nil, ErrInvalidKey
+		return nil, ErrInvalidLayer
 	}
 	if err := validateKey(key); err != nil {
 		return nil, err
@@ -149,11 +164,13 @@ func (b *Bank) Read(ctx context.Context, workspaceID uuid.UUID, layer MemoryLaye
 	if out == nil {
 		return nil, ErrNotFound
 	}
-	b.audit.Record(ctx, AuditRecord{
-		EventType: "memory.read", ConstitutionalPrinciple: "Minimal Disclosure",
+	if err := b.recordAudit(ctx, AuditRecord{
+		EventType: "memory.read", ActorType: actorTypeOf(ctx), ActorID: actorIDOf(ctx), ConstitutionalPrinciple: "Minimal Disclosure",
 		Outcome: "success", WorkspaceID: workspaceID.String(), Layer: layerString(layer), Key: key,
 		TraceID: traceOf(ctx), SpanID: spanOf(ctx),
-	})
+	}); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
@@ -163,7 +180,7 @@ func (b *Bank) Delete(ctx context.Context, workspaceID uuid.UUID, layer MemoryLa
 		return ErrWorkspaceRequired
 	}
 	if !ValidLayer(layer) {
-		return ErrInvalidKey
+		return ErrInvalidLayer
 	}
 	if err := validateKey(key); err != nil {
 		return err
@@ -183,10 +200,12 @@ func (b *Bank) Delete(ctx context.Context, workspaceID uuid.UUID, layer MemoryLa
 	if err != nil {
 		return err
 	}
-	b.audit.Record(ctx, AuditRecord{
-		EventType: "memory.delete", ConstitutionalPrinciple: "Privacy by Design",
+	if err := b.recordAudit(ctx, AuditRecord{
+		EventType: "memory.delete", ActorType: actorTypeOf(ctx), ActorID: actorIDOf(ctx), ConstitutionalPrinciple: "Privacy by Design",
 		Outcome: "success", WorkspaceID: workspaceID.String(), Layer: layerString(layer), Key: key,
-	})
+	}); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -225,6 +244,8 @@ type AuditSink interface {
 // AuditRecord is the memory service's audit contract. Only non-secret metadata.
 type AuditRecord struct {
 	EventType               string
+	ActorType               string
+	ActorID                 string
 	ConstitutionalPrinciple string
 	Outcome                 string
 	WorkspaceID             string
@@ -232,6 +253,31 @@ type AuditRecord struct {
 	Key                     string
 	TraceID                 string
 	SpanID                  string
+}
+
+// recordAudit invokes the stronger production contract when available, while
+// preserving compatibility with the existing fire-and-forget test sinks.
+func (b *Bank) recordAudit(ctx context.Context, rec AuditRecord) error {
+	if sink, ok := b.audit.(ErrorAuditSink); ok {
+		return sink.RecordError(ctx, rec)
+	}
+	b.audit.Record(ctx, rec)
+	return nil
+}
+
+func (b *Bank) deleteCell(ctx context.Context, workspaceID uuid.UUID, layer MemoryLayer, cell string) error {
+	switch layer {
+	case LayerSession:
+		return b.store.DeleteSessionMemory(ctx, cell)
+	case LayerLongTerm:
+		return b.store.DeleteLongTermMemory(ctx, cell)
+	case LayerWorkspace:
+		return b.store.DeleteWorkspaceMemory(ctx, cell)
+	case LayerOrganizational:
+		return b.store.DeleteOrganizationalMemory(ctx, cell)
+	default:
+		return ErrInvalidLayer
+	}
 }
 
 // NullAuditSink discards decisions.
@@ -294,6 +340,27 @@ func log(workspaceID uuid.UUID, msg string) *logger.Entry {
 
 type traceKey struct{}
 type spanKey struct{}
+type actorKey struct{}
+
+// WithActor attaches the verified actor to the context used by the HTTP
+// adapter. The value is never accepted from a request body or header.
+func WithActor(ctx context.Context, actorID string) context.Context {
+	return context.WithValue(ctx, actorKey{}, actorID)
+}
+
+func actorTypeOf(ctx context.Context) string {
+	if v := actorIDOf(ctx); v != "" {
+		return "user"
+	}
+	return "system"
+}
+
+func actorIDOf(ctx context.Context) string {
+	if v, ok := ctx.Value(actorKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
 
 // WithTrace attaches a trace/span id to ctx for audit propagation.
 func WithTrace(ctx context.Context, trace, span string) context.Context {

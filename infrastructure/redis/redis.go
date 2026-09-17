@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"austro-os/internal/config"
 	logger "austro-os/internal/log"
@@ -29,9 +30,15 @@ func Initialize(cfg *config.Config) *redis.Client {
 }
 
 func PartitionedKey(workspaceID string, key string) string {
-	return fmt.Sprintf("workspace:%s:%s", workspaceID, key)
+	return fmt.Sprintf("%s%s:%s", workspaceKeyPrefix, workspaceID, key)
 }
 
+// workspaceKeyPrefix is the namespace prefix PartitionedKey applies.
+const workspaceKeyPrefix = "workspace:"
+
+// IsPartitionedKey reports whether a key carries the workspace namespace
+// prefix. The previous comparison sliced 12 bytes and compared them against the
+// 10-byte prefix, so it could never match and the helper always returned false.
 func IsPartitionedKey(key string) bool {
-	return len(key) > 12 && key[:12] == "workspace:"
+	return strings.HasPrefix(key, workspaceKeyPrefix)
 }

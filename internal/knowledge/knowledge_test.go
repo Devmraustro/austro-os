@@ -3,6 +3,7 @@ package knowledge
 import (
 	"context"
 	"errors"
+	"sort"
 	"testing"
 
 	"github.com/google/uuid"
@@ -72,6 +73,57 @@ func (f *fakeStore) List(_ context.Context, ws uuid.UUID, kind *Kind) ([]*Docume
 		out = append(out, &c)
 	}
 	return out, nil
+}
+
+func (f *fakeStore) Update(_ context.Context, d *Document) (*Document, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	existing, ok := f.byID[d.ID]
+	// A real UPDATE that matches no row reports not found rather than inserting,
+	// which is the whole reason Update is not routed through Upsert.
+	if !ok || existing.WorkspaceID != d.WorkspaceID {
+		return nil, ErrNotFound
+	}
+	*existing = *d
+	return existing, nil
+}
+
+func (f *fakeStore) ListPage(_ context.Context, ws uuid.UUID, q ListQuery) (Page, error) {
+	if f.err != nil {
+		return Page{}, f.err
+	}
+	q.Normalize()
+	all, err := f.List(context.Background(), ws, q.Kind)
+	if err != nil {
+		return Page{}, err
+	}
+	// Newest first, id as the tie-break -- the same total order the SQL uses, so
+	// a test asserting cursor behaviour here is asserting the real contract.
+	sort.Slice(all, func(i, j int) bool {
+		if !all[i].CreatedAt.Equal(all[j].CreatedAt) {
+			return all[i].CreatedAt.After(all[j].CreatedAt)
+		}
+		return all[i].ID.String() > all[j].ID.String()
+	})
+	if q.Before.Set {
+		var kept []*Document
+		for _, d := range all {
+			after := d.CreatedAt.Before(q.Before.CreatedAt) ||
+				(d.CreatedAt.Equal(q.Before.CreatedAt) && d.ID.String() < q.Before.ID.String())
+			if after {
+				kept = append(kept, d)
+			}
+		}
+		all = kept
+	}
+	page := Page{Limit: q.Limit}
+	if len(all) > q.Limit {
+		all = all[:q.Limit]
+		page.NextCursor = EncodeCursor(all[len(all)-1])
+	}
+	page.Documents = all
+	return page, nil
 }
 
 func (f *fakeStore) Search(_ context.Context, ws uuid.UUID, _ []float32, kind *Kind, limit int) ([]*Document, error) {

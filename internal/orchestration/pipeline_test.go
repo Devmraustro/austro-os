@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -114,7 +115,16 @@ func TestFullPipelineLifecycle(t *testing.T) {
 		t.Fatalf("expected review/awaiting_approval, got %s/%s", p.Stage, p.Status)
 	}
 
-	// review -> publish (human gate consumed via the stub publisher)
+	// Review cannot advance until a named human approval command records the
+	// handoff. The publisher is still the deterministic domain stub in this
+	// infrastructure-free test.
+	if _, err = svc.Advance(ctx(), ws, p.ID, StageReview, StagePublish); err != ErrApprovalRequired {
+		t.Fatalf("expected approval gate, got %v", err)
+	}
+	p, err = svc.Approve(ctx(), ws, p.ID, "operator")
+	if err != nil {
+		t.Fatalf("approve review: %v", err)
+	}
 	p, err = svc.Advance(ctx(), ws, p.ID, StageReview, StagePublish)
 	if err != nil {
 		t.Fatalf("review->publish: %v", err)
@@ -155,6 +165,131 @@ func TestInvalidAndSkippedTransitions(t *testing.T) {
 	// bogus stage
 	if _, err := svc.Advance(ctx(), ws, p.ID, StageResearch, Stage("bogus")); err != ErrInvalidStage {
 		t.Fatalf("expected ErrInvalidStage, got %v", err)
+	}
+}
+
+type failOnceReviewer struct{ failed bool }
+
+type flakyEventSink struct{ calls, failAt int }
+
+func (s *flakyEventSink) PublishPipeline(context.Context, string, uuid.UUID, uuid.UUID, string, string, string) error {
+	s.calls++
+	if s.calls == s.failAt {
+		return errors.New("temporary event publish failure")
+	}
+	return nil
+}
+
+func (r *failOnceReviewer) Review(context.Context, uuid.UUID, *Pipeline) (bool, error) {
+	if !r.failed {
+		r.failed = true
+		return false, errors.New("temporary review dependency failure")
+	}
+	return true, nil
+}
+
+func TestDuplicateWorkerDeliveryRepairsLostFollowerEvent(t *testing.T) {
+	store := newMemStore()
+	events := &flakyEventSink{failAt: 2} // create succeeds; script event is lost once
+	svc := NewService(store, StubResearcher{}, StubScriptWriter{}, StubReviewer{}, StubPublisher{}, nil, events)
+	ws := validWS()
+	p, err := svc.Create(ctx(), ws, nil, "trace")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	handler := NewHandler(svc)
+	if _, err = handler.AdvanceFromEvent(ctx(), ws, p.ID, StageResearch, "trace", "span"); err == nil {
+		t.Fatal("lost event must be surfaced for worker redelivery")
+	}
+	if _, err = handler.AdvanceFromEvent(ctx(), ws, p.ID, StageResearch, "trace", "span"); err != nil {
+		t.Fatalf("duplicate delivery should republish follower: %v", err)
+	}
+	current, err := svc.Get(ctx(), ws, p.ID)
+	if err != nil {
+		t.Fatalf("get repaired pipeline: %v", err)
+	}
+	if current.Stage != StageScript || events.calls != 3 {
+		t.Fatalf("unexpected repaired state: stage=%s event_calls=%d", current.Stage, events.calls)
+	}
+}
+
+func TestApprovalIsIdempotentAndRepublishesEvent(t *testing.T) {
+	store := newMemStore()
+	events := &flakyEventSink{}
+	svc := NewService(store, StubResearcher{}, StubScriptWriter{}, StubReviewer{}, StubPublisher{}, nil, events)
+	ws := validWS()
+	p := basePipeline(t, store, ws)
+
+	var err error
+	if p, err = svc.Advance(ctx(), ws, p.ID, StageResearch, StageScript); err != nil {
+		t.Fatalf("research->script: %v", err)
+	}
+	if p, err = svc.Advance(ctx(), ws, p.ID, StageScript, StageReview); err != nil {
+		t.Fatalf("script->review: %v", err)
+	}
+	beforeApprovalEvents := events.calls
+	approved, err := svc.Approve(ctx(), ws, p.ID, "operator")
+	if err != nil {
+		t.Fatalf("first approval: %v", err)
+	}
+	if !approved.Approved() || approved.ApprovedBy != "operator" {
+		t.Fatalf("approval was not durably recorded: %#v", approved)
+	}
+
+	// A retried approval must not perform a second state transition, but it must
+	// republish the durable follower event if the first publication was lost.
+	repeated, err := svc.Approve(ctx(), ws, p.ID, "operator")
+	if err != nil {
+		t.Fatalf("idempotent approval: %v", err)
+	}
+	if !repeated.Approved() || repeated.ApprovedBy != "operator" || repeated.ID != approved.ID {
+		t.Fatalf("idempotent approval changed the aggregate: %#v", repeated)
+	}
+	if events.calls != beforeApprovalEvents+2 {
+		t.Fatalf("expected one event for each approval attempt, got %d total", events.calls)
+	}
+}
+
+func TestFailedStageCanOnlyRecoverThroughRetry(t *testing.T) {
+	store := newMemStore()
+	reviewer := &failOnceReviewer{}
+	svc := NewService(store, StubResearcher{}, StubScriptWriter{}, reviewer, StubPublisher{}, nil, nil)
+	ws := validWS()
+	p := basePipeline(t, store, ws)
+
+	p, err := svc.Advance(ctx(), ws, p.ID, StageResearch, StageScript)
+	if err != nil {
+		t.Fatalf("research->script: %v", err)
+	}
+	if _, err = svc.Advance(ctx(), ws, p.ID, StageScript, StageReview); err == nil {
+		t.Fatal("temporary stage failure must be returned")
+	}
+	failed, err := svc.Get(ctx(), ws, p.ID)
+	if err != nil {
+		t.Fatalf("get failed pipeline: %v", err)
+	}
+	if failed.Status != StatusFailed || failed.FailureReason == "" {
+		t.Fatalf("expected durable failure evidence, got %s/%q", failed.Status, failed.FailureReason)
+	}
+	if _, err = svc.Advance(ctx(), ws, p.ID, StageScript, StageReview); err != ErrTerminalState {
+		t.Fatalf("failed pipeline must not be advanced directly, got %v", err)
+	}
+
+	recovered, err := svc.Retry(ctx(), ws, p.ID, "operator")
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if recovered.Stage != StageReview || recovered.Status != StatusAwaitingApproval || recovered.RetryCount != 1 {
+		t.Fatalf("unexpected recovery state: %s/%s retries=%d", recovered.Stage, recovered.Status, recovered.RetryCount)
+	}
+	if _, err = svc.Approve(ctx(), ws, p.ID, "operator"); err != nil {
+		t.Fatalf("approve recovery: %v", err)
+	}
+	if _, err = svc.Advance(ctx(), ws, p.ID, StageReview, StagePublish); err != nil {
+		t.Fatalf("publish recovery: %v", err)
+	}
+	if _, err = svc.Advance(ctx(), ws, p.ID, StagePublish, StageComplete); err != nil {
+		t.Fatalf("complete recovery: %v", err)
 	}
 }
 
