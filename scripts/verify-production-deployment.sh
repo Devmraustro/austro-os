@@ -248,14 +248,15 @@ printf '\n=== 5b. Production compose — structural lint ===\n'
 # the one this was authored in) that have no Docker at all.
 COMPOSE_LINT_EXPECTED="postgres,redis,rabbitmq,api,worker,reverse-proxy,reverse-proxy-caddy"
 
+# The linter is written to a temp file once and reused by sections 5b and 5c.
+COMPOSE_LINT="$(mktemp)"
+COMPOSE_LINT_PROBE="$(mktemp)"
+trap 'rm -f "$COMPOSE_LINT" "$COMPOSE_LINT_PROBE"' EXIT
+
 if ! command -v python3 >/dev/null 2>&1; then
     # Not a pass: the check could not run at all.
-    fail "compose structural lint could not run (python3 unavailable) — BLOCKED"
+    fail "YAML structural lint could not run (python3 unavailable) — BLOCKED"
 else
-    COMPOSE_LINT="$(mktemp)"
-    COMPOSE_LINT_PROBE="$(mktemp)"
-    trap 'rm -f "$COMPOSE_LINT" "$COMPOSE_LINT_PROBE"' EXIT
-
     cat >"$COMPOSE_LINT" <<'PYTHON_LINTER_EOF'
 #!/usr/bin/env python3
 """Structural lint for a docker compose YAML file.
@@ -281,7 +282,8 @@ def unquote_ok(text):
     return text.count('"') % 2 == 0 and text.count("'") % 2 == 0
 
 
-def check(path, expected_services):
+def check(path, expected_services, allowed_top=None):
+    allowed = set(allowed_top) if allowed_top else set(ALLOWED_TOP)
     problems = []
     text = open(path, encoding="utf-8").read()
     seen = {}            # (ancestry path, indent, key) -> first line number
@@ -291,6 +293,9 @@ def check(path, expected_services):
     services = []
     prev_indent = 0
     prev_opens = False
+    # Indent of an open block scalar (`key: |` or `key: >`). Its following,
+    # more-indented lines are literal content and must not be parsed as YAML.
+    block_scalar_indent = None
 
     for number, raw in enumerate(text.split("\n"), 1):
         if "\t" in raw:
@@ -302,6 +307,11 @@ def check(path, expected_services):
         indent = len(line) - len(line.lstrip(" "))
         body = line.lstrip(" ")
 
+        if block_scalar_indent is not None:
+            if indent > block_scalar_indent:
+                continue          # literal content of the block scalar
+            block_scalar_indent = None   # the block ended; parse this line normally
+
         if indent % 2:
             problems.append(f"line {number}: indentation {indent} is not a multiple of 2")
         if not unquote_ok(body):
@@ -312,6 +322,10 @@ def check(path, expected_services):
         # A key opens a block when it carries no scalar value, or when its value
         # is an anchor (`key: &anchor`) that its children attach to.
         opens = (bool(match) and (value == "" or value.startswith("&"))) or bool(LIST_MAPPING.match(body))
+        if match and re.match(r'^[|>][+-]?[0-9]?$', value):
+            # `key: |`, `key: >-`, ... — the value is a block scalar.
+            block_scalar_indent = indent
+            opens = False
 
         if indent == 0:
             if not match:
@@ -352,6 +366,13 @@ def check(path, expected_services):
         else:
             while stack and stack[-1][0] >= indent:
                 stack.pop()
+            if LIST_MAPPING.match(body):
+                # A list item that opens a mapping (`- name: x`) is its own node:
+                # the keys indented beneath it belong to THAT item, not to the
+                # list's parent. The line number is the discriminator, so two
+                # items whose opening text is identical (the same `uses:` step
+                # in two places) stay distinct nodes instead of colliding.
+                stack.append((indent, f"{body.split(':')[0]}#L{number}"))
 
         # Service names are the mapping keys directly under `services:`.
         if in_services and indent == 2 and re.match(r'^[A-Za-z0-9_.\-]+:$', body):
@@ -360,9 +381,9 @@ def check(path, expected_services):
         prev_indent, prev_opens = indent, opens
 
     for key in top_level:
-        if key not in ALLOWED_TOP and not key.startswith("x-"):
+        if key not in allowed and not key.startswith("x-"):
             problems.append(f"unexpected top-level key '{key}'")
-    if "services" not in top_level:
+    if expected_services and "services" not in top_level:
         problems.append("file declares no services")
 
     if expected_services:
@@ -379,7 +400,10 @@ def check(path, expected_services):
 if __name__ == "__main__":
     target = sys.argv[1]
     expected = sys.argv[2].split(",") if len(sys.argv) > 2 and sys.argv[2] else None
-    issues, found = check(target, expected)
+    # Third argument, when given, replaces the compose-specific top-level key
+    # allowlist so the same structural checks can cover another YAML file.
+    allowed_top = sys.argv[3].split(",") if len(sys.argv) > 3 and sys.argv[3] else None
+    issues, found = check(target, expected, allowed_top)
     print(f"services found: {', '.join(found) if found else '(none)'}")
     for issue in issues:
         print(f"LINT ERROR: {issue}", file=sys.stderr)
@@ -405,6 +429,24 @@ PYTHON_LINTER_EOF
     else
         pass "compose linter rejects a deliberately broken file (negative control)"
     fi
+fi
+
+# ---------------------------------------------------------------------------
+printf '\n=== 5c. CI workflow lint ===\n'
+# ---------------------------------------------------------------------------
+# The production CI workflow is YAML with the same failure mode as the compose
+# file: a structural error is invisible until GitHub tries to run it. The same
+# linter is reused with the workflow's own top-level key set.
+WORKFLOW_FILE=".github/workflows/production-deployment.yml"
+if [[ ! -f "$WORKFLOW_FILE" ]]; then
+    fail "file missing: $WORKFLOW_FILE"
+elif ! command -v python3 >/dev/null 2>&1; then
+    fail "workflow lint could not run (python3 unavailable) — BLOCKED"
+elif python3 "$COMPOSE_LINT" "$WORKFLOW_FILE" "" "name,on,permissions,env,jobs" >/dev/null 2>&1; then
+    pass "CI workflow parses as structurally well-formed YAML"
+else
+    fail "CI workflow failed structural lint:"
+    python3 "$COMPOSE_LINT" "$WORKFLOW_FILE" "" "name,on,permissions,env,jobs" >&2 || true
 fi
 
 # ---------------------------------------------------------------------------
