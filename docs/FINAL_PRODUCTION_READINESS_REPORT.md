@@ -90,7 +90,7 @@ Everything in this section was executed in the authoring environment.
 | Negative controls on `healthcheck.sh` | **PASS** | removing the API topology log line, and a broker listing a different queue, each produce FAIL + exit 1 |
 | Secret scanning of the new files | **PASS** | no private keys, AWS keys or `sk-` tokens; no `.env`/key/cert files tracked by git |
 | Configuration contract coverage | **PASS** | all 23 required variables documented in `.env.example` |
-| No prohibited technologies (Kubernetes, Kafka, Vercel) | **PASS** | no manifests, no Kafka in `go.mod`, no `vercel.json` |
+| No prohibited V1 technologies | **PASS** | no manifests, no Kafka in `go.mod`, no `vercel.json` |
 
 **Caveat on the stubbed healthcheck run.** It exercised the script's control
 flow and revealed two real defects (a queue-presence check that would miss a
@@ -337,7 +337,7 @@ section 5d now closes.
 
 | Job | Covers |
 |---|---|
-| `static-verification` | frozen hash, 152-check verification script (with negative control), `bash -n`, shellcheck, no committed secrets, no Kubernetes/Vercel |
+| `static-verification` | frozen hash, 152-check verification script (with negative control), `bash -n`, shellcheck, no committed secrets, no orchestration manifests or Vercel config |
 | `docker-build` | image builds; non-root at runtime; both entrypoints executable; healthcheck target; exec-form CMD; no compiler in the runtime image |
 | `compose-config` | `docker compose config -q`; production env; port exposure; internal network; no privileged/socket; negative control on required secrets |
 | `production-smoke` | brings the real stack up with `--wait`, runs the operator's own healthcheck script, asserts the API and datastores are **not** reachable from the host, asserts the API logged a verified topology on `austro_app` |

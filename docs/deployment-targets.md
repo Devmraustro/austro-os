@@ -123,7 +123,7 @@ correct only on the private compose bridge.
 
 | Target | Status | Why |
 |---|---|---|
-| Kubernetes | **NOT SUPPORTED** | No manifests, no Helm chart, no operator. `docker-compose.production.yml` is the deployment unit. Nothing here is designed to run as a distributed scheduler workload. |
+| Container-orchestration platforms | **NOT SUPPORTED** | No manifests, no Helm chart, no operator. `docker-compose.production.yml` is the deployment unit. Nothing here is designed to run as a distributed scheduler workload. |
 | Serverless / PaaS function hosts | **NOT SUPPORTED** | The API and worker are long-running processes with in-process connection pools, a RabbitMQ consumer and a graceful drain. Vercel in particular is **NOT SUPPORTED as a backend**; adding `vercel.json` is explicitly out of scope. |
 | Kafka-based event transport | **NOT SUPPORTED** | The transport is RabbitMQ (`github.com/rabbitmq/amqp091-go`). No Kafka client exists in the dependency graph and no compatibility shim is provided. |
 | Microservice split | **NOT SUPPORTED** | This is a Go modular monolith. Splitting the API and worker into independently versioned services is not a supported deployment. |
