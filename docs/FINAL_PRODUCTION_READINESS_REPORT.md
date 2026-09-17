@@ -9,17 +9,24 @@
 PROVEN END TO END.**
 
 The deployment layer is complete and statically verified, and CI has now
-independently confirmed the parts the authoring environment could not: the image
-**builds** and is non-root, and `docker compose` **accepts** the topology with its
-security properties asserted against the resolved configuration. CI also found
-and fixed a real bug that broke the default deployment path (§8, Finding 1).
+independently confirmed the parts the authoring environment could not. On a real
+runner, the production stack was **brought up**: postgres, redis, rabbitmq, api
+and worker all reached healthy, the operator's own healthcheck passed 19 checks
+against the running topology, the datastores and the API were confirmed
+**unreachable from the host**, and the API's log recorded a verified database
+topology on the `austro_app` runtime role. That run also found and fixed two real
+defects — see §8 — one of which broke the **default** deployment path.
 
-It has still **not been run as a deployment**: no production target was reached,
-no TLS handshake was performed, and no restore has been exercised. The
-authoring environment has no Docker daemon and no Go toolchain, so anything that
-requires them is marked `BLOCKED` locally and, where it has since executed in
-CI, is marked as CI evidence rather than as a local pass. Every claim in this
-report is marked with what actually backs it.
+It has still **not been run as a production deployment**. The smoke run proves
+the topology comes up and is correctly isolated; it does not prove a public
+address, a TLS handshake, real traffic, or a restore. No production target was
+reached, no certificate was issued, no DNS was pointed anywhere, and no restore
+has been exercised.
+
+The authoring environment has no Docker daemon and no Go toolchain, so anything
+requiring them is marked `BLOCKED` locally; where it has since executed in CI it
+is recorded as CI evidence, never as a local pass. Every claim in this report is
+marked with what actually backs it.
 
 Vocabulary used throughout: `PASS`, `VERIFIED`, `BLOCKED`, `FAIL`,
 `CONFIGURATION REQUIRED`, `NOT TESTED`, `NOT SUPPORTED`.
@@ -97,12 +104,12 @@ outputs were fabricated by the stub.
 
 | Verification | Local result | Why |
 |---|---|---|
-| `go test ./...` | **BLOCKED** | No Go toolchain; no network egress to install one |
-| `go build`, `go vet`, `gofmt` | **BLOCKED** | Same |
-| `gosec`, `govulncheck`, `staticcheck` | **BLOCKED** | Not installed; no egress |
-| `docker build` | **BLOCKED** | No Docker daemon |
-| `docker compose config -q` | **BLOCKED** | No Docker daemon |
-| Starting the stack, any container | **BLOCKED** | No Docker daemon |
+| `go test ./...` | **BLOCKED** locally | No Go toolchain; no network egress to install one. **Executed and PASSING in CI** — see §8 |
+| `go build`, `go vet`, `gofmt` | **BLOCKED** locally | Same. **Executed and PASSING in CI** |
+| `gosec`, `govulncheck`, `staticcheck` | **BLOCKED** locally | Not installed; no egress. **Executed and PASSING in CI** |
+| `docker build` | **BLOCKED** locally | No Docker daemon. **Executed and PASSING in CI** — the image builds and is non-root |
+| `docker compose config -q` | **BLOCKED** locally | No Docker daemon. **Executed and PASSING in CI** |
+| Starting the stack, any container | **BLOCKED** locally | No Docker daemon. **Executed and PASSING in CI** — all five containers came up healthy |
 | `nginx -t`, `caddy validate` | **BLOCKED** | Neither binary available |
 | `psql` against a live database | **BLOCKED** | Not installed; no PostgreSQL |
 | ShellCheck | **BLOCKED** | Not installed |
@@ -240,7 +247,7 @@ the existing Go gates. Nothing existing was weakened, removed or narrowed.
 | Phase 1 Core Foundation Exit Criteria | **PASS** | the frozen gate's own suite |
 | Full Phase 1 + Phase 2 Regression | ran | the live-stack regression suite |
 | Real Chromium Creator/Pipelines E2E | ran | browser journey |
-| Production smoke | **FAIL (first run) — fixed** | see below |
+| **Production smoke — bring up the stack and health-check it** | **PASS** (after two fixes) | see below — the full stack came up and every assertion executed |
 | Security scanning (gosec, govulncheck) — *added by this change* | **FAIL — job removed** | it duplicated the pre-existing security job above; see below |
 
 ### Finding 1 — a real deployment bug, caught by CI and fixed
@@ -335,12 +342,29 @@ section 5d now closes.
 | `compose-config` | `docker compose config -q`; production env; port exposure; internal network; no privileged/socket; negative control on required secrets |
 | `production-smoke` | brings the real stack up with `--wait`, runs the operator's own healthcheck script, asserts the API and datastores are **not** reachable from the host, asserts the API logged a verified topology on `austro_app` |
 
-**Remaining honest caveat:** the `production-smoke` job's first run failed, its
-cause was diagnosed and fixed, and the guard was verified locally — but the
-fixed version had **not** re-run at the time this report was written. Treat its
-green state as pending confirmation. The reverse proxy is deliberately excluded
-from the smoke run because it requires operator-issued TLS material
-(`CONFIGURATION REQUIRED`).
+**Confirmed.** The final run is green, and every step of the smoke job
+succeeded — including the three assertions that had never executed before:
+
+| Smoke step | Result | What it establishes |
+|---|---|---|
+| Validate the compose configuration | **PASS** | `docker compose` resolves the production file |
+| Start the stack in production order | **PASS** | `up -d --wait` returned with **every** container healthy: postgres, redis, rabbitmq, api, worker |
+| Health-check the running topology | **PASS** | the operator's own `scripts/healthcheck.sh` passed **19 checks, 0 failed** against the real stack |
+| Assert the API is NOT reachable from the host | **PASS** | 127.0.0.1:8080 does not answer — no unintended ingress path |
+| Assert the datastores are NOT reachable from the host | **PASS** | 5432, 6379, 5672 and 15672 are all unpublished |
+| Assert the API verified its database topology | **PASS** | the API's own log records `database-topology-ready` with `runtime_role: austro_app` |
+
+This is the strongest evidence in the report, and it is deliberately narrow: in a
+CI runner the **container topology was brought up for real**, the database
+bootstrap applied its RLS policies and grants against a real PostgreSQL with
+pgvector, the runtime role `austro_app` was created and used, the API and worker
+started and connected, and the datastores were confirmed unreachable from the
+host. It is **not** a production deployment — see §11.
+
+**Still excluded on purpose:** the reverse proxy. It requires operator-issued TLS
+material (`CONFIGURATION REQUIRED`), so the smoke run tests the application
+topology rather than a certificate. Nothing in this report claims a TLS
+handshake was performed.
 
 **Unrelated pre-existing failure:** the pull request also shows a failing
 `Vercel` check from an existing Vercel integration on the repository. It is not

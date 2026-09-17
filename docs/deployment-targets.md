@@ -171,12 +171,16 @@ Backup scope follows directly from this table: **PostgreSQL only**. See
 
 ## What this document does not claim
 
-Deployments on these targets have **not** been exercised end to end by this
-repository's automation in the environment it was authored in (no Docker daemon
-was available there — recorded as `BLOCKED` in
-[FINAL_PRODUCTION_READINESS_REPORT.md](FINAL_PRODUCTION_READINESS_REPORT.md)).
-The compose file, the image definition and the scripts are statically verified
-and covered by CI gates; a green CI run on the production smoke job is what
-first exercises the real stack. Treat target (1) as **implemented and statically
-verified**, not as **proven on your host** until you have run
-`scripts/deploy.sh` and `scripts/healthcheck.sh` there.
+Deployments on these targets have **not** been exercised end to end on any host.
+The authoring environment had no Docker daemon (recorded as `BLOCKED` in
+[FINAL_PRODUCTION_READINESS_REPORT.md](FINAL_PRODUCTION_READINESS_REPORT.md)),
+but CI does run the real stack: the production smoke job brings up postgres,
+redis, rabbitmq, api and worker, runs the operator's own `scripts/healthcheck.sh`
+against them, and asserts the datastores and the API are unreachable from the
+host. That job is green.
+
+So target (1) is **implemented and verified to bring up a real, correctly
+isolated topology in CI** — but CI is not your host. It does not exercise TLS, a
+public hostname, real traffic, or a restore from a real backup. Treat it as
+**not proven on your host** until you have run `scripts/deploy.sh` and
+`scripts/healthcheck.sh` there yourself.
