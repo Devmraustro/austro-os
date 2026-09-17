@@ -269,7 +269,8 @@ COMPOSE_LINT_EXPECTED="postgres,redis,rabbitmq,api,worker,reverse-proxy,reverse-
 # The linter is written to a temp file once and reused by sections 5b and 5c.
 COMPOSE_LINT="$(mktemp)"
 COMPOSE_LINT_PROBE="$(mktemp)"
-trap 'rm -f "$COMPOSE_LINT" "$COMPOSE_LINT_PROBE"' EXIT
+UNSAFE_PROBE="$(mktemp)"
+trap 'rm -f "$COMPOSE_LINT" "$COMPOSE_LINT_PROBE" "$UNSAFE_PROBE"' EXIT
 
 if ! command -v python3 >/dev/null 2>&1; then
     # Not a pass: the check could not run at all.
@@ -582,6 +583,47 @@ for s in scripts/deploy.sh scripts/healthcheck.sh scripts/backup.sh scripts/rest
     if grep -Eq '^\s*set -x' "$s"; then fail "$s enables shell tracing (set -x)"; else pass "$s does not enable set -x"; fi
     if [[ -x "$s" ]]; then pass "script is executable: $s"; else fail "script is not executable: $s"; fi
 done
+
+# ---------------------------------------------------------------------------
+printf '\n=== 8b. Backup/restore verification is pipefail-safe ===\n'
+# ---------------------------------------------------------------------------
+# A verification pipeline that closes its producer early -- the `head -N |
+# grep -q` shape -- reads the match and then SIGPIPEs the decompressor, so under
+# `set -Eeuo pipefail` the pipeline reports the producer's 141 even though the
+# check succeeded. In CI this rejected every valid backup:
+#
+#   [backup] ERROR: backup does not contain a PostgreSQL dump header
+#
+# The safe form consumes the whole stream (`grep -F ... >/dev/null`): it cannot
+# truncate the data and never turns the producer's exit status into a lie. This
+# guard stops the unsafe shape from silently returning.
+backup_verify_unsafe() {
+    grep -En 'head +-[0-9]+[[:space:]]*\|[[:space:]]*grep +-q' "$1"
+}
+
+for s in scripts/backup.sh scripts/restore.sh; do
+    if [[ -f "$s" ]] && ! backup_verify_unsafe "$s" >/dev/null; then
+        pass "no early-closing verification pipeline in $s"
+    else
+        fail "early-closing verification pipeline present in $s (head -N | grep -q SIGPIPEs the decompressor under pipefail)"
+    fi
+done
+
+assert_fixed "backup.sh verifies the dump header through a full-stream consumer" \
+    "grep -F 'PostgreSQL database dump' >/dev/null" scripts/backup.sh
+assert_fixed "restore.sh verifies the dump header through a full-stream consumer" \
+    "grep -F 'PostgreSQL database dump' >/dev/null" scripts/restore.sh
+
+# Negative control. The guard must reject the unsafe shape when it is present,
+# or it proves nothing.
+cat >"$UNSAFE_PROBE" <<'PROBE_EOF'
+gzip -dc "$OUT" 2>/dev/null | head -40 | grep -q 'PostgreSQL database dump'
+PROBE_EOF
+if backup_verify_unsafe "$UNSAFE_PROBE" >/dev/null 2>&1; then
+    pass "guard detects the unsafe decompression-verification shape (negative control)"
+else
+    fail "guard failed to detect the unsafe shape (the check is vacuous)"
+fi
 
 # ---------------------------------------------------------------------------
 printf '\n=== 9. Repository hygiene and secret scanning ===\n'

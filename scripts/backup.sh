@@ -99,7 +99,11 @@ fi
 # ---------------------------------------------------------------------------
 # Three independent checks, because "the file exists" is not "the file is a
 # backup": it must be non-empty, it must be an intact gzip stream, and it must
-# actually contain a PostgreSQL dump header.
+# actually contain a PostgreSQL dump header. The header check consumes the whole
+# stream (`grep -F ... >/dev/null`) rather than closing it early: an
+# early-closing consumer (`head -40 | grep -q`) SIGPIPEs gzip after the match,
+# and pipefail then reports gzip's 141 -- a valid backup would be rejected as
+# if it had no header.
 size_bytes="$(wc -c <"$OUT" | tr -d '[:space:]')"
 (( size_bytes > 0 )) || { rm -f "$OUT"; die "backup is empty"; }
 
@@ -108,7 +112,7 @@ if ! gzip -t "$OUT" 2>/dev/null; then
     die "backup is not a valid gzip stream"
 fi
 
-if ! gzip -dc "$OUT" 2>/dev/null | head -40 | grep -q 'PostgreSQL database dump'; then
+if ! gzip -dc "$OUT" 2>/dev/null | grep -F 'PostgreSQL database dump' >/dev/null; then
     rm -f "$OUT"
     die "backup does not contain a PostgreSQL dump header"
 fi

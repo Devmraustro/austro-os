@@ -66,7 +66,10 @@ size_bytes="$(wc -c <"$BACKUP_FILE" | tr -d '[:space:]')"
 (( size_bytes > 0 )) || die "backup file is empty: $BACKUP_FILE"
 
 gzip -t "$BACKUP_FILE" 2>/dev/null || die "backup is not a valid gzip stream: $BACKUP_FILE"
-gzip -dc "$BACKUP_FILE" 2>/dev/null | head -40 | grep -q 'PostgreSQL database dump' \
+# Full-stream consumer, not `head | grep -q`: an early-closing consumer SIGPIPEs
+# gzip after the match, and pipefail then reports gzip's 141 -- a valid backup
+# would be refused as if it had no header.
+gzip -dc "$BACKUP_FILE" 2>/dev/null | grep -F 'PostgreSQL database dump' >/dev/null \
     || die "backup does not contain a PostgreSQL dump header: $BACKUP_FILE"
 log "backup artifact validated ($size_bytes bytes)"
 
