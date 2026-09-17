@@ -1,0 +1,444 @@
+# AUSTRO OS — production deployment topology.
+#
+#   Internet
+#     |
+#   HTTPS reverse proxy        <- the ONLY publicly bound ports (80/443)
+#     |
+#   AUSTRO OS API  (api:8080)  <- private network only, never published
+#     |
+#     +-- PostgreSQL + pgvector
+#     +-- Redis
+#     +-- RabbitMQ
+#     |
+#   AUSTRO OS Worker           <- private network only, opens no socket
+#
+# The API and the worker are separate long-running containers built from one
+# image, so they can never drift onto different revisions of the same code, and
+# each has an independent lifetime, restart policy and health signal.
+#
+# ---------------------------------------------------------------------------
+# HOW TO RUN
+# ---------------------------------------------------------------------------
+#   cp .env.example .env.production     # then fill in every REQUIRED value
+#   scripts/deploy.sh                   # validates, backs up, starts in order
+#
+# or by hand (the --env-file is what compose interpolates, env_file: is what the
+# containers receive; both point at the same file, and every command below must
+# pass it):
+#
+#   docker compose --env-file .env.production \
+#     -f docker-compose.production.yml up -d
+#
+# .env.production MUST exist: `env_file:` is not optional. A missing file is a
+# deliberate hard stop rather than a stack that starts with half its
+# configuration and fails later.
+#
+# ---------------------------------------------------------------------------
+# NETWORK MODEL
+# ---------------------------------------------------------------------------
+#   austro_internal  internal: true. Carries database, cache and broker traffic.
+#                    Marked internal so these containers have no route off the
+#                    host: a compromised cache cannot be used to reach the
+#                    internet, and there is no path from it to the edge.
+#   austro_edge      ordinary bridge. The only network with a route out, used by
+#                    the proxy and by the API/worker — which genuinely need
+#                    egress for the configured AI gateway and publish webhook.
+#
+# PostgreSQL, Redis and RabbitMQ are attached to austro_internal ONLY, and
+# publish no ports. RabbitMQ's management UI is not exposed either: the dev
+# compose pins it to loopback for local use, but a production broker needs no
+# browser console, so it stays unbound.
+#
+# ---------------------------------------------------------------------------
+# SECRETS
+# ---------------------------------------------------------------------------
+# Supplied as environment variables from .env.production (never committed —
+# .gitignore excludes `.env.*`). Required values use compose's `:?` form, so a
+# missing secret fails the compose parse before anything is created rather than
+# starting a container that dies at runtime. Nothing here prints a secret.
+#
+# Docker secrets / a vault agent would be the stronger mechanism and are NOT
+# SUPPORTED by this file today; anyone with docker-socket access on the host can
+# already read these values. See docs/production-configuration.md.
+
+name: austro-production
+
+# ---------------------------------------------------------------------------
+# Shared fragments
+# ---------------------------------------------------------------------------
+
+# The application contract. Derived values (the two DSNs and the AMQP URL) are
+# assembled here from their parts on purpose: compose interpolates `${...}`
+# reliably, whereas `env_file:` values are injected literally — a DSN written
+# with `${AUSTRO_POSTGRES_PASSWORD}` inside .env.production would reach the
+# container as that literal string. These keys therefore OVERRIDE anything of
+# the same name in .env.production, and the variables in `env_file:` cover the
+# rest of the contract (AI, publishing, feature configuration).
+x-austro-app-environment: &austro-app-environment
+  AUSTRO_ENV: "production"
+  AUSTRO_SERVER_ADDR: "0.0.0.0:8080"
+  AUSTRO_POSTGRES_DSN: "postgres://${AUSTRO_POSTGRES_USER:-austro}:${AUSTRO_POSTGRES_PASSWORD:?AUSTRO_POSTGRES_PASSWORD is required}@postgres:5432/${AUSTRO_POSTGRES_DB:-austro}?sslmode=disable"
+  AUSTRO_POSTGRES_RUNTIME_DSN: "postgres://${AUSTRO_POSTGRES_RUNTIME_USER:-austro_app}:${AUSTRO_POSTGRES_RUNTIME_PASSWORD:?AUSTRO_POSTGRES_RUNTIME_PASSWORD is required}@postgres:5432/${AUSTRO_POSTGRES_DB:-austro}?sslmode=disable"
+  AUSTRO_POSTGRES_RUNTIME_USER: "${AUSTRO_POSTGRES_RUNTIME_USER:-austro_app}"
+  AUSTRO_REDIS_ADDR: "${AUSTRO_REDIS_ADDR:-redis:6379}"
+  AUSTRO_REDIS_PASSWORD: "${AUSTRO_REDIS_PASSWORD:?AUSTRO_REDIS_PASSWORD is required}"
+  AUSTRO_RABBITMQ_URL: "amqp://${AUSTRO_RABBITMQ_USER:-austro}:${AUSTRO_RABBITMQ_PASSWORD:?AUSTRO_RABBITMQ_PASSWORD is required}@rabbitmq:5672/"
+  AUSTRO_RABBITMQ_QUEUE: "${AUSTRO_RABBITMQ_QUEUE:-austro.events}"
+  AUSTRO_JWT_SECRET: "${AUSTRO_JWT_SECRET:?AUSTRO_JWT_SECRET is required}"
+  AUSTRO_JWT_REFRESH_SECRET: "${AUSTRO_JWT_REFRESH_SECRET:?AUSTRO_JWT_REFRESH_SECRET is required}"
+  AUSTRO_FOUNDER_USERNAME: "${AUSTRO_FOUNDER_USERNAME:?AUSTRO_FOUNDER_USERNAME is required}"
+  AUSTRO_FOUNDER_PASSWORD: "${AUSTRO_FOUNDER_PASSWORD:?AUSTRO_FOUNDER_PASSWORD is required}"
+
+# Bounded container logs. The application logs JSON to stdout, so without a cap
+# the host's disk fills under sustained traffic.
+x-austro-logging: &austro-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+
+  # -------------------------------------------------------------------------
+  # PostgreSQL + pgvector — the authoritative datastore.
+  # -------------------------------------------------------------------------
+  postgres:
+    # Same pgvector line the CI regression job and the dev compose run, so the
+    # schema, the vector extension and the RLS behaviour are exercised against
+    # exactly the server version production uses.
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: "${AUSTRO_POSTGRES_DB:-austro}"
+      POSTGRES_USER: "${AUSTRO_POSTGRES_USER:-austro}"
+      POSTGRES_PASSWORD: "${AUSTRO_POSTGRES_PASSWORD:?AUSTRO_POSTGRES_PASSWORD is required}"
+      # Page checksums are set at initdb and cannot be enabled later without a
+      # rebuild, so they are set here on the first initialisation. They turn a
+      # silently corrupted page into a detected one.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    # No `ports:` — the database is reachable only by service name from
+    # austro_internal. Publishing it, even on loopback, would put the
+    # authoritative datastore one host-side mistake away from exposure.
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # PostgreSQL 16 uses shared memory for parallel workers and for the vector
+    # index builds; the 64MB container default is small enough that a large
+    # similarity search can fail with a shared-memory error.
+    shm_size: "256mb"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${AUSTRO_POSTGRES_USER:-austro} -d ${AUSTRO_POSTGRES_DB:-austro} -h 127.0.0.1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    # Enough for the default 'fast' shutdown to checkpoint and flush.
+    stop_grace_period: 60s
+    logging: *austro-logging
+    networks:
+      - austro_internal
+
+  # -------------------------------------------------------------------------
+  # Redis — workspace memory. NOT the authoritative datastore.
+  # -------------------------------------------------------------------------
+  # PostgreSQL is the system of record. Redis holds memory-bank entries, which
+  # are rebuildable from the durable store; the volume below exists so a restart
+  # does not silently discard workspace memory, not because Redis data is
+  # authoritative. See docs/backups-and-restore.md.
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Exec-form argument list: no shell is involved, so the password is passed
+    # as one argv element and cannot be split or interpreted by a shell.
+    command:
+      - "redis-server"
+      - "--requirepass"
+      - "${AUSTRO_REDIS_PASSWORD:?AUSTRO_REDIS_PASSWORD is required}"
+      - "--appendonly"
+      - "yes"
+      - "--appendfsync"
+      - "everysec"
+    environment:
+      # Lets the healthcheck below authenticate without repeating the password
+      # on the redis-cli command line, where it would be visible to anything
+      # that can read the process list inside the container. Redis documents
+      # REDISCLI_AUTH as the supported way to do this.
+      REDISCLI_AUTH: "${AUSTRO_REDIS_PASSWORD:?AUSTRO_REDIS_PASSWORD is required}"
+    # No `ports:` — memory contents are not exposed to the host or the internet.
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      # Authenticated ping: an unauthenticated `redis-cli ping` would report
+      # NOAUTH, and a bare TCP check would call an unauthenticated or
+      # misconfigured instance healthy.
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    stop_grace_period: 30s
+    logging: *austro-logging
+    networks:
+      - austro_internal
+
+  # -------------------------------------------------------------------------
+  # RabbitMQ — event and cascade transport.
+  # -------------------------------------------------------------------------
+  rabbitmq:
+    image: rabbitmq:3-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: "${AUSTRO_RABBITMQ_USER:-austro}"
+      RABBITMQ_DEFAULT_PASS: "${AUSTRO_RABBITMQ_PASSWORD:?AUSTRO_RABBITMQ_PASSWORD is required}"
+      RABBITMQ_DEFAULT_VHOST: "/"
+    # No `ports:` — and deliberately NOT the -management image: a browser
+    # console with a well-known default login is an unnecessary public surface
+    # for a broker that only the API and worker talk to.
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      # In-container rabbitmqctl authenticates through the Erlang cookie, which
+      # is exactly the local administrative check intended here.
+      test: ["CMD", "rabbitmqctl", "status"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 45s
+    stop_grace_period: 60s
+    logging: *austro-logging
+    networks:
+      - austro_internal
+
+  # -------------------------------------------------------------------------
+  # AUSTRO OS API
+  # -------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: austro-os:1.0
+    # The image's default CMD is ./main (the API); this is stated explicitly so
+    # the service definition does not depend on the image default.
+    command: ["/app/main"]
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      <<: *austro-app-environment
+    # No published port: the reverse proxy reaches this by service name over
+    # austro_edge, and an operator reaches it with
+    #   docker compose ... exec api wget -qO- http://127.0.0.1:8080/health/ready
+    # Publishing would add a second, unauthenticated ingress path to the same
+    # process, so there is no reason to do it "just for debugging".
+    expose:
+      - "8080"
+    volumes:
+      # The workspace is `read_only` because the process writes nothing to
+      # disk — all logs go to stdout. The tmpfs covers the only paths that
+      # could need writes, so a read-only root filesystem does not break a
+      # process that never wrote anything anyway.
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 16777216
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      # /health/live is the process-liveness signal. It answers 200 as soon as
+      # the listener is open, which is after the schema bootstrap, the role
+      # provisioning and the live runtime-privilege verification have all
+      # completed — so a healthy container here means the topology is built.
+      # The deep, per-dependency checks live in scripts/healthcheck.sh.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    # Above the API's own 75s in-flight drain bound (main.go
+    # shutdownDrainTimeout), so SIGTERM reaches the graceful shutdown and the
+    # container is not killed while still answering requests.
+    stop_grace_period: 90s
+    logging: *austro-logging
+    networks:
+      - austro_internal
+      - austro_edge
+
+  # -------------------------------------------------------------------------
+  # AUSTRO OS Worker — the separate long-running pipeline consumer.
+  # -------------------------------------------------------------------------
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: austro-os:1.0
+    # The same image, a different entrypoint. Absolute path because the compose
+    # working directory is an implementation detail.
+    command: ["/app/worker"]
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      <<: *austro-app-environment
+    # No `expose:` and no sockets: the worker consumes from RabbitMQ and writes
+    # to PostgreSQL.
+    volumes:
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 16777216
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      # The worker serves no HTTP, so the image's wget probe would report a
+      # permanently unhealthy container that is in fact working. PID 1 is the
+      # worker binary (exec-form CMD), so checking PID 1's cmdline is a direct
+      # liveness check. The richer signal — that the worker actually attached
+      # to the queue — is the "worker-started" log line, which
+      # scripts/healthcheck.sh asserts against the real container log.
+      test: ["CMD-SHELL", "grep -qa '/app/worker' /proc/1/cmdline"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      # The worker waits for the API to be healthy, not merely started. Both
+      # processes apply the schema bootstrap at startup, and that bootstrap has
+      # no advisory lock: two processes running it concurrently against a cold
+      # database would race on the same DDL. Gating the worker on the API's
+      # health serialises them, so migrations are applied exactly once and the
+      # worker's own bootstrap then finds the schema already in place.
+      api:
+        condition: service_healthy
+    stop_grace_period: 45s
+    logging: *austro-logging
+    networks:
+      - austro_internal
+      - austro_edge
+
+  # -------------------------------------------------------------------------
+  # HTTPS reverse proxy — the only public ingress.
+  # -------------------------------------------------------------------------
+  # nginx is the default: it terminates TLS with operator-supplied certificates
+  # and makes no outbound call at startup, so it cannot fail for a reason
+  # unrelated to this deployment. The Caddy variant below is an opt-in profile
+  # for automatic ACME issuance.
+  reverse-proxy:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      # The ONLY published ports in this file. 80 serves the HTTP->HTTPS
+      # redirect (and ACME HTTP-01 if the Caddy profile is used); 443 serves
+      # the application.
+      - "${AUSTRO_HTTP_PORT:-80}:80"
+      - "${AUSTRO_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      # CONFIGURATION REQUIRED: the certificate and key. Defaults to
+      # ./deploy/tls on the host, mounted read-only. See
+      # docs/production-configuration.md for the expected filenames.
+      - "${AUSTRO_TLS_CERT_DIR:-./deploy/tls}:/etc/nginx/tls:ro"
+    healthcheck:
+      # Accepts a TCP connection on the TLS listener: fails if nginx did not
+      # start, which is what happens when the certificate or key is missing or
+      # unreadable. The end-to-end HTTPS request is made by
+      # scripts/healthcheck.sh from outside the container.
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 443"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    stop_grace_period: 20s
+    logging: *austro-logging
+    networks:
+      - austro_edge
+
+  # -------------------------------------------------------------------------
+  # OPTIONAL HTTPS reverse proxy with automatic TLS (compose profile: caddy)
+  # -------------------------------------------------------------------------
+  #   docker compose --env-file .env.production -f docker-compose.production.yml \
+  #     --profile caddy up -d
+  #
+  # Runs INSTEAD of the nginx service above (the default profile), never
+  # alongside it: both bind 80/443, so starting both is a port conflict by
+  # design. Caddy obtains and renews certificates automatically, which is why
+  # this service is on austro_edge — it needs egress for ACME.
+  reverse-proxy-caddy:
+    image: caddy:2.8-alpine
+    profiles: ["caddy"]
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # CONFIGURATION REQUIRED when this profile is used — but deliberately NOT
+      # declared with `:?` like the secrets above.
+      #
+      # Compose interpolates the WHOLE file, including services behind an
+      # inactive profile. A `:?` here therefore breaks every command that merely
+      # resolves the file — including a plain nginx deployment that never starts
+      # this service. A CI smoke run that omitted these two variables failed
+      # exactly this way, which is the bug this comment exists to prevent.
+      #
+      # The requirement is enforced where it actually applies instead:
+      # scripts/deploy.sh refuses to select this profile without both values, and
+      # Caddy itself fails to start on an empty site address.
+      AUSTRO_PUBLIC_HOSTNAME: "${AUSTRO_PUBLIC_HOSTNAME:-}"
+      AUSTRO_ACME_EMAIL: "${AUSTRO_ACME_EMAIL:-}"
+    ports:
+      - "${AUSTRO_HTTP_PORT:-80}:80"
+      - "${AUSTRO_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # ACME account key and issued certificates; losing these forces
+      # re-issuance and can hit the certificate authority's rate limits.
+      - caddy_data:/data
+      - caddy_config:/config
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 443"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    stop_grace_period: 20s
+    logging: *austro-logging
+    networks:
+      - austro_edge
+
+volumes:
+  # The authoritative datastore. This is the volume that matters.
+  postgres_data:
+  # Workspace memory; rebuildable from PostgreSQL, kept so a restart does not
+  # silently discard it.
+  redis_data:
+  rabbitmq_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  # No route off the host. PostgreSQL, Redis and RabbitMQ live here and nowhere
+  # else, so there is no path from them to the public internet and no path to
+  # them from the edge network.
+  austro_internal:
+    driver: bridge
+    internal: true
+  # The only network with egress: the proxy (for ACME) and the API/worker, which
+  # make outbound calls to the configured AI gateway and publish webhook.
+  austro_edge:
+    driver: bridge

@@ -1,0 +1,111 @@
+# AUSTRO OS — Caddy HTTPS reverse proxy (automatic TLS).
+#
+# OPTIONAL ALTERNATIVE to deploy/nginx/nginx.conf. It is used by the
+# `reverse-proxy-caddy` service in docker-compose.production.yml, which lives
+# behind the compose profile `caddy`:
+#
+#   docker compose --env-file .env.production -f docker-compose.production.yml \
+#     --profile caddy up -d
+#
+# Run it INSTEAD of the default `reverse-proxy` service, never alongside: both
+# bind 80/443.
+#
+#   Internet --80/443--> caddy --austro_edge--> api:8080
+#
+# Why this variant: Caddy obtains and renews certificates from an ACME
+# authority without operator involvement, so there is no certificate file to
+# rotate. The trade-off is that the proxy now depends on outbound ACME
+# availability and on the public hostname resolving to this host, which is why
+# it is not the default. It is placed on austro_edge precisely because it needs
+# that egress; nginx does not.
+#
+# CONFIGURATION REQUIRED:
+#   AUSTRO_PUBLIC_HOSTNAME  the hostname to serve and request a certificate for
+#   AUSTRO_ACME_EMAIL       ACME account contact address
+#
+# Both are required by the compose service and passed in as environment
+# variables; the placeholders below are read from that environment.
+
+{
+	email {$AUSTRO_ACME_EMAIL}
+
+	# Bound every connection. These mirror the Go server's own bounds
+	# (ReadHeaderTimeout 10s, ReadTimeout 30s, WriteTimeout 60s,
+	# IdleTimeout 120s) so the proxy never waits longer than the application it
+	# is proxying for.
+	servers {
+		timeouts {
+			read_header 10s
+			read_body   30s
+			write       60s
+			idle        120s
+		}
+	}
+
+	# The admin API is disabled rather than left listening: nothing here needs
+	# runtime reconfiguration, and an unauthenticated admin socket is a
+	# privilege-escalation surface. Caddy's default binds it to localhost, but
+	# it is not needed at all.
+	admin off
+
+	# Logs go to the container's stdout, which is what the logging driver
+	# collects.
+	log {
+		output stdout
+		format console
+	}
+}
+
+# Automatic HTTPS for the configured hostname: Caddy provisions the certificate
+# and, with no further configuration, redirects HTTP to HTTPS and refuses to
+# serve over plaintext.
+{$AUSTRO_PUBLIC_HOSTNAME} {
+	# TLS 1.2 floor, stated explicitly rather than relying on the default.
+	tls {
+		protocols tls1.2 tls1.3
+	}
+
+	# Compression for the embedded web application's assets and JSON.
+	encode zstd gzip
+
+	header {
+		# HSTS. `preload` is deliberately omitted: submitting to the preload
+		# list is a one-way decision for the operator, not something a config
+		# file should imply.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		Cross-Origin-Opener-Policy "same-origin"
+		# Do not advertise the server implementation.
+		-Server
+	}
+
+	# Request body ceiling. The Go application caps bodies at 1 MiB
+	# (http.MaxBytesReader); the proxy limit stays above it so the proxy never
+	# rejects a request the application would have accepted, and never masks
+	# the application's own 413 with its own.
+	request_body {
+		max_size 2MB
+	}
+
+	reverse_proxy api:8080 {
+		# -------------------------------------------------------------------
+		# Forwarded headers — client-supplied values are DISCARDED
+		# -------------------------------------------------------------------
+		# `header_up X-Forwarded-For {remote_host}` REPLACES any value the
+		# client sent. The usual Caddy default appends the client address to
+		# the incoming header, which lets a caller choose the left-most entry —
+		# the value most log processors and access rules trust. Since this is
+		# the only ingress hop, there is no legitimate upstream to preserve.
+		header_up X-Real-IP         {remote_host}
+		header_up X-Forwarded-For   {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-Host  {host}
+
+		# Host is passed through unchanged, and the application makes no
+		# authorization decision from it: authorization comes from verified JWT
+		# claims. No trusted_proxies are configured, so no third-party
+		# X-Forwarded-* header is honoured.
+	}
+}

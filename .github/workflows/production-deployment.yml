@@ -1,0 +1,394 @@
+name: AUSTRO OS Production Deployment
+
+# Gates the production deployment layer: the image, the compose topology, both
+# reverse-proxy configs, the operator scripts and the configuration contract.
+#
+# This workflow COMPLEMENTS the existing gates and replaces none of them:
+#   * .github/workflows/phase2-ci.yml already runs gofmt, go build, go vet, the
+#     unit suites, the full regression suite, the frozen-gate hash, the live RLS
+#     and runtime-role assertions and the migration-idempotency tests. Those are
+#     not duplicated here.
+#   * .github/workflows/phase1-exit-criteria.yml owns the Phase 1 gate.
+#
+# What is added here, because nothing else covers it: the Docker image actually
+# builds and is non-root, `docker compose config` accepts the production file,
+# the security posture of the resolved compose configuration is asserted rather
+# than assumed, the deployment scripts pass shellcheck, and the real production
+# stack is brought up and health-checked.
+#
+# Vercel is deliberately absent: it is not a supported production target.
+
+on:
+  push:
+    branches: [main, arena/01a0b07a-austro-os]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  COMPOSE_FILE: docker-compose.production.yml
+  ENV_FILE: .env.production
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Static verification: no Docker daemon required, so it fails fastest.
+  # ---------------------------------------------------------------------------
+  static-verification:
+    name: Static verification of the deployment layer
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify the frozen Phase-1 gate is byte-identical
+        # Pinned by content hash rather than by `git diff`, which cannot detect
+        # an edit that was already committed. The same hash is asserted by
+        # scripts/verify-production-deployment.sh; this keeps the failure
+        # visible even if that script is bypassed.
+        run: |
+          set -euo pipefail
+          expected=0a868d3da41f175cc263a6301f806e3bc1125093dab9cf8db98bb17b54e8769a
+          actual=$(sha256sum tests/phase1_exit_criteria_test.go | cut -d' ' -f1)
+          if [ "$actual" != "$expected" ]; then
+            echo "::error title=Frozen gate modified::expected $expected, got $actual"
+            exit 1
+          fi
+          echo "PASS: tests/phase1_exit_criteria_test.go is byte-identical"
+
+      - name: Run the deployment verification script
+        # Includes a negative control, so a pass is evidence the checks can fail.
+        run: scripts/verify-production-deployment.sh
+
+      - name: Shell syntax check on every operator script
+        run: |
+          set -euo pipefail
+          for script in scripts/*.sh; do
+            bash -n "$script"
+            echo "syntax OK: $script"
+          done
+
+      - name: Shellcheck the operator scripts
+        # --severity=error only: real defects (unbound expansion, misuse of a
+        # construct), not style. A style-only gate on shell is noise that gets
+        # disabled, which is worse than no gate.
+        run: |
+          set -euo pipefail
+          shellcheck --severity=error scripts/*.sh
+          echo "PASS: no shellcheck errors"
+
+      - name: Assert no secrets or prohibited artifacts are committed
+        run: |
+          set -euo pipefail
+          fail=0
+          # vercel.json is explicitly out of scope for this project.
+          if [ -e vercel.json ]; then
+            echo "::error::vercel.json must not exist"; fail=1
+          fi
+          for dir in k8s kubernetes deploy/kubernetes; do
+            if [ -d "$dir" ]; then
+              echo "::error::$dir must not exist (Kubernetes is not a supported target)"; fail=1
+            fi
+          done
+          # A committed environment file or key material is a leak.
+          if git ls-files -- '.env' '.env.production' '*.pem' '*.key' '*.p12' '*.pfx' | grep -q .; then
+            echo "::error::secret material is tracked by git"
+            git ls-files -- '.env' '.env.production' '*.pem' '*.key' '*.p12' '*.pfx'
+            fail=1
+          fi
+          if grep -rInE 'BEGIN [A-Z ]*PRIVATE KEY|AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9]{20,}' \
+               --include='*.yml' --include='*.yaml' --include='*.sh' --include='Dockerfile*' \
+               --include='*.example' --include='*.conf' --include='Caddyfile' . ; then
+            echo "::error::secret-shaped value found in a deployment file"; fail=1
+          fi
+          exit "$fail"
+
+  # ---------------------------------------------------------------------------
+  # The image must build, and must build the way the documentation claims.
+  # ---------------------------------------------------------------------------
+  docker-build:
+    name: Build the runtime image and assert its hardening
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build the production image
+        run: docker build -t austro-os:ci .
+
+      - name: Assert the image runs as a non-root user
+        run: |
+          set -euo pipefail
+          configured_user=$(docker image inspect --format '{{.Config.User}}' austro-os:ci)
+          if [ "$configured_user" != "appuser" ]; then
+            echo "::error::image USER is '$configured_user', expected appuser"
+            exit 1
+          fi
+          # Belt and braces: ask the running container what its uid actually is,
+          # rather than trusting the metadata alone.
+          runtime_uid=$(docker run --rm austro-os:ci id -u)
+          if [ "$runtime_uid" = "0" ]; then
+            echo "::error::container runs as root at runtime"
+            exit 1
+          fi
+          echo "PASS: image runs as $configured_user (uid $runtime_uid)"
+
+      - name: Assert both entrypoints exist and are executable
+        run: |
+          set -euo pipefail
+          docker run --rm austro-os:ci sh -c '
+            set -e
+            for binary in /app/main /app/worker; do
+              [ -x "$binary" ] || { echo "missing or not executable: $binary"; exit 1; }
+              echo "executable: $binary"
+            done'
+          echo "PASS: API and worker binaries are present and executable"
+
+      - name: Assert the image has a healthcheck and an exec-form CMD
+        run: |
+          set -euo pipefail
+          healthcheck=$(docker image inspect --format '{{if .Config.Healthcheck}}{{.Config.Healthcheck.Test}}{{else}}NONE{{end}}' austro-os:ci)
+          case "$healthcheck" in
+            NONE) echo "::error::image has no HEALTHCHECK"; exit 1 ;;
+            *health/live*) echo "PASS: healthcheck probes /health/live" ;;
+            *) echo "::error::unexpected healthcheck: $healthcheck"; exit 1 ;;
+          esac
+          cmd=$(docker image inspect --format '{{json .Config.Cmd}}' austro-os:ci)
+          case "$cmd" in
+            *main*) echo "PASS: CMD is $cmd" ;;
+            *) echo "::error::unexpected CMD: $cmd"; exit 1 ;;
+          esac
+
+      - name: Assert the runtime image carries no build toolchain
+        run: |
+          set -euo pipefail
+          if docker run --rm austro-os:ci sh -c 'command -v go || command -v gcc'; then
+            echo "::error::the runtime image contains a compiler toolchain"
+            exit 1
+          fi
+          echo "PASS: runtime image carries no compiler"
+
+  # ---------------------------------------------------------------------------
+  # Compose resolution: the authoritative syntax gate the static script is not.
+  # ---------------------------------------------------------------------------
+  compose-config:
+    name: Resolve and assert the production compose configuration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Generate a CI production environment file
+        # Placeholder-free values, generated per run. This file is git-ignored;
+        # it exists only so the compose file can be resolved.
+        run: |
+          set -euo pipefail
+          {
+            echo "AUSTRO_POSTGRES_PASSWORD=$(openssl rand -hex 24)"
+            echo "AUSTRO_POSTGRES_RUNTIME_PASSWORD=$(openssl rand -hex 24)"
+            echo "AUSTRO_REDIS_PASSWORD=$(openssl rand -hex 24)"
+            echo "AUSTRO_RABBITMQ_PASSWORD=$(openssl rand -hex 24)"
+            echo "AUSTRO_JWT_SECRET=$(openssl rand -hex 32)"
+            echo "AUSTRO_JWT_REFRESH_SECRET=$(openssl rand -hex 32)"
+            echo "AUSTRO_FOUNDER_USERNAME=ci-founder"
+            echo "AUSTRO_FOUNDER_PASSWORD=$(openssl rand -hex 16)"
+            echo "AUSTRO_AI_BACKEND=stub"
+            echo "AUSTRO_PUBLISH_BACKEND=stub"
+            echo "AUSTRO_PUBLIC_HOSTNAME=ci.example.invalid"
+            echo "AUSTRO_ACME_EMAIL=ci@example.invalid"
+          } > "$ENV_FILE"
+
+      - name: Resolve the compose file
+        run: |
+          set -euo pipefail
+          docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config -q
+          docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config --format json > /tmp/resolved.json
+          echo "PASS: docker compose resolved $COMPOSE_FILE"
+
+      - name: Assert it is the production environment and the expected services exist
+        run: |
+          set -euo pipefail
+          jq -e '.services.api.environment.AUSTRO_ENV == "production"' /tmp/resolved.json >/dev/null
+          jq -e '.services.worker.environment.AUSTRO_ENV == "production"' /tmp/resolved.json >/dev/null
+          for service in postgres redis rabbitmq api worker reverse-proxy; do
+            jq -e --arg s "$service" '.services[$s] != null' /tmp/resolved.json >/dev/null \
+              || { echo "::error::service missing from the resolved config: $service"; exit 1; }
+          done
+          echo "PASS: AUSTRO_ENV=production and every required service is present"
+
+      - name: Assert only the reverse proxy publishes ports
+        # Asserted against the RESOLVED configuration, not the source text: this
+        # is what the daemon would actually create, so an interpolation or anchor
+        # mistake cannot hide behind a grep that matched the file.
+        run: |
+          set -euo pipefail
+          offenders=$(jq -r '
+            .services
+            | to_entries
+            | map(select(.key != "reverse-proxy" and .key != "reverse-proxy-caddy"))
+            | map(select((.value.ports // []) | length > 0))
+            | map(.key)
+            | join(", ")' /tmp/resolved.json)
+          if [ -n "$offenders" ]; then
+            echo "::error::services publish ports but must not: $offenders"
+            exit 1
+          fi
+          jq -e '[.services["reverse-proxy"].ports[] | select(.published == "443")] | length == 1' /tmp/resolved.json >/dev/null
+          jq -e '[.services["reverse-proxy"].ports[] | select(.published == "80")] | length == 1' /tmp/resolved.json >/dev/null
+          echo "PASS: only the reverse proxy publishes ports (80/443)"
+
+      - name: Assert the infrastructure network is internal
+        run: |
+          set -euo pipefail
+          internal=$(jq -r '.networks.austro_internal.internal' /tmp/resolved.json)
+          if [ "$internal" != "true" ]; then
+            echo "::error::austro_internal is not marked internal"
+            exit 1
+          fi
+          for service in postgres redis rabbitmq; do
+            jq -e --arg s "$service" '.services[$s].networks | has("austro_internal")' /tmp/resolved.json >/dev/null \
+              || { echo "::error::$service is not on the internal network"; exit 1; }
+          done
+          echo "PASS: austro_internal is internal and the datastores are on it"
+
+      - name: Assert no privileged container and no docker socket mount
+        run: |
+          set -euo pipefail
+          if jq -e '[.services[] | select(.privileged == true)] | length > 0' /tmp/resolved.json >/dev/null; then
+            echo "::error::a service is privileged"; exit 1
+          fi
+          if jq -e '[.services[] | (.volumes // []) | .[] | select(.source == "/var/run/docker.sock")] | length > 0' /tmp/resolved.json >/dev/null; then
+            echo "::error::the docker socket is mounted into a service"; exit 1
+          fi
+          echo "PASS: no privileged services, no docker socket mount"
+
+      - name: Negative control — a missing required secret must fail the parse
+        # If this passes, the `:?` guards are not doing their job and a deployment
+        # could start with an empty credential.
+        run: |
+          set -euo pipefail
+          if env -u AUSTRO_JWT_SECRET docker compose --env-file /dev/null -f "$COMPOSE_FILE" config -q 2>/dev/null; then
+            echo "::error::compose resolved with AUSTRO_JWT_SECRET absent"
+            exit 1
+          fi
+          echo "PASS: compose refuses to resolve without AUSTRO_JWT_SECRET"
+
+  # ---------------------------------------------------------------------------
+  # Security scanning: NOT DUPLICATED HERE.
+  # ---------------------------------------------------------------------------
+  # gosec, govulncheck and staticcheck are already run on every pull request by
+  # .github/workflows/creator-pipeline-verification.yml ("Independent Go security
+  # tooling"), with pinned tool versions and a high/critical severity policy that
+  # fails the job. That gate passes on this change.
+  #
+  # An earlier revision of this workflow re-ran govulncheck and gosec in a
+  # separate job. It was removed: it duplicated an existing, working gate, added
+  # no coverage, and its first run failed for reasons the pinned invocation does
+  # not hit. Duplicating a security scanner is not the same as adding a security
+  # control.
+
+  # ---------------------------------------------------------------------------
+  # The real stack, brought up the way production brings it up.
+  # ---------------------------------------------------------------------------
+  production-smoke:
+    name: Production smoke — bring up the stack and health-check it
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Generate a CI production environment file
+        run: |
+          set -euo pipefail
+          {
+            echo "AUSTRO_POSTGRES_PASSWORD=$(openssl rand -hex 24)"
+            echo "AUSTRO_POSTGRES_RUNTIME_PASSWORD=$(openssl rand -hex 24)"
+            echo "AUSTRO_REDIS_PASSWORD=$(openssl rand -hex 24)"
+            echo "AUSTRO_RABBITMQ_PASSWORD=$(openssl rand -hex 24)"
+            echo "AUSTRO_JWT_SECRET=$(openssl rand -hex 32)"
+            echo "AUSTRO_JWT_REFRESH_SECRET=$(openssl rand -hex 32)"
+            echo "AUSTRO_FOUNDER_USERNAME=ci-founder"
+            echo "AUSTRO_FOUNDER_PASSWORD=$(openssl rand -hex 16)"
+            echo "AUSTRO_AI_BACKEND=stub"
+            echo "AUSTRO_PUBLISH_BACKEND=stub"
+          } > "$ENV_FILE"
+
+      - name: Validate the compose configuration
+        run: docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" config -q
+
+      - name: Start the stack in production order
+        # The reverse proxy is deliberately excluded: it requires operator-issued
+        # TLS material (CONFIGURATION REQUIRED), so a smoke run without it tests
+        # the application topology rather than a certificate.
+        #
+        # --wait holds until every container with a healthcheck reports healthy,
+        # which is what makes the ordering assertions in the compose file real.
+        run: |
+          set -euo pipefail
+          docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
+            up -d --wait --wait-timeout 600 postgres redis rabbitmq api worker
+
+      - name: Health-check the running topology
+        # The same script an operator runs. Not a bespoke CI re-implementation,
+        # so what CI proves is what production runs.
+        env:
+          AUSTRO_HEALTHCHECK_SKIP_PROXY: "1"
+        run: scripts/healthcheck.sh
+
+      - name: Assert the API is NOT reachable from the host
+        # The compose file publishes no API port. If this connects, the
+        # deployment has a second, unintended ingress path.
+        run: |
+          set -euo pipefail
+          if curl -sS --max-time 5 http://127.0.0.1:8080/health/live >/dev/null 2>&1; then
+            echo "::error::the API is reachable on the host port 8080 but must not be published"
+            exit 1
+          fi
+          echo "PASS: the API is not published to the host"
+
+      - name: Assert the datastores are NOT reachable from the host
+        run: |
+          set -euo pipefail
+          fail=0
+          for port in 5432 6379 5672 15672; do
+            if timeout 3 bash -c "</dev/tcp/127.0.0.1/$port" 2>/dev/null; then
+              echo "::error::port $port is reachable from the host but must not be published"
+              fail=1
+            else
+              echo "PASS: port $port is not published"
+            fi
+          done
+          exit "$fail"
+
+      - name: Assert the API verified its database topology
+        # Read from the API's own log, so this observes the role the process
+        # actually connected as rather than what the workflow configured.
+        run: |
+          set -euo pipefail
+          docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs api \
+            | grep -q '"message":"database-topology-ready"'
+          docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs api \
+            | grep -q '"runtime_role":"austro_app"'
+          echo "PASS: the API reported a verified topology on the austro_app runtime role"
+
+      - name: Dump the container logs on failure
+        if: failure()
+        run: docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs --tail=200 || true
+
+      - name: Tear down
+        if: always()
+        run: docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" down -v || true
+
+      - name: Remove the generated environment file
+        if: always()
+        run: rm -f "$ENV_FILE"
