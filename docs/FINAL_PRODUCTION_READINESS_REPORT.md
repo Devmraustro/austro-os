@@ -71,7 +71,7 @@ Everything in this section was executed in the authoring environment.
 
 | Verification | Result | Evidence |
 |---|---|---|
-| Static deployment verification (10 sections, 152 checks) | **PASS** | `scripts/verify-production-deployment.sh` — 152 passed, 0 failed |
+| Static deployment verification (10 sections, 155 checks) | **PASS** | `scripts/verify-production-deployment.sh` — 155 passed, 0 failed |
 | Frozen gate hash | **PASS** | asserted in the same script |
 | Compose YAML structural lint | **PASS** | embedded linter, plus a **negative control** that injects faults and requires rejection |
 | CI workflow YAML structural lint | **PASS** | same linter, workflow top-level key set |
@@ -212,7 +212,7 @@ discover.
 
 | File | Why |
 |---|---|
-| `scripts/verify-production-deployment.sh` | The requested scripts all require Docker, so in an environment without it **nothing** could be checked. This script gives the deployment layer a real, runnable gate (152 checks) that needs neither Docker nor Go, and it includes a negative control so a pass is meaningful. CI runs it. |
+| `scripts/verify-production-deployment.sh` | The requested scripts all require Docker, so in an environment without it **nothing** could be checked. This script gives the deployment layer a real, runnable gate (155 checks) that needs neither Docker nor Go, and it includes a negative control so a pass is meaningful. CI runs it. |
 | `.github/workflows/production-deployment.yml` | The request asks that CI validate docker build, compose config, security scanning, the frozen hash and production smoke. Nothing existing covered those. It **complements** `phase2-ci.yml` (which owns gofmt/build/vet/unit/regression/RLS) rather than duplicating or replacing it. |
 
 Two variables I initially documented (`AUSTRO_PROXY_MAX_BODY_SIZE`,
@@ -232,7 +232,7 @@ the existing Go gates. Nothing existing was weakened, removed or narrowed.
 
 | Job | Result | What it proves |
 |---|---|---|
-| Static verification of the deployment layer | **PASS** | the 152-check script, the frozen hash, `bash -n`, and **shellcheck on every script** all pass on a real runner |
+| Static verification of the deployment layer | **PASS** | the 155-check script, the frozen hash, `bash -n`, and **shellcheck on every script** all pass on a real runner |
 | Resolve and assert the production compose configuration | **PASS** | **`docker compose config` accepts the file.** AUSTRO_ENV=production, only the reverse proxy publishes ports, `austro_internal` is internal, no privileged service, no socket mount — asserted against the **resolved** configuration, and the negative control (a missing secret must fail the parse) behaved correctly |
 | Build the runtime image and assert its hardening | **PASS** | the image **builds**, runs as uid 10001 (not root), both `/app/main` and `/app/worker` are present and executable, the healthcheck targets `/health/live`, CMD is exec-form, and the runtime image carries no compiler |
 | Build, Vet, and Unit Tests | **PASS** | gofmt, `go build ./...`, `go vet ./...` and the unit suites |
@@ -281,6 +281,50 @@ duplicated an existing working gate, added no coverage, and would have put a
 second, differently-configured scanner in the path. It was removed, and the
 workflow now documents where that coverage lives. Duplicating a scanner is not
 the same as adding a security control.
+
+### Finding 3 — the healthcheck aborted on a variable the compose file defaults
+
+With the compose bug fixed, the smoke job got further: the stack came **up** and
+`up -d --wait` returned successfully, meaning every container on the default path
+reported healthy. The job then failed in **`Health-check the running topology`**.
+
+Diagnosis was blocked at first — the Actions log blobs were unreachable from the
+authoring sandbox and the job carried no check-run annotations — so the cause was
+reproduced locally instead, by running the committed script against a stub
+environment file **with `AUSTRO_RABBITMQ_USER` removed**:
+
+```
+$ bash /tmp/old-healthcheck.sh          # the committed revision
+...
+PASS     Redis answered an authenticated PING
+PASS     RabbitMQ reports status ok
+/tmp/old-healthcheck.sh: line 227: AUSTRO_RABBITMQ_USER: unbound variable
+exit=1
+```
+
+**Root cause:** `scripts/healthcheck.sh` reads `AUSTRO_RABBITMQ_USER` **without a
+default**, under `set -u`. The compose file defaults that variable to `austro`,
+and `.env.example` ships it **commented out** — so the abort was not a CI
+artifact. Any operator who left it unset would have hit the same failure, several
+checks into a run, with a message that named neither the variable's absence nor
+the file it was expected in.
+
+**Fix:** the healthcheck now mirrors the compose default
+(`RABBITMQ_USER="${AUSTRO_RABBITMQ_USER:-austro}"`) so both components derive the
+same value from the same input, and the two secrets that genuinely have no safe
+default (`AUSTRO_POSTGRES_RUNTIME_PASSWORD`, `AUSTRO_REDIS_PASSWORD`) are required
+explicitly, with a message naming the file they were expected in.
+
+**Verified by reproduction, not by inspection:** the committed revision fails with
+`unbound variable` and exit 1 on that environment file; the fixed revision passes
+**19 checks, 0 failed** on the same file.
+
+**Regression guard:** `scripts/verify-production-deployment.sh` section 5d now
+audits the healthcheck for any `AUSTRO_*` reference without a default, and it was
+confirmed to fail when the bare reference is re-injected. Note the shape of the
+bug: the earlier stub test passed because its environment file *did* define the
+variable — the stub was more complete than the real CI file, and that gap is what
+section 5d now closes.
 
 ### The workflow as shipped
 

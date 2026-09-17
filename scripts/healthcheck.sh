@@ -65,10 +65,32 @@ set -a
 . "$ENV_FILE"
 set +a
 
+# Every value this script reads is given the SAME default the compose file
+# uses, so a check asserts on the topology the stack actually built rather than
+# on whatever the caller's environment happened to contain.
+#
+# This is not cosmetic. AUSTRO_RABBITMQ_USER was read without a default while
+# the compose file defaults it to austro and .env.example ships it COMMENTED
+# OUT, so `set -u` aborted the run with a bare "unbound variable" for any
+# operator who left it unset — and for CI, whose minimal environment file omits
+# it. The abort landed mid-run and looked like a broker problem rather than a
+# missing default. Defaults are mirrored instead; the secrets that genuinely
+# have no safe default are required explicitly below, with a message that says
+# which value is missing and where it should have come from.
 DB_OWNER="${AUSTRO_POSTGRES_USER:-austro}"
 DB_NAME="${AUSTRO_POSTGRES_DB:-austro}"
 DB_RUNTIME_USER="${AUSTRO_POSTGRES_RUNTIME_USER:-austro_app}"
 QUEUE_NAME="${AUSTRO_RABBITMQ_QUEUE:-austro.events}"
+RABBITMQ_USER="${AUSTRO_RABBITMQ_USER:-austro}"
+
+# No safe default exists for these two: a wrong password is not a check this
+# script can perform, and an empty one would fail later with a confusing error.
+for required_secret in AUSTRO_POSTGRES_RUNTIME_PASSWORD AUSTRO_REDIS_PASSWORD; do
+    [[ -n "${!required_secret:-}" ]] \
+        || die "$ENV_FILE does not define $required_secret (needed to authenticate as the runtime role and to Redis)"
+done
+DB_RUNTIME_PASSWORD="${AUSTRO_POSTGRES_RUNTIME_PASSWORD:-}"
+REDIS_PASSWORD="${AUSTRO_REDIS_PASSWORD:-}"
 
 printf '=== AUSTRO OS healthcheck ===\n'
 
@@ -127,7 +149,7 @@ fi
 # Connecting AS austro_app proves the credential the application serves with
 # actually works. Asking the owner about austro_app would pass even if the
 # runtime password were wrong, which is the failure this is meant to catch.
-runtime_query="$(compose exec -T -e PGPASSWORD="$AUSTRO_POSTGRES_RUNTIME_PASSWORD" postgres \
+runtime_query="$(compose exec -T -e PGPASSWORD="$DB_RUNTIME_PASSWORD" postgres \
     psql -U "$DB_RUNTIME_USER" -d "$DB_NAME" -h 127.0.0.1 -tAc 'SELECT 1' 2>/dev/null | tr -d '[:space:]' || true)"
 if [[ "$runtime_query" == "1" ]]; then
     ok "PostgreSQL answered a query as the runtime role ($DB_RUNTIME_USER)"
@@ -144,7 +166,7 @@ else
     # Confirm which role the connection actually resolved to. psql does not
     # interpolate its -v variables inside dollar-quoted blocks, so this is a
     # separate flat query compared here rather than inside the DO block below.
-    connected_role="$(compose exec -T -e PGPASSWORD="$AUSTRO_POSTGRES_RUNTIME_PASSWORD" postgres \
+    connected_role="$(compose exec -T -e PGPASSWORD="$DB_RUNTIME_PASSWORD" postgres \
         psql -U "$DB_RUNTIME_USER" -d "$DB_NAME" -h 127.0.0.1 -tAc 'SELECT current_user' 2>/dev/null | tr -d '[:space:]' || true)"
     if [[ "$connected_role" == "$DB_RUNTIME_USER" ]]; then
         ok "connection authenticated as the intended runtime role ($DB_RUNTIME_USER)"
@@ -162,7 +184,7 @@ else
     # 3 when the DO block raises, so this cannot be fooled by matching text that
     # happens to contain the word ERROR.
     privilege_status=0
-    privilege_output="$(compose exec -T -e PGPASSWORD="$AUSTRO_POSTGRES_RUNTIME_PASSWORD" postgres \
+    privilege_output="$(compose exec -T -e PGPASSWORD="$DB_RUNTIME_PASSWORD" postgres \
         psql -U "$DB_RUNTIME_USER" -d "$DB_NAME" -h 127.0.0.1 -v ON_ERROR_STOP=1 -tA 2>&1 <<'SQL'
 DO $$
 DECLARE
@@ -207,7 +229,7 @@ fi
 # An unauthenticated ping would answer NOAUTH, and a bare TCP check would call
 # an unauthenticated instance healthy. REDISCLI_AUTH keeps the password out of
 # the process argument list.
-redis_ping="$(compose exec -T -e REDISCLI_AUTH="$AUSTRO_REDIS_PASSWORD" redis \
+redis_ping="$(compose exec -T -e REDISCLI_AUTH="$REDIS_PASSWORD" redis \
     redis-cli --no-auth-warning ping 2>/dev/null | tr -d '[:space:]' || true)"
 if [[ "$redis_ping" == "PONG" ]]; then
     ok "Redis answered an authenticated PING"
@@ -224,10 +246,10 @@ else
     bad "RabbitMQ did not answer rabbitmqctl status"
 fi
 
-if compose exec -T rabbitmq rabbitmqctl list_users 2>/dev/null | grep -q "^${AUSTRO_RABBITMQ_USER}[[:space:]]"; then
-    ok "RabbitMQ has the configured user ($AUSTRO_RABBITMQ_USER)"
+if compose exec -T rabbitmq rabbitmqctl list_users 2>/dev/null | grep -q "^${RABBITMQ_USER}[[:space:]]"; then
+    ok "RabbitMQ has the configured user ($RABBITMQ_USER)"
 else
-    bad "RabbitMQ does not have the configured user ($AUSTRO_RABBITMQ_USER)"
+    bad "RabbitMQ does not have the configured user ($RABBITMQ_USER)"
 fi
 
 # Matches the queue as a whole first column. rabbitmqctl pads columns and may

@@ -468,6 +468,57 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+printf '\n=== 5d. Operator scripts never rely on an unset variable ===\n'
+# ---------------------------------------------------------------------------
+# The healthcheck is run by CI against a MINIMAL environment file and by an
+# operator against a hand-written one, and it validates nothing before it reads.
+# A variable read without a default therefore does not fail as a configuration
+# problem — `set -u` aborts mid-run with "unbound variable", which reads like a
+# fault in whatever check happened to be running at the time.
+#
+# That is not hypothetical. AUSTRO_RABBITMQ_USER was read bare while the compose
+# file defaults it to austro and .env.example ships it COMMENTED OUT, so the
+# check aborted after several passes with a message that pointed at the broker
+# rather than at the missing default. CI's smoke job failed exactly this way.
+#
+# The rule: every value the healthcheck reads carries the same default the
+# compose file uses, or is required explicitly with a message naming the file it
+# is missing from. Nothing is read bare.
+if [[ ! -f scripts/healthcheck.sh ]]; then
+    fail "file missing: scripts/healthcheck.sh"
+elif ! command -v python3 >/dev/null 2>&1; then
+    fail "operator-script variable audit could not run (python3 unavailable) — BLOCKED"
+else
+    bare_refs="$(python3 - scripts/healthcheck.sh <<'PY_SCAN'
+import re
+import sys
+
+source = open(sys.argv[1], encoding="utf-8").read()
+bare = set()
+for match in re.finditer(
+    r"\$\{(AUSTRO_[A-Z0-9_]+)(:-[^}]*|:\?[^}]*)?\}|\$(AUSTRO_[A-Z0-9_]+)", source
+):
+    name = match.group(1) or match.group(3)
+    if not match.group(2):
+        bare.add(name)
+print(" ".join(sorted(bare)))
+PY_SCAN
+)"
+    if [[ -n "$bare_refs" ]]; then
+        fail "scripts/healthcheck.sh reads variables without a default: $bare_refs"
+    else
+        pass "healthcheck reads no variable without a default (no set -u abort mid-run)"
+    fi
+fi
+
+# The two secrets with no safe default must be required by name, so a missing
+# one produces a message that says where it should have come from.
+assert_grep "healthcheck names the file a missing secret was expected in" \
+    'does not define \$required_secret' scripts/healthcheck.sh
+assert_grep "healthcheck mirrors the compose default for the RabbitMQ user" \
+    'RABBITMQ_USER="\${AUSTRO_RABBITMQ_USER:-austro}"' scripts/healthcheck.sh
+
+# ---------------------------------------------------------------------------
 printf '\n=== 6. Production compose — security posture ===\n'
 # ---------------------------------------------------------------------------
 assert_no_grep "no privileged containers" 'privileged: *true' "$COMPOSE"
