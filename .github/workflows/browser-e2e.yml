@@ -237,6 +237,9 @@ jobs:
           status=$?
           set -e
           cat /tmp/browser-e2e.log
+          echo "=== FULL BROWSER LOG (last 500 lines) ==="
+          tail -n 500 /tmp/browser-e2e.log
+          echo "=== END FULL LOG ==="
           if [ -f /tmp/browser-e2e-diagnostic.log ]; then
             diagnostic_line=$(tail -n 1 /tmp/browser-e2e-diagnostic.log | tr '\n' ' ' | cut -c 1-900)
             echo "::error title=Browser DOM diagnostic::$diagnostic_line"
@@ -246,12 +249,15 @@ jobs:
             if [ -n "$milestone_line" ]; then
               echo "::error title=Browser DOM milestone::$milestone_line"
             fi
-            failure_line=$(grep -E 'BROWSER_DIAGNOSTIC|Error:|Timeout|expect\(|locator|toHave|received|expected' /tmp/browser-e2e.log | grep -vE '[0-9]+[[:space:]]+\|' | tail -n 1 | tr '\n' ' ' | cut -c 1-900)
+            failure_line=$(grep -E 'BROWSER_DIAGNOSTIC|Error:|Timeout|expect\(|locator|toHave|received|expected' /tmp/browser-e2e.log | grep -vE '[0-9]+[[:space:]]+\|' | tail -n 5 | tr '\n' ' ' | cut -c 1-2000)
             if [ -n "$failure_line" ]; then
               echo "::error title=Browser DOM journey failure::$failure_line"
             else
               echo "::error title=Browser DOM journey failure::Playwright exited with status $status; see the uploaded trace and failure artifacts"
             fi
+            echo "::group::Browser failure context (50 lines around error)"
+            grep -n -E 'BROWSER_STEP|BROWSER_DIAGNOSTIC|Error:|Timeout|expect\(|locator|selectOption|unexpected' /tmp/browser-e2e.log | tail -n 100
+            echo "::endgroup::"
           fi
           exit "$status"
 
