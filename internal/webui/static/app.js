@@ -317,16 +317,34 @@
     for (var s = 0; s < deptSelects.length; s++) {
       if (!deptSelects[s]) continue;
       var currentVal = deptSelects[s].value;
-      // Keep first option for filter, clear rest
+      // Keep first option for filter, clear rest but preserve existing if list empty to avoid race clearing
       var keepFirst = deptSelects[s].id.indexOf("filter") !== -1;
       var first = keepFirst && deptSelects[s].options.length > 0 ? deptSelects[s].options[0] : null;
+      // Build map of existing values to preserve if needed
+      var existingMap = {};
+      for (var e = 0; e < deptSelects[s].options.length; e++) {
+        existingMap[deptSelects[s].options[e].value] = deptSelects[s].options[e].textContent;
+      }
       deptSelects[s].innerHTML = "";
       if (first) deptSelects[s].appendChild(first);
-      for (var i = 0; i < list.length; i++) {
-        var opt = document.createElement("option");
-        opt.value = list[i].id;
-        opt.textContent = list[i].name;
-        deptSelects[s].appendChild(opt);
+      if (list.length === 0) {
+        // If API returned empty (race), keep existing options to avoid clearing UI that already has optimistic entry
+        for (var k in existingMap) {
+          if (k === "" && keepFirst) continue;
+          if (existingMap.hasOwnProperty(k)) {
+            var optKeep = document.createElement("option");
+            optKeep.value = k;
+            optKeep.textContent = existingMap[k];
+            deptSelects[s].appendChild(optKeep);
+          }
+        }
+      } else {
+        for (var i = 0; i < list.length; i++) {
+          var opt = document.createElement("option");
+          opt.value = list[i].id;
+          opt.textContent = list[i].name;
+          deptSelects[s].appendChild(opt);
+        }
       }
       if (currentVal) deptSelects[s].value = currentVal;
     }
