@@ -463,10 +463,11 @@
         setMessage(msg, errorMessage(r), false);
         return;
       }
-      setMessage(msg, "Department updated.", true);
       el("department-detail").hidden = true;
       departmentCurrent = null;
-      loadDepartments(false);
+      loadDepartments(false).then(function() {
+        setMessage(msg, "Department updated.", true);
+      });
     }).catch(function () {
       setMessage(msg, "Could not reach API.", false);
     });
@@ -631,10 +632,11 @@
         setMessage(msg, errorMessage(r), false);
         return;
       }
-      setMessage(msg, "Team updated.", true);
       el("team-detail").hidden = true;
       teamCurrent = null;
-      loadTeams(false);
+      loadTeams(false).then(function() {
+        setMessage(msg, "Team updated.", true);
+      });
     }).catch(function () {
       setMessage(msg, "Could not reach API.", false);
     });
@@ -746,8 +748,9 @@
         return;
       }
       el("employee-form").reset();
-      setMessage(msg, "AI employee created: " + r.body.name, true);
-      loadEmployees(false);
+      loadEmployees(false).then(function() {
+        setMessage(msg, "AI employee created: " + r.body.name, true);
+      });
     }).catch(function () {
       setMessage(msg, "Could not reach API.", false);
     });
@@ -791,10 +794,11 @@
         setMessage(msg, errorMessage(r), false);
         return;
       }
-      setMessage(msg, "AI employee updated.", true);
       el("employee-detail").hidden = true;
       employeeCurrent = null;
-      loadEmployees(false);
+      loadEmployees(false).then(function() {
+        setMessage(msg, "AI employee updated.", true);
+      });
     }).catch(function () {
       setMessage(msg, "Could not reach API.", false);
     });
