@@ -512,21 +512,28 @@ jobs:
           done
 
       - name: Assert the API verified its database topology
+        # The API logs are captured to a file before grepping. Piping
+        # `docker compose logs` into `grep -q` lets grep close the pipe the
+        # moment it matches; the still-writing upstream then receives SIGPIPE
+        # and, under set -o pipefail, turns a successful match into a 255
+        # failure. Grepping a file has no such ambiguity.
         run: |
           set -euo pipefail
-          docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs api \
-            | grep -q '"message":"database-topology-ready"'
-          docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs api \
-            | grep -q '"runtime_role":"austro_app"'
+          api_log=/tmp/austro-api.log
+          docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs api >"$api_log"
+          grep -F '"message":"database-topology-ready"' "$api_log" >/dev/null
+          grep -F '"runtime_role":"austro_app"' "$api_log" >/dev/null
           echo "PASS: the API reported a verified topology on the austro_app runtime role"
 
       - name: Assert the worker started and attached to the expected queue
+        # Same capture-to-file rationale as the API topology step above: do not
+        # pipe `docker compose logs` into grep -q.
         run: |
           set -euo pipefail
-          docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs worker \
-            | grep -q '"message":"worker-started"'
-          docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs worker \
-            | grep -q '"queue":"austro.events"'
+          worker_log=/tmp/austro-worker.log
+          docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs worker >"$worker_log"
+          grep -F '"message":"worker-started"' "$worker_log" >/dev/null
+          grep -F '"queue":"austro.events"' "$worker_log" >/dev/null
           echo "PASS: the worker reported worker-started on the austro.events queue"
 
       - name: Seed representative persisted application data
@@ -570,7 +577,10 @@ jobs:
           test -n "$backup_file" || { echo "::error::no backup artifact produced"; exit 1; }
           test -s "$backup_file" || { echo "::error::backup artifact is empty: $backup_file"; exit 1; }
           gzip -t "$backup_file" || { echo "::error::backup is not a valid gzip stream"; exit 1; }
-          gzip -dc "$backup_file" | head -40 | grep -q 'PostgreSQL database dump' \
+          # Full-stream grep, deliberately without -q and without head: an early
+          # exit by the consumer would SIGPIPE the still-writing gzip and, under
+          # set -o pipefail, turn a valid dump into a 255 failure.
+          gzip -dc "$backup_file" | grep -F 'PostgreSQL database dump' >/dev/null \
             || { echo "::error::backup does not contain a PostgreSQL dump header"; exit 1; }
           test -f "$backup_file.sha256" || { echo "::error::backup has no .sha256 checksum"; exit 1; }
           (cd backups && sha256sum -c "$(basename "$backup_file").sha256")
