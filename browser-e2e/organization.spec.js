@@ -90,36 +90,33 @@ test('organization hierarchy browser journey', async ({ browser }) => {
     const deptId = dept.id;
     console.log('BROWSER_DIAGNOSTIC deptId:', deptId);
 
-    // TEAM → CREATE (via API to avoid flaky select, but UI must show it)
+    // TEAM → CREATE (via UI with JS eval to avoid Playwright selectOption flakiness)
     await expect(adminPage.locator('#teams-card')).toBeVisible();
     await expect(adminPage.locator('#team-loading')).toBeHidden({ timeout: 15000 });
     const teamName = 'Team-' + Math.random().toString(36).slice(2, 8);
-    // Create team via API (more reliable than UI select race)
-    const teamCreate = await browserAPI(adminPage, 'POST', '/teams', { name: teamName, department_id: deptId });
-    console.log('BROWSER_DIAGNOSTIC teamCreate status:', teamCreate.status, 'body:', JSON.stringify(teamCreate.body).slice(0,500));
-    expect(teamCreate.status).toBe(201);
-    const teamId = teamCreate.body.id;
-    // Reload teams UI and verify it appears
-    await adminPage.evaluate(() => { if (window.loadTeams) window.loadTeams(false); });
-    // Trigger reload via filter form or directly call loadTeams via evaluate
-    await adminPage.evaluate(async () => {
-      const token = sessionStorage.getItem('austro.access');
-      const resp = await fetch('/teams?limit=100', { headers: { Authorization: 'Bearer ' + token } });
-      return resp.status;
-    });
-    // Use API to ensure team exists, then check UI list via reload
+    await adminPage.locator('#team-name').fill(teamName);
+    // Ensure department select has our dept, then set value via JS eval (bypasses Playwright validation)
     await expect(async () => {
-      const list = await browserAPI(adminPage, 'GET', '/teams?limit=100');
-      const found = list.body.teams.find(t => t.id === teamId);
-      expect(found).toBeTruthy();
-    }).toPass({ timeout: 10000 });
-    // Force UI reload to verify team appears in UI
-    await adminPage.reload();
-    await expect(adminPage.locator('#app-view')).toBeVisible({ timeout: 15000 });
-    await expect(adminPage.locator('#departments-card')).toBeVisible();
-    await expect(adminPage.locator('#team-loading')).toBeHidden({ timeout: 15000 });
-    await expect(adminPage.locator('#team-list')).toContainText(teamName, { timeout: 15000 });
+      const values = await adminPage.locator('#team-department option').evaluateAll(els => els.map(e => e.value));
+      console.log('BROWSER_DIAGNOSTIC team-department values:', values.join(',').slice(0,1000), 'need:', deptId);
+      expect(values).toContain(deptId);
+    }).toPass({ timeout: 20000 });
+    await adminPage.locator('#team-department').evaluate((sel, val) => {
+      sel.value = val;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+    }, deptId);
+    const selectedDept = await adminPage.locator('#team-department').inputValue();
+    console.log('BROWSER_DIAGNOSTIC selectedDept after eval:', selectedDept);
+    expect(selectedDept).toBe(deptId);
+    await adminPage.locator('#team-form button[type="submit"]').click();
+    await expect(adminPage.locator('#team-message')).toContainText('Team created');
+    await expect(adminPage.locator('#team-list')).toContainText(teamName);
     console.log('BROWSER_STEP org-team-created');
+    const teamList = await browserAPI(adminPage, 'GET', '/teams?limit=100');
+    expect(teamList.status).toBe(200);
+    const team = teamList.body.teams.find(t => t.name === teamName);
+    expect(team).toBeTruthy();
+    const teamId = team.id;
 
     // AI EMPLOYEES → CREATE (via API to avoid flaky select)
     await expect(adminPage.locator('#ai-employees-card')).toBeVisible();
@@ -198,14 +195,16 @@ test('organization hierarchy browser journey', async ({ browser }) => {
     await expect(adminPage.locator('#team-detail')).toBeVisible();
     await expect(async () => {
       const values = await adminPage.locator('#team-edit-department option').evaluateAll(els => els.map(e => e.value));
-      console.log('BROWSER_DIAGNOSTIC team-edit-department values:', values.join(',').slice(0,500));
+      console.log('BROWSER_DIAGNOSTIC team-edit-department values:', values.join(',').slice(0,500), 'need:', dept2.id);
       expect(values).toContain(dept2.id);
     }).toPass({ timeout: 20000 });
-    await expect(async () => {
-      await adminPage.locator('#team-edit-department').selectOption(dept2.id);
-      const selected = await adminPage.locator('#team-edit-department').inputValue();
-      expect(selected).toBe(dept2.id);
-    }).toPass({ timeout: 10000 });
+    await adminPage.locator('#team-edit-department').evaluate((sel, val) => {
+      sel.value = val;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+    }, dept2.id);
+    const selDept2 = await adminPage.locator('#team-edit-department').inputValue();
+    console.log('BROWSER_DIAGNOSTIC selDept2:', selDept2);
+    expect(selDept2).toBe(dept2.id);
     await adminPage.locator('#team-edit-form button[type="submit"]').click();
     await expect(adminPage.locator('#team-message')).toContainText('Team updated');
     console.log('BROWSER_STEP org-team-moved');
