@@ -227,6 +227,29 @@ test('organization hierarchy browser journey', async ({ browser }) => {
     await expect(founderPage.locator('#audit-body')).toContainText('ai_employee.create');
     console.log('BROWSER_STEP org-audit-employee');
 
+    // AUDIT empty state: a filter that matches nothing must render the empty
+    // placeholder and hide the table -- not an error -- and must recover once
+    // a live filter is applied again.
+    await founderPage.locator('#audit-event-type').fill('no.such.event.type');
+    await founderPage.locator('#audit-form button[type="submit"]').click();
+    await expect(founderPage.locator('#audit-empty')).toBeVisible();
+    await expect(founderPage.locator('#audit-table')).toBeHidden();
+    console.log('BROWSER_STEP org-audit-empty');
+
+    await founderPage.locator('#audit-event-type').fill('department.create');
+    await founderPage.locator('#audit-form button[type="submit"]').click();
+    await expect(founderPage.locator('#audit-body')).toContainText('department.create');
+    await expect(founderPage.locator('#audit-empty')).toBeHidden();
+    console.log('BROWSER_STEP org-audit-recovered');
+
+    // AUDIT is read-only: the only controls are the filter form, the verify
+    // chain button and "load older". There is no edit, delete or row action.
+    await expect(founderPage.locator('#audit-card button')).toHaveCount(3);
+    await expect(founderPage.locator('#audit-body button')).toHaveCount(0);
+    await expect(founderPage.locator('#audit-card')).not.toContainText('Delete');
+    await expect(founderPage.locator('#audit-card')).not.toContainText('Edit');
+    console.log('BROWSER_STEP org-audit-readonly');
+
     await signOut(founderPage);
 
     // UNAUTHORIZED: member cannot create department/team/employee (UI shows forbidden)
@@ -245,6 +268,15 @@ test('organization hierarchy browser journey', async ({ browser }) => {
     const memberDeptCreate = await browserAPI(memberPage, 'POST', '/departments', { name: 'member-api-create' });
     expect(memberDeptCreate.status).toBe(403);
     console.log('BROWSER_STEP org-member-api-denied');
+
+    // Member cannot read the organization-wide audit trail: the UI explains the
+    // view is founder-only and never renders the table. (The API-level 403 is
+    // covered by the live test suite.)
+    await memberPage.locator('#audit-form button[type="submit"]').click();
+    await expect(memberPage.locator('#audit-message')).toContainText(
+      'Your role cannot read the organization-wide audit log');
+    await expect(memberPage.locator('#audit-table')).toBeHidden();
+    console.log('BROWSER_STEP org-audit-member-denied');
 
     await signOut(memberPage);
 
