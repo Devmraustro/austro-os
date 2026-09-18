@@ -227,12 +227,47 @@ func isSecretShaped(value []byte) bool {
 	if len(low) == 0 {
 		return false
 	}
-	for _, marker := range []string{"sk-", "pk-", "-----begin", "bearer ", "api_key=", "apikey=", "secret="} {
+	// Markers that are not ordinary English: a substring match anywhere is
+	// enough.
+	for _, marker := range []string{"-----begin", "bearer ", "api_key=", "apikey=", "secret="} {
 		if strings.Contains(low, marker) {
 			return true
 		}
 	}
+	// The short provider prefixes "sk-"/"pk-" are also substrings of ordinary
+	// words ("task-list", "risk-free", "desk-drawer", "ask-follow"), so a bare
+	// Contains rejects legitimate memory. A real key opens a token: it is at
+	// the start of the value or follows a non-word character. Requiring that
+	// boundary removes the false positives without losing detection of an
+	// actual "sk-..."/"pk-..." key.
+	for _, prefix := range []string{"sk-", "pk-"} {
+		if hasTokenBoundary(low, prefix) {
+			return true
+		}
+	}
 	return false
+}
+
+// hasTokenBoundary reports whether prefix occurs at the start of s or directly
+// after a non-word byte, i.e. at the start of a token rather than inside one.
+func hasTokenBoundary(s, prefix string) bool {
+	for from := 0; ; {
+		idx := strings.Index(s[from:], prefix)
+		if idx < 0 {
+			return false
+		}
+		idx += from
+		if idx == 0 || !isWordByte(s[idx-1]) {
+			return true
+		}
+		from = idx + 1
+	}
+}
+
+// isWordByte reports whether b can be part of a word token. s is already
+// lower-cased by the caller, so only lower-case letters need to be considered.
+func isWordByte(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_'
 }
 
 // AuditSink records memory decisions for the append-only, principle-tagged

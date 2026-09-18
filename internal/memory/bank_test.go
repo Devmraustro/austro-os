@@ -183,3 +183,46 @@ func TestBankAuditRollupAndTTLCap(t *testing.T) {
 type captureSink struct{ fn func(AuditRecord) }
 
 func (c captureSink) Record(_ context.Context, rec AuditRecord) { c.fn(rec) }
+
+func TestSecretShapedRequiresATokenBoundaryForShortPrefixes(t *testing.T) {
+	secrets := []string{
+		"sk-abc123",
+		"sk-live-0123456789abcdef",
+		"credential: sk-proj-abcdef",
+		"X-Api-Key: sk-abc",
+		"token=pk-abc",
+		"-----BEGIN RSA PRIVATE KEY-----",
+		"authorization: bearer abcdef",
+		"api_key=abc",
+		"apikey=abc",
+		"secret=abc",
+	}
+	for _, s := range secrets {
+		require.Truef(t, isSecretShaped([]byte(s)), "must reject secret-shaped value %q", s)
+	}
+
+	// Ordinary prose that merely contains the letters "sk-"/"pk-" is not a
+	// credential and must be storable.
+	ordinary := []string{
+		"task-list for the week",
+		"risk-free launch plan",
+		"desk-drawer inventory",
+		"mask-out the logo",
+		"ask-follow up tomorrow",
+		"brisk-start to the meeting",
+	}
+	for _, s := range ordinary {
+		require.Falsef(t, isSecretShaped([]byte(s)), "must accept ordinary value %q", s)
+	}
+}
+
+func TestBankAcceptsOrdinaryValuesContainingSkSubstring(t *testing.T) {
+	bank := NewBank(newFakeRepo(), nil, nil)
+	ctx := context.Background()
+	ws := uuid.New()
+
+	require.NoError(t, bank.Write(ctx, ws, LayerWorkspace, "note", []byte("task-list for the week"), time.Minute))
+	got, err := bank.Read(ctx, ws, LayerWorkspace, "note")
+	require.NoError(t, err)
+	require.Equal(t, "task-list for the week", string(got))
+}
