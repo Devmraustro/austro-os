@@ -148,9 +148,14 @@ func serveTask(t *testing.T, store *fakeTaskStore, sink audit.Sink, claims *auth
 	t.Helper()
 	svc := task.NewService(store, nil, nil)
 	h := NewTaskHandler(svc)
-	if sink != nil {
-		h = h.SetAuditSink(sink)
+	if sink == nil {
+		// Task mutations fail closed when no durable audit is available, so the
+		// tests attach an in-memory sink by default -- the same convention
+		// testHandler follows for the auth surface. Tests that need a failing
+		// sink pass one explicitly.
+		sink = &recordingSink{}
 	}
+	h = h.SetAuditSink(sink)
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /tasks", h.Create)
 	mux.HandleFunc("GET /tasks", h.List)
@@ -715,6 +720,33 @@ func TestTaskAuditRecordsDenialsAndFailures(t *testing.T) {
 	}
 	require.Contains(t, outcomes, "task.transition/failed",
 		"a refused lifecycle move is security-relevant and must be recorded")
+}
+
+// TestTaskMutationsFailClosedWhenAuditUnavailable pins the mutation contract
+// shared with the auth, workspace and knowledge surfaces: a create, update or
+// transition must not answer 2xx when its audit entry could not be durably
+// written, because nothing downstream can tell the hole exists.
+func TestTaskMutationsFailClosedWhenAuditUnavailable(t *testing.T) {
+	store := newFakeTaskStore()
+	claims := adminClaims(uuid.NewString())
+	seed := serveTask(t, store, &recordingSink{}, claims, http.MethodPost, "/tasks", `{"title":"seed"}`)
+	require.Equal(t, http.StatusCreated, seed.Code, seed.Body.String())
+	var seeded taskResponse
+	require.NoError(t, json.Unmarshal(seed.Body.Bytes(), &seeded))
+
+	bad := failingSink{err: errTestAudit}
+
+	create := serveTask(t, store, bad, claims, http.MethodPost, "/tasks", `{"title":"unaudited"}`)
+	require.Equal(t, http.StatusInternalServerError, create.Code,
+		"a create must not report 201 when its audit record could not be written")
+
+	update := serveTask(t, store, bad, claims, http.MethodPatch, "/tasks/"+seeded.ID, `{"title":"renamed"}`)
+	require.Equal(t, http.StatusInternalServerError, update.Code,
+		"an update must not report 200 when its audit record could not be written")
+
+	transition := serveTask(t, store, bad, claims, http.MethodPost, "/tasks/"+seeded.ID+"/transition", `{"status":"planned"}`)
+	require.Equal(t, http.StatusInternalServerError, transition.Code,
+		"a transition must not report 200 when its audit record could not be written")
 }
 
 // TestTaskHandlerRequiresService pins the constructor contract.

@@ -206,7 +206,9 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, claims, "create-task", uuid.Nil, err)
 		return
 	}
-	h.record(r, claims, "create-task", t.ID, ws, "success", "")
+	if !h.recordSuccess(w, r, claims, "create-task", t.ID, ws, "") {
+		return
+	}
 	writeJSON(w, http.StatusCreated, toTaskResponse(t))
 }
 
@@ -307,7 +309,9 @@ func (h *TaskHandler) Update(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, claims, "update-task", id, err)
 		return
 	}
-	h.record(r, claims, "update-task", t.ID, ws, "success", "")
+	if !h.recordSuccess(w, r, claims, "update-task", t.ID, ws, "") {
+		return
+	}
 	writeJSON(w, http.StatusOK, toTaskResponse(t))
 }
 
@@ -345,7 +349,9 @@ func (h *TaskHandler) Transition(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, r, claims, "transition-task", id, err)
 		return
 	}
-	h.record(r, claims, "transition-task", t.ID, ws, "success", string(to))
+	if !h.recordSuccess(w, r, claims, "transition-task", t.ID, ws, string(to)) {
+		return
+	}
 	writeJSON(w, http.StatusOK, toTaskResponse(t))
 }
 
@@ -403,12 +409,17 @@ func (h *TaskHandler) fail(w http.ResponseWriter, r *http.Request, claims *auth.
 	}
 }
 
-// record persists a task decision to the audit chain. A task lifecycle change is
-// the evidence of who moved work, so it is written durably rather than only
-// logged.
-func (h *TaskHandler) record(r *http.Request, claims *auth.Claims, action string, taskID, ws uuid.UUID, outcome, detail string) {
+// appendAudit writes one task decision to the audit chain and returns any
+// failure. A task lifecycle change is the evidence of who moved work, so it is
+// written durably rather than only logged. Both record (best-effort, for
+// denials and failures) and recordSuccess (fail-closed, for mutations) go
+// through it so the record shape is defined once.
+func (h *TaskHandler) appendAudit(r *http.Request, claims *auth.Claims, action string, taskID, ws uuid.UUID, outcome, detail string) error {
 	if h.auditSink == nil {
-		return
+		// No sink means no durable record. A mutation that reported success
+		// anyway would leave an unaudited hole, so the absence is an error and
+		// not a no-op.
+		return errAuditUnavailable
 	}
 	rec := audit.Record{
 		// The action names read "create-task", "transition-task" and so on; the
@@ -437,7 +448,30 @@ func (h *TaskHandler) record(r *http.Request, claims *auth.Claims, action string
 	if _, err := h.auditSink.Append(r.Context(), rec); err != nil {
 		logger.NewEntry("task-audit-persist-failed").SetLevel("error").
 			With("event_type", rec.EventType).WithError(err).Log()
+		return err
 	}
+	return nil
+}
+
+// record persists a task denial or failure best-effort. The authorization
+// decision has already happened, and the caller still needs to see its own
+// 4xx/5xx: turning a denial into an "audit unavailable" error would obscure the
+// outcome. Failures to persist are logged inside appendAudit.
+func (h *TaskHandler) record(r *http.Request, claims *auth.Claims, action string, taskID, ws uuid.UUID, outcome, detail string) {
+	_ = h.appendAudit(r, claims, action, taskID, ws, outcome, detail)
+}
+
+// recordSuccess persists a successful mutation and fails the request when the
+// record could not be written. This follows the convention AuthHandler,
+// WorkspaceHandler and KnowledgeHandler established: a create, update or
+// transition must not answer 2xx while its audit entry is missing, because
+// nothing downstream can tell the hole exists.
+func (h *TaskHandler) recordSuccess(w http.ResponseWriter, r *http.Request, claims *auth.Claims, action string, taskID, ws uuid.UUID, detail string) bool {
+	if err := h.appendAudit(r, claims, action, taskID, ws, "success", detail); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "audit unavailable")
+		return false
+	}
+	return true
 }
 
 // parseTaskQuery reads the bounded listing parameters. Unknown parameters are
