@@ -20,6 +20,11 @@
 
 * { box-sizing: border-box; }
 
+/* The hidden attribute must always win over the layout display rules below
+ * (for example .details { display: grid } and #auth-view { display: flex }).
+ * Otherwise setting node.hidden = true leaves the element on screen. */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   background: var(--bg);
