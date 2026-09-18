@@ -400,7 +400,7 @@ func TestDashboardIsRendered(t *testing.T) {
 		t.Fatal("no app.js asset is declared")
 	}
 	body := stripHTMLComments(string(assets[html]))
-	for _, id := range []string{"dashboard-card", "dashboard-summary", "dashboard-capabilities", "dashboard-refresh-btn"} {
+	for _, id := range []string{"dashboard-card", "dashboard-summary", "dashboard-workflow", "dashboard-capabilities", "dashboard-refresh-btn"} {
 		if !strings.Contains(body, id) {
 			t.Errorf("dashboard element %s must be present", id)
 		}

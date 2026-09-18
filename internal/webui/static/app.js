@@ -21,6 +21,11 @@
   var ACCESS = "austro.access";
   var REFRESH = "austro.refresh";
   var currentRole = "";
+  /* The workspace the server bound to this session, from /api/me. It only
+   * selects which audit read the server itself authorizes for this caller
+   * (workspace-scoped for a workspace role, organization-scoped for a founder);
+   * it is never used here to widen access. */
+  var dashScope = "";
   /* A single in-flight refresh shared by every caller that hit a 401 at the
    * same time. The server rotates refresh tokens one-time-use, so presenting
    * the same token twice revokes the whole session family; without this guard
@@ -115,6 +120,82 @@
         });
       })(dashProbes[j]);
     }
+  }
+
+  /* The workflow summary is a second, live section of the dashboard card. It is
+   * composed only from existing authenticated endpoints -- pipelines,
+   * publications, and the audit trail -- so every value is the server's own
+   * answer for this session. "denied" means the server refused the read for
+   * this caller's scope (a workspace-less founder has no pipeline or
+   * publication scope); nothing here is counted in the browser from a guess. */
+  function setDashWorkflow(field, text) {
+    var node = el("dashboard-card").querySelector('dd[data-dash="' + field + '"]');
+    if (node) node.textContent = text;
+  }
+
+  function dashWorkflowCount(r, keep) {
+    if (r.status === 403) return "denied";
+    if (r.status !== 200 || !r.body || !Array.isArray(r.body.pipelines)) return "unavailable";
+    var n = 0;
+    for (var i = 0; i < r.body.pipelines.length; i++) {
+      if (keep(r.body.pipelines[i].status)) n++;
+    }
+    return n === 0 ? "none" : String(n);
+  }
+
+  function dashPublicationCount(r) {
+    if (r.status === 403) return "denied";
+    if (r.status !== 200 || !r.body || !Array.isArray(r.body.publications)) return "unavailable";
+    if (r.body.publications.length === 0) return "none";
+    return String(r.body.publications.length);
+  }
+
+  function renderLatestActivity(r) {
+    if (r.status === 403) return "denied";
+    if (r.status !== 200 || !r.body || !Array.isArray(r.body.events)) return "unavailable";
+    if (r.body.events.length === 0) return "No activity recorded.";
+    var ev = r.body.events[0];
+    var text = String(ev.event_type || "activity") + " · " +
+      String(ev.outcome || "unknown") + " · seq " + ev.seq;
+    if (ev.timestamp) text += " · " + String(ev.timestamp).replace("T", " ").slice(0, 19);
+    return text;
+  }
+
+  /* The founder is organization-scoped and reads the organization trail; a
+   * workspace role is read through the workspace-scoped endpoint the server
+   * bounds to the caller's verified claims. dashScope is that server answer,
+   * never a URL or user value. */
+  function auditSummaryPath() {
+    if (dashScope) return "/workspaces/" + encodeURIComponent(dashScope) + "/audit/events?limit=1";
+    return "/audit/events?limit=1";
+  }
+
+  function loadWorkflowSummary() {
+    setDashWorkflow("active-pipelines", "…");
+    setDashWorkflow("pending-publications", "…");
+    setDashWorkflow("awaiting-pipelines", "…");
+    setDashWorkflow("recent-activity", "…");
+    authenticated("GET", "/pipelines?limit=100").then(function (r) {
+      setDashWorkflow("active-pipelines", dashWorkflowCount(r, function (status) {
+        return status !== "done" && status !== "failed";
+      }));
+      setDashWorkflow("awaiting-pipelines", dashWorkflowCount(r, function (status) {
+        return status === "awaiting_approval";
+      }));
+    }).catch(function () {
+      setDashWorkflow("active-pipelines", "unavailable");
+      setDashWorkflow("awaiting-pipelines", "unavailable");
+    });
+    authenticated("GET", "/publications?limit=100&status=review").then(function (r) {
+      setDashWorkflow("pending-publications", dashPublicationCount(r));
+    }).catch(function () {
+      setDashWorkflow("pending-publications", "unavailable");
+    });
+    authenticated("GET", auditSummaryPath()).then(function (r) {
+      setDashWorkflow("recent-activity", renderLatestActivity(r));
+    }).catch(function () {
+      setDashWorkflow("recent-activity", "unavailable");
+    });
   }
 
   function setMessage(node, text, ok) {
@@ -224,6 +305,7 @@
 
   function renderIdentity(me) {
     currentRole = me.role || "";
+    dashScope = me.workspace_id || "";
     el("identity").textContent = me.username + " · " + me.role;
     var fields = {
       username: me.username,
@@ -334,6 +416,7 @@
     return authenticated("GET", "/api/me").then(function (r) {
       if (r.status !== 200 || !r.body) { signOut(false); return; }
       renderIdentity(r.body);
+      loadWorkflowSummary();
       loadPublications(false);
       loadPipelines(false);
     });
@@ -409,7 +492,10 @@
 
   el("logout-btn").addEventListener("click", function () { signOut(true); });
 
-  el("dashboard-refresh-btn").addEventListener("click", function () { loadDashboard(); });
+  el("dashboard-refresh-btn").addEventListener("click", function () {
+    loadDashboard();
+    loadWorkflowSummary();
+  });
 
   el("workspace-form").addEventListener("submit", function (ev) {
     ev.preventDefault();
