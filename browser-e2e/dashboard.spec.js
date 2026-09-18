@@ -1,4 +1,5 @@
 const { test, expect } = require('@playwright/test');
+const { signIn } = require('./support');
 
 // Dashboard, exercised through the real browser.
 //
@@ -32,16 +33,6 @@ const capabilities = ['Workspaces', 'Departments', 'Teams', 'AI Employees',
 // everything except those two.
 const organizationWide = ['Workspaces', 'Audit'];
 const workspaceAvailable = capabilities.filter((name) => !organizationWide.includes(name));
-
-async function signIn(page, username, password) {
-  await page.goto('/');
-  await expect(page.locator('#auth-view')).toBeVisible();
-  await page.locator('#username').fill(username);
-  await page.locator('#password').fill(password);
-  await page.locator('#login-btn').click();
-  await expect(page.locator('#app-view')).toBeVisible();
-  await expect(page.locator('#identity')).toContainText(username);
-}
 
 function capabilityChip(page, name) {
   return page.locator('#dashboard-capabilities li', { hasText: name }).locator('span').last();
