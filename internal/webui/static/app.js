@@ -21,6 +21,11 @@
   var ACCESS = "austro.access";
   var REFRESH = "austro.refresh";
   var currentRole = "";
+  /* A single in-flight refresh shared by every caller that hit a 401 at the
+   * same time. The server rotates refresh tokens one-time-use, so presenting
+   * the same token twice revokes the whole session family; without this guard
+   * the dashboard's parallel 401s would each present it and log the user out. */
+  var refreshPromise = null;
 
   function token() { return sessionStorage.getItem(ACCESS); }
   function setTokens(access, refresh) {
@@ -152,23 +157,43 @@
     return "Request failed with status " + result.status;
   }
 
-  /* An authenticated request with a single refresh retry. A stale access token
-   * is rotated once; if rotation fails the session is over and the caller is
-   * returned to the login view rather than shown partial data. */
+  /* Rotate the refresh token at most once at a time. Concurrent callers share
+   * the same attempt; the one-time-use token is presented exactly once. On
+   * success the new tokens are stored and every caller retries with them. On
+   * failure the session is over and the caller is returned to the login view.
+   * The promise is cleared once it settles so a later 401 can refresh again. */
+  function refreshSession() {
+    if (refreshPromise) return refreshPromise;
+    var refresh = sessionStorage.getItem(REFRESH);
+    if (!refresh) { signOut(false); return Promise.resolve(false); }
+    refreshPromise = request("POST", "/api/auth/refresh", { refresh_token: refresh }, false)
+      .then(function (rotated) {
+        refreshPromise = null;
+        if (rotated.status !== 200 || !rotated.body || !rotated.body.access_token) {
+          signOut(false);
+          return false;
+        }
+        setTokens(rotated.body.access_token, rotated.body.refresh_token);
+        return true;
+      })
+      .catch(function () {
+        refreshPromise = null;
+        signOut(false);
+        return false;
+      });
+    return refreshPromise;
+  }
+
+  /* An authenticated request with a single shared refresh retry. A stale access
+   * token is rotated once; if rotation fails the session is over and the caller
+   * is returned to the login view rather than shown partial data. */
   function authenticated(method, path, body) {
     return request(method, path, body, true).then(function (result) {
       if (result.status !== 401) return result;
-      var refresh = sessionStorage.getItem(REFRESH);
-      if (!refresh) { signOut(false); return result; }
-      return request("POST", "/api/auth/refresh", { refresh_token: refresh }, false)
-        .then(function (rotated) {
-          if (rotated.status !== 200 || !rotated.body || !rotated.body.access_token) {
-            signOut(false);
-            return result;
-          }
-          setTokens(rotated.body.access_token, rotated.body.refresh_token);
-          return request(method, path, body, true);
-        });
+      return refreshSession().then(function (ok) {
+        if (!ok) return result;
+        return request(method, path, body, true);
+      });
     });
   }
 
