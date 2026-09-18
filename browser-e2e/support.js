@@ -13,12 +13,45 @@ const RATE_LIMIT_RETRY_INTERVAL_MS = 2000;
 // full window is always enough for the next attempt to be admitted.
 const RATE_LIMIT_MAX_WAIT_MS = 90000;
 
+// Drop any session this tab already restored, so a sign-in always starts from
+// a clean auth view. The token is cleared locally whether or not the revocation
+// request reaches the server.
+async function signOut(page) {
+  await page.locator('#logout-btn').click();
+  await expect(page.locator('#auth-view')).toBeVisible();
+  await expect(page.locator('#app-view')).toBeHidden();
+}
+
+function identityUsername(text) {
+  return (text || '').split('\u00b7')[0].trim();
+}
+
 async function signIn(page, username, password, onReady) {
   await page.goto('/');
+
+  const app = page.locator('#app-view');
+  const identity = page.locator('#identity');
+  if (await app.isVisible()) {
+    // The access token lives in sessionStorage, so a load with a live token
+    // enters the app immediately. Let that bootstrap settle, then reuse the
+    // session only when it is already the identity the caller asked for.
+    await page.waitForFunction(() => {
+      const view = document.getElementById('app-view');
+      if (!view || view.hidden) return true;
+      const who = document.getElementById('identity');
+      return !!(who && who.textContent.trim());
+    });
+    if (await app.isVisible()) {
+      if (identityUsername(await identity.textContent()) === username) {
+        return;
+      }
+      await signOut(page);
+    }
+  }
+
   await expect(page.locator('#auth-view')).toBeVisible();
   if (onReady) await onReady();
 
-  const app = page.locator('#app-view');
   const deadline = Date.now() + RATE_LIMIT_MAX_WAIT_MS;
   for (;;) {
     await page.locator('#username').fill(username);
