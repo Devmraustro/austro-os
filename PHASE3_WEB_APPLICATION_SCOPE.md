@@ -162,49 +162,71 @@ Sign-off: **Founder-approved.**
 
 ## 9. Implementation status
 
-Recorded by `decisions/adr-022-phase3-web-application-vertical-slice.md`. The
-first implementation step delivered a **real vertical slice**, not a mock: a
-browser application embedded in and served by the existing Go binary
-(`internal/webui`), with no second backend, no build step and no new dependency.
-It runs entirely over endpoints that exist.
+Recorded by `decisions/adr-022-phase3-web-application-vertical-slice.md` (first
+step) and `decisions/adr-023-knowledge-http-surface.md`. The implementation
+started as a **real vertical slice**, not a mock: a browser application embedded
+in and served by the existing Go binary (`internal/webui`), with no second
+backend, no build step and no new dependency. It runs entirely over endpoints
+that exist.
 
-**Delivered**
+The approved Phase 3 web application is now **complete across all ADR-016
+areas**:
 
 - **2.1 Authentication** — login, logout, refresh-on-401 with token rotation,
   and first-run Founder bootstrap. Bootstrap is behind an explicit control and
   is never issued on page load, because it is unauthenticated and
   state-changing.
-- **2.2 Main Dashboard (partial)** — identity and role, liveness/readiness,
-  workspace context.
-- **Workspace administration** — list and create; Founder-only, authorized
-  server-side.
+- **2.2 Main Dashboard** — identity and role, liveness/readiness, workspace
+  context, active pipelines, pending publication approvals awaiting review,
+  and recent activity, composed only from authenticated endpoints.
+- **2.3 Creator** — start a pipeline, view stage, status, generated-artifact
+  references and related publication reference, with approve/retry actions
+  offered per server state.
+- **2.4 AI Employees** — list, role, status, team/department/workplace context,
+  assigned task, capabilities; create/update via authorized endpoints.
+- **2.5 Knowledge** — list, search, create, update, delete, all
+  workspace-scoped; embedded-vector search via the AI gateway.
+- **2.6 Memory** — read/write workspace-scoped memory keys (by layer), with TTL
+  surfaced from the server response.
+- **2.7 Tasks** — create, list (filters, cursor paging), and status transitions
+  through the authorized transition endpoint (terminal moves are confirmed).
+- **2.8 Publishing** — create publications, approval queue view, submit /
+  approve / reject / publish / retry actions through the server-authoritative
+  publication state machine.
+- **2.9 Audit** — recent audit events with filters, and verification summary,
+  read-only; the UI cannot amend the hash chain.
 
-**Not delivered, and why**
+**Workspace administration** — list and create workspaces; Founder-only,
+authorized server-side. Departments, teams and AI employees carry
+workspace-scoped list, create, update and detail views with cursor paging and
+filtering (their delete API routes exist but are intentionally not surfaced in
+the UI; delete links are exposed only for knowledge documents, which lack a
+softer retirement path).
 
-| Area | Blocker |
-| --- | --- |
-| 2.2 Active pipelines, pending approvals, recent activity | no endpoints |
-| 2.3 Creator | no pipeline/stage/task/artifact endpoints |
-| 2.4 AI Employees | no endpoint |
-| 2.5 Knowledge | no endpoint |
-| 2.6 Memory | no endpoint |
-| 2.7 Tasks | no endpoint |
-| 2.8 Publishing approval queue | no endpoint; `/api/publications/{id}/approve` has a handler but is registered by no route |
-| 2.9 Audit visibility | no `GET /audit/events` route |
+**What this plan is** — every screen is a client of the authenticated HTTP API;
+the backend remains the single source of truth and the deny-by-default
+enforcement point is unchanged. Nothing in the UI widens authorization.
 
-These areas are named as unavailable inside the signed-in view, so an operator
-sees the boundary instead of hitting a broken control.
+**Ordering of API-first delivery** is enforced rather than advisory:
+`api/openapi.yaml` and the registered route table are held in parity by
+`tests/openapi_route_parity_test.go`, so an endpoint can no longer be published
+before it exists. The current surface is 54 operations/54 routes (48
+bearer-protected; the six public-by-contract operations are
+`GET /health/live`, `GET /health/ready`, and the auth endpoints
+`bootstrap`, `login`, `refresh`, `logout`), verified by the parity test and by
+the independent parity check recorded in
+`docs/FINAL_PROJECT_CERTIFICATION.md`.
 
-Each one requires its API first. That ordering is now enforced rather than
-advisory: `api/openapi.yaml` and the registered route table are held in parity
-by `tests/openapi_route_parity_test.go`, so an endpoint can no longer be
-published before it exists.
-
-**Security position** — unchanged and now structurally pinned. Three new public
+**Security position** — unchanged and now structurally pinned. Three public
 routes serve fixed assets only (`/`, `/assets/app.js`, `/assets/styles.css`);
 every data route still returns 403 without credentials. The document is served
 with `default-src 'none'` and `'self'`-only script, style and connect sources,
 uses no inline code, and holds tokens in `sessionStorage` only.
-`tests/webui_live_test.go` and `internal/webui/webui_test.go` assert all of it.
+`tests/webui_live_test.go` and `internal/webui/webui_test.go` assert all of it,
+and browser E2E (real Chromium) exercises the surface end-to-end in CI.
 
-Acceptance criteria 1, 2, 11, 13, 14, 15 and 16 are met. Items 4–10 remain open.
+All 16 acceptance criteria (§7) are met; the five status categories
+(static / CI / not-run-locally / operator-configuration / deferred) are defined
+with evidence in `docs/FINAL_PROJECT_CERTIFICATION.md`. Phase 3+ (Analytics,
+Integrations, Marketplace) remains deferred (ROADMAP Phase Overview; ADR-016
+Non-scope).

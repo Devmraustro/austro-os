@@ -13,7 +13,8 @@
 |-------|------|--------|
 | 1 | Verified Foundation | **CLOSED** — baseline commit `8c42c4e780d257bf9685d5a15973d481a97a5ef5` |
 | 2 | Autonomous Content Production | **PROPOSED** — this document is the frozen specification |
-| 3+ | Analytics, Integrations, Marketplace | Deferred (see PRODUCT_SCOPE.md "Long-Term Product Direction") |
+| 3 | AUSTRO OS Web Application | **APPROVED** — separately Founder-approved scope; see ADR-016, ADR-022, ADR-023, `PHASE3_WEB_APPLICATION_SCOPE.md` |
+| 3+ | Analytics, Integrations, Marketplace | **DEFERRED** — intentionally later-phase and explicitly outside Phase 3; see PRODUCT_SCOPE.md "Long-Term Product Direction" and ADR-016 Non-scope |
 
 ---
 
@@ -295,6 +296,28 @@ across async steps (P13).
 
 **Final status line**: `PHASE 2 STATUS: READY FOR PHASE 3` once all selected
 criteria pass; otherwise `NOT READY`.
+
+---
+
+# Phase 3 — AUSTRO OS Web Application (APPROVED)
+
+Phase 3 is the separately Founder-approved browser application (ADR-016), built
+over the existing backend through explicit, authenticated HTTP APIs. It is
+distinct from **Phase 3+** (Analytics, Integrations, Marketplace), which remains
+**deferred** and is explicitly *not* part of Phase 3:
+
+- **Phase 3 — AUSTRO OS Web Application**: a secure browser UI for an
+  authenticated Founder/operator. Named in ADR-016 as new Phase 3 scope and
+  implemented from that decision (ADR-022 first vertical slice, ADR-023
+  knowledge HTTP surface, and the completion of the remaining ADR-016 areas).
+  Scope: `PHASE3_WEB_APPLICATION_SCOPE.md`.
+- **Phase 3+ — Analytics, Integrations, Marketplace**: deferred future-version
+  items (PRODUCT_SCOPE.md "Long-Term Product Direction"). ADR-016 explicitly
+  excludes them from the initial Phase 3 web application.
+
+Implementation status (delivered surfaces, static and CI verification evidence)
+is recorded in `docs/FINAL_PROJECT_CERTIFICATION.md` and reconciled in
+`PHASE3_WEB_APPLICATION_SCOPE.md` §9.
 
 ---
 
