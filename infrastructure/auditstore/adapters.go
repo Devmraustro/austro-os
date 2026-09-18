@@ -155,21 +155,14 @@ func (s *MemorySink) RecordError(ctx context.Context, rec memory.AuditRecord) er
 			}
 			workspaceID = &parsed
 		}
-		var traceID, spanID uuid.UUID
-		if rec.TraceID != "" {
-			parsed, err := uuid.Parse(rec.TraceID)
-			if err != nil {
-				return err
-			}
-			traceID = parsed
-		}
-		if rec.SpanID != "" {
-			parsed, err := uuid.Parse(rec.SpanID)
-			if err != nil {
-				return err
-			}
-			spanID = parsed
-		}
+		// Correlation ids are supplied by the client and are untrusted: an
+		// unparseable one is dropped, never fatal, which is the same convention
+		// parseID applies to the publishing and pipeline sinks. Treating it as
+		// fatal let a request header ("X-Trace-ID: not-a-uuid") turn an
+		// otherwise valid memory write into a 500. Actor and workspace stay
+		// strict below because they are server-derived from verified claims.
+		traceID := parseID(rec.TraceID)
+		spanID := parseID(rec.SpanID)
 		_, err := s.store.Append(ctx, audit.Record{
 			EventType:   rec.EventType,
 			ActorType:   rec.ActorType,

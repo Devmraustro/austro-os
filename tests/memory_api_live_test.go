@@ -135,6 +135,34 @@ func TestMemoryAPILiveStrictBoundaryAndAuthorization(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, status, "malformed bearer token is rejected")
 }
 
+func TestMemoryAPILiveDropsMalformedCorrelationIDs(t *testing.T) {
+	adminA, _, _ := ensureRbacUsers(t)
+	token, _ := memoryAccessTokens(t, adminA, adminA)
+	key := "live-memory-trace-" + strings.ReplaceAll(adminA.ID, "-", "")
+
+	// Correlation ids come from request headers, so they are client-supplied.
+	// A malformed one must not turn an otherwise valid memory write into a 500:
+	// the persistent sink drops it, the same convention the publishing and
+	// pipeline audit adapters already use.
+	payload := strings.NewReader(`{"value":"trace-safe","ttl_seconds":60}`)
+	req, err := http.NewRequest(http.MethodPut, getEnv().apiURL+"/memory/workspace/"+key, payload)
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Trace-ID", "not-a-uuid")
+	req.Header.Set("X-Span-ID", "../etc/passwd")
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, resp.StatusCode, string(body))
+
+	status, body := memoryJSON(t, http.MethodGet, "/memory/workspace/"+key, nil, token)
+	require.Equal(t, http.StatusOK, status, string(body))
+	require.Contains(t, string(body), "trace-safe")
+}
+
 func TestMemoryUIExposesOnlyReadWriteOperations(t *testing.T) {
 	root := repoRoot(t)
 	index, err := os.ReadFile(filepath.Join(root, "internal", "webui", "static", "index.html"))
