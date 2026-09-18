@@ -118,3 +118,43 @@ test('dashboard reports live session identity, scope and server-derived access',
     await Promise.all([adminContext.close(), memberContext.close(), founderContext.close()]);
   }
 });
+
+test('a stale access token refreshes once for the whole concurrent dashboard burst', async ({ browser }) => {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+
+  try {
+    await signIn(page, adminA, browserPassword);
+    await expect(page.locator('#dashboard-card')).toBeVisible();
+
+    let refreshCalls = 0;
+    page.on('request', (request) => {
+      if (request.method() === 'POST' && request.url().endsWith('/api/auth/refresh')) {
+        refreshCalls += 1;
+      }
+    });
+
+    // Make the access token stale while the refresh token stays valid, then
+    // reload the dashboard. Its nine capability probes race their 401s, which
+    // is exactly the burst that used to present the same one-time-use refresh
+    // token nine times and have the server revoke the session family.
+    await page.evaluate(() => {
+      sessionStorage.setItem('austro.access', 'stale-access-token');
+    });
+
+    const adminStates = {};
+    for (const name of capabilities) adminStates[name] = workspaceAvailable.includes(name) ? 'available' : 'denied';
+
+    await page.locator('#dashboard-refresh-btn').click();
+    await expectCapabilities(page, adminStates);
+
+    // The session survived, and the one-time-use refresh token was rotated
+    // exactly once for the whole burst rather than once per 401.
+    await expect(page.locator('#app-view')).toBeVisible();
+    await expect(page.locator('#identity')).toContainText(adminA);
+    expect(refreshCalls).toBe(1);
+    console.log('BROWSER_STEP dashboard-single-refresh');
+  } finally {
+    await context.close();
+  }
+});
