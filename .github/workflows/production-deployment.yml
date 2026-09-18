@@ -373,12 +373,18 @@ jobs:
       - name: Assert the API verified its database topology
         # Read from the API's own log, so this observes the role the process
         # actually connected as rather than what the workflow configured.
+        #
+        # The API logs are captured to a file before grepping. Piping
+        # `docker compose logs` into `grep -q` lets grep close the pipe the
+        # moment it matches; the still-writing upstream then receives SIGPIPE
+        # and, under set -o pipefail, turns a successful match into a 255
+        # failure. Grepping a file has no such ambiguity.
         run: |
           set -euo pipefail
-          docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs api \
-            | grep -q '"message":"database-topology-ready"'
-          docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs api \
-            | grep -q '"runtime_role":"austro_app"'
+          api_log=/tmp/austro-api.log
+          docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs api >"$api_log"
+          grep -F '"message":"database-topology-ready"' "$api_log" >/dev/null
+          grep -F '"runtime_role":"austro_app"' "$api_log" >/dev/null
           echo "PASS: the API reported a verified topology on the austro_app runtime role"
 
       - name: Dump the container logs on failure
