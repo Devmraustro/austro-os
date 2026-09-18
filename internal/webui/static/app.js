@@ -1538,8 +1538,13 @@
   }
 
   function publicationAction(pub, label, path) {
-    return publicationButton(label, function () {
+    var button;
+    button = publicationButton(label, function () {
       var msg = el("publication-message");
+      /* Disable while the request is in flight: a second click would fire a
+       * second transition for the same publication, and the server would refuse
+       * the now-illegal transition, overwriting the first action's result. */
+      button.disabled = true;
       setMessage(msg, "", false);
       authenticated("POST", "/publications/" + encodeURIComponent(pub.id) + path)
         .then(function (r) {
@@ -1550,13 +1555,16 @@
           var status = r.body && r.body.status ? r.body.status : "updated";
           /* The refresh clears the message area, so the result of the action
            * is written after the list reload rather than being wiped by it. */
-          loadPublications(false).then(function () {
+          return loadPublications(false).then(function () {
             setMessage(msg, "Publication is now " + status + ".", true);
           });
         }).catch(function () {
           setMessage(msg, "Could not reach the API. The publication was not changed.", false);
+        }).then(function () {
+          button.disabled = false;
         });
     });
+    return button;
   }
 
   function renderPublicationRows(publications) {
