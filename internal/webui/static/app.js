@@ -1349,12 +1349,20 @@
     loading.hidden = false;
 
     var term = el("kn-search").value.trim();
-    var req = term
-      ? authenticated("POST", "/knowledge/search", {
-          query: term,
-          limit: 50
-        })
-      : authenticated("GET", knListQuery(append));
+    var req;
+    if (term) {
+      /* Search carries the same visible filters as the listing, so the kind and
+       * page-size controls are not silently ignored in search mode. Search is
+       * capped server-side at MaxSearchResults (50), so the page size is
+       * clamped here rather than sent as a value the server rejects. */
+      var pageSize = parseInt(el("kn-limit").value, 10) || 50;
+      var body = { query: term, limit: Math.min(pageSize, 50) };
+      var kind = el("kn-filter-kind").value;
+      if (kind) body.kind = kind;
+      req = authenticated("POST", "/knowledge/search", body);
+    } else {
+      req = authenticated("GET", knListQuery(append));
+    }
 
     return req.then(function (r) {
       loading.hidden = true;
