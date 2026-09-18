@@ -177,7 +177,7 @@ function countText(n) {
 
 function latestAuditBody(sink) {
   for (let i = sink.length - 1; i >= 0; i--) {
-    if (sink[i] && Array.isArray(sink[i].events)) return sink[i];
+    if (sink[i] && (Array.isArray(sink[i].events) || sink[i].events === null)) return sink[i];
   }
   return null;
 }
@@ -212,12 +212,14 @@ test('dashboard workflow summary is composed from real API responses', async ({ 
 
   try {
     adminPage.on('response', (response) => {
+      if (response.status() !== 200) return;
       const url = response.url();
       if (url.endsWith('/pipelines?limit=100')) storeJson(response, adminPipelines);
       else if (url.endsWith('/publications?limit=100&status=review')) storeJson(response, adminPublications);
       else if (url.includes('/workspaces/') && url.endsWith('/audit/events?limit=1')) storeJson(response, adminAudit);
     });
     founderPage.on('response', (response) => {
+      if (response.status() !== 200) return;
       const url = response.url();
       if (url.endsWith('/pipelines?limit=100')) storeJson(response, founderPipelines);
       else if (url.endsWith('/publications?limit=100&status=review')) storeJson(response, founderPublications);
@@ -232,25 +234,25 @@ test('dashboard workflow summary is composed from real API responses', async ({ 
     await expectWorkflowSettled(adminPage, 'awaiting-pipelines');
     await expectWorkflowSettled(adminPage, 'recent-activity');
 
-    await expect.poll(() => adminPipelines.some((b) => b && Array.isArray(b.pipelines)), {
+    await expect.poll(() => adminPipelines.some((b) => b && (Array.isArray(b.pipelines) || b.pipelines === null)), {
       timeout: 30000, message: 'admin pipeline read missing',
     }).toBe(true);
-    await expect.poll(() => adminPublications.some((b) => b && Array.isArray(b.publications)), {
+    await expect.poll(() => adminPublications.some((b) => b && (Array.isArray(b.publications) || b.publications === null)), {
       timeout: 30000, message: 'admin publication read missing',
     }).toBe(true);
     await expect.poll(() => adminAudit.length > 0, {
       timeout: 30000, message: 'admin workspace audit read missing',
     }).toBe(true);
 
-    const pl = [...adminPipelines].reverse().find((b) => b && Array.isArray(b.pipelines));
+    const pl = [...adminPipelines].reverse().find((b) => b && (Array.isArray(b.pipelines) || b.pipelines === null));
     const stats = pipelineStats(pl);
     await expect(workflowField(adminPage, 'active-pipelines')).toHaveText(countText(stats.active));
     await expect(workflowField(adminPage, 'awaiting-pipelines')).toHaveText(countText(stats.awaiting));
-    const pub = [...adminPublications].reverse().find((b) => b && Array.isArray(b.publications));
-    await expect(workflowField(adminPage, 'pending-publications')).toHaveText(countText(pub.publications.length));
+    const pub = [...adminPublications].reverse().find((b) => b && (Array.isArray(b.publications) || b.publications === null));
+    await expect(workflowField(adminPage, 'pending-publications')).toHaveText(countText((pub.publications || []).length));
 
     const adminEv = latestAuditBody(adminAudit);
-    if (adminEv && adminEv.events.length > 0) {
+    if (adminEv && (adminEv.events || []).length > 0) {
       await expect(workflowField(adminPage, 'recent-activity')).toContainText(adminEv.events[0].event_type);
     } else {
       await expect(workflowField(adminPage, 'recent-activity')).toHaveText('No activity recorded.');
@@ -268,11 +270,11 @@ test('dashboard workflow summary is composed from real API responses', async ({ 
     await expect(founderPage.locator('#dashboard-workflow dd[data-dash="active-pipelines"]')).toHaveText('denied');
     await expect(founderPage.locator('#dashboard-workflow dd[data-dash="pending-publications"]')).toHaveText('denied');
     await expect(founderPage.locator('#dashboard-workflow dd[data-dash="awaiting-pipelines"]')).toHaveText('denied');
-    await expect.poll(() => founderAudit.some((b) => b && Array.isArray(b.events)), {
+    await expect.poll(() => founderAudit.some((b) => b && (Array.isArray(b.events) || b.events === null)), {
       timeout: 30000, message: 'founder org audit read missing',
     }).toBe(true);
     const founderEv = latestAuditBody(founderAudit);
-    if (founderEv && founderEv.events.length > 0) {
+    if (founderEv && (founderEv.events || []).length > 0) {
       await expect(workflowField(founderPage, 'recent-activity')).toContainText(founderEv.events[0].event_type);
     } else {
       await expect(workflowField(founderPage, 'recent-activity')).toHaveText('No activity recorded.');

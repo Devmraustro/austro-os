@@ -133,28 +133,36 @@
     if (node) node.textContent = text;
   }
 
+  /* The list endpoints answer an empty result with a null array, so a verified
+   * 200 with a null list is an empty answer ("none"), never a failure. Only a
+   * body that lacks the list at all is "unavailable". */
   function dashWorkflowCount(r, keep) {
     if (r.status === 403) return "denied";
-    if (r.status !== 200 || !r.body || !Array.isArray(r.body.pipelines)) return "unavailable";
+    if (r.status !== 200 || !r.body) return "unavailable";
+    var list = Array.isArray(r.body.pipelines) ? r.body.pipelines : (r.body.pipelines === null ? [] : null);
+    if (!Array.isArray(list)) return "unavailable";
     var n = 0;
-    for (var i = 0; i < r.body.pipelines.length; i++) {
-      if (keep(r.body.pipelines[i].status)) n++;
+    for (var i = 0; i < list.length; i++) {
+      if (keep(list[i].status)) n++;
     }
     return n === 0 ? "none" : String(n);
   }
 
   function dashPublicationCount(r) {
     if (r.status === 403) return "denied";
-    if (r.status !== 200 || !r.body || !Array.isArray(r.body.publications)) return "unavailable";
-    if (r.body.publications.length === 0) return "none";
-    return String(r.body.publications.length);
+    if (r.status !== 200 || !r.body) return "unavailable";
+    var list = Array.isArray(r.body.publications) ? r.body.publications : (r.body.publications === null ? [] : null);
+    if (!Array.isArray(list)) return "unavailable";
+    return list.length === 0 ? "none" : String(list.length);
   }
 
   function renderLatestActivity(r) {
     if (r.status === 403) return "denied";
-    if (r.status !== 200 || !r.body || !Array.isArray(r.body.events)) return "unavailable";
-    if (r.body.events.length === 0) return "No activity recorded.";
-    var ev = r.body.events[0];
+    if (r.status !== 200 || !r.body) return "unavailable";
+    var events = Array.isArray(r.body.events) ? r.body.events : (r.body.events === null ? [] : null);
+    if (!Array.isArray(events)) return "unavailable";
+    if (events.length === 0) return "No activity recorded.";
+    var ev = events[0];
     var text = String(ev.event_type || "activity") + " · " +
       String(ev.outcome || "unknown") + " · seq " + ev.seq;
     if (ev.timestamp) text += " · " + String(ev.timestamp).replace("T", " ").slice(0, 19);
