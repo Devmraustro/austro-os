@@ -63,6 +63,21 @@ async function browserAPI(page, method, path, payload) {
   }, { method, path, payload });
 }
 
+async function createKnowledge(page, title, kind, content) {
+  await page.locator('#kn-title').fill(title);
+  await page.locator('#kn-kind').selectOption(kind);
+  await page.locator('#kn-content').fill(content);
+  const created = page.waitForResponse((response) =>
+    response.url().endsWith('/knowledge') && response.request().method() === 'POST');
+  await page.locator('#kn-create-form button[type="submit"]').click();
+  const response = await created;
+  expect(response.status()).toBe(201);
+  const body = await response.json();
+  await expect(page.locator('#kn-create-message')).toContainText(`Created \u201c${title}\u201d.`);
+  await expect(knowledgeRow(page, title)).toHaveCount(1);
+  return body.id;
+}
+
 test('knowledge journey: create, view, edit and delete a real document', async ({ browser }) => {
   const memberContext = await browser.newContext();
   const otherContext = await browser.newContext();
@@ -190,6 +205,65 @@ test('knowledge is refused without a workspace, and the page says so', async ({ 
     expect(await page.locator('#kn-body tr').count()).toBe(rowsBefore);
     console.log('BROWSER_STEP knowledge-founder-write-refused');
   } finally {
+    await context.close();
+  }
+});
+
+test('knowledge listing is filtered and searched through the server', async ({ browser }) => {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  const createdIds = [];
+
+  try {
+    await signIn(page, memberA, browserPassword);
+    await waitForKnowledgeLoaded(page);
+
+    const tag = Math.random().toString(36).slice(2, 8);
+    const documentTitle = 'Kn-Doc-' + tag;
+    const guideTitle = 'Kn-Guide-' + tag;
+
+    // Two kinds, created through the rendered form, so the filter below has
+    // something real to separate.
+    createdIds.push(await createKnowledge(page, documentTitle, 'document', 'a document body ' + tag));
+    createdIds.push(await createKnowledge(page, guideTitle, 'style_guide', 'a style guide body ' + tag));
+
+    // ---- the kind filter is applied by the server ------------------------
+    await page.locator('#kn-filter-kind').selectOption('style_guide');
+    const filtered = page.waitForResponse((response) =>
+      response.url().includes('/knowledge?') && response.request().method() === 'GET');
+    await page.locator('#kn-form button[type="submit"]').click();
+    expect((await filtered).status()).toBe(200);
+    await expect(knowledgeRow(page, guideTitle)).toHaveCount(1);
+    await expect(knowledgeRow(page, documentTitle)).toHaveCount(0);
+    console.log('BROWSER_STEP knowledge-kind-filtered');
+
+    // ---- clearing restores the unfiltered listing ------------------------
+    const cleared = page.waitForResponse((response) =>
+      response.url().includes('/knowledge?') && response.request().method() === 'GET');
+    await page.locator('#kn-clear-btn').click();
+    expect((await cleared).status()).toBe(200);
+    await expect(knowledgeRow(page, documentTitle)).toHaveCount(1);
+    await expect(knowledgeRow(page, guideTitle)).toHaveCount(1);
+    console.log('BROWSER_STEP knowledge-filter-cleared');
+
+    // ---- a search is a ranked request, not a cursor walk -----------------
+    // The response shape is what hides "load more": a search returns no
+    // next_cursor, so the control must disappear after a search. This asserts
+    // the request path and that control, not a ranking the deterministic
+    // embedding stub cannot express.
+    await page.locator('#kn-search').fill(tag);
+    const searched = page.waitForResponse((response) =>
+      response.url().endsWith('/knowledge/search') && response.request().method() === 'POST');
+    await page.locator('#kn-form button[type="submit"]').click();
+    expect((await searched).status()).toBe(200);
+    await expect(page.locator('#kn-older-btn')).toBeHidden();
+    console.log('BROWSER_STEP knowledge-searched');
+  } finally {
+    // Leave the workspace as it was found: earlier runs must not accumulate
+    // documents that shift the listing's first page.
+    for (const id of createdIds) {
+      await browserAPI(page, 'DELETE', '/knowledge/' + encodeURIComponent(id));
+    }
     await context.close();
   }
 });
