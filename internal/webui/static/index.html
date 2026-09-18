@@ -55,6 +55,19 @@
           <dt>Scope</dt><dd data-dash="scope">—</dd>
           <dt>API</dt><dd data-dash="api">—</dd>
         </dl>
+        <h3>Live workflow summary</h3>
+        <p class="muted">
+          Workflow state read from the API for this session: pipelines in
+          flight, publication decisions awaiting a human, and the latest audit
+          event. Every value is the server's answer for this caller; “denied”
+          means the server refused the read for this session's scope.
+        </p>
+        <dl id="dashboard-workflow" class="details">
+          <dt>Active pipelines</dt><dd data-dash="active-pipelines">—</dd>
+          <dt>Pending publication decisions</dt><dd data-dash="pending-publications">—</dd>
+          <dt>Pipelines awaiting approval</dt><dd data-dash="awaiting-pipelines">—</dd>
+          <dt>Latest activity</dt><dd data-dash="recent-activity">—</dd>
+        </dl>
         <h3>Capability access</h3>
         <p class="muted">
           Whether the server allowed a bounded read for this session. “denied” means
