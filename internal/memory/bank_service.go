@@ -69,8 +69,8 @@ func NewBank(store cellStore, audit AuditSink, events EventSink) *Bank {
 
 // Write stores value under key in the given layer, scoped to workspaceID for
 // session/long-term/workspace layers and org-wide for the organizational layer.
-// It validates the key, bounds the value, caps the TTL, refuses secrets, and
-// throttles per-workspace writes. Returns the effective TTL actually applied.
+// It validates the key, bounds the value, caps the TTL at MaxTTL, refuses
+// secrets, and throttles per-workspace writes.
 func (b *Bank) Write(ctx context.Context, workspaceID uuid.UUID, layer MemoryLayer, key string, value []byte, ttl time.Duration) error {
 	if workspaceID == uuid.Nil {
 		return ErrWorkspaceRequired
