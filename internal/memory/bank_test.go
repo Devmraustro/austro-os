@@ -166,7 +166,7 @@ func TestBankAuditRollupAndTTLCap(t *testing.T) {
 	var recs []AuditRecord
 	bank := NewBank(repo, captureSink{fn: func(r AuditRecord) { recs = append(recs, r) }}, nil)
 
-	long := 2000 * time.Hour // >> maxTTL
+	long := 3000 * time.Hour // > maxTTL (90 days)
 	ctx := WithTrace(context.Background(), "trace-m", "span-m")
 	require.NoError(t, bank.Write(ctx, uuid.New(), LayerLongTerm, "draft", []byte("content"), long))
 

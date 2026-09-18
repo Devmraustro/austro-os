@@ -1349,12 +1349,20 @@
     loading.hidden = false;
 
     var term = el("kn-search").value.trim();
-    var req = term
-      ? authenticated("POST", "/knowledge/search", {
-          query: term,
-          limit: 50
-        })
-      : authenticated("GET", knListQuery(append));
+    var req;
+    if (term) {
+      /* Search carries the same visible filters as the listing, so the kind and
+       * page-size controls are not silently ignored in search mode. Search is
+       * capped server-side at MaxSearchResults (50), so the page size is
+       * clamped here rather than sent as a value the server rejects. */
+      var pageSize = parseInt(el("kn-limit").value, 10) || 50;
+      var body = { query: term, limit: Math.min(pageSize, 50) };
+      var kind = el("kn-filter-kind").value;
+      if (kind) body.kind = kind;
+      req = authenticated("POST", "/knowledge/search", body);
+    } else {
+      req = authenticated("GET", knListQuery(append));
+    }
 
     return req.then(function (r) {
       loading.hidden = true;
@@ -1530,8 +1538,13 @@
   }
 
   function publicationAction(pub, label, path) {
-    return publicationButton(label, function () {
+    var button;
+    button = publicationButton(label, function () {
       var msg = el("publication-message");
+      /* Disable while the request is in flight: a second click would fire a
+       * second transition for the same publication, and the server would refuse
+       * the now-illegal transition, overwriting the first action's result. */
+      button.disabled = true;
       setMessage(msg, "", false);
       authenticated("POST", "/publications/" + encodeURIComponent(pub.id) + path)
         .then(function (r) {
@@ -1542,13 +1555,16 @@
           var status = r.body && r.body.status ? r.body.status : "updated";
           /* The refresh clears the message area, so the result of the action
            * is written after the list reload rather than being wiped by it. */
-          loadPublications(false).then(function () {
+          return loadPublications(false).then(function () {
             setMessage(msg, "Publication is now " + status + ".", true);
           });
         }).catch(function () {
           setMessage(msg, "Could not reach the API. The publication was not changed.", false);
+        }).then(function () {
+          button.disabled = false;
         });
     });
+    return button;
   }
 
   function renderPublicationRows(publications) {

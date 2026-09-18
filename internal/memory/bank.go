@@ -25,7 +25,7 @@ const (
 	// HTTP adapter from inventing a looser limit than the Redis facade.
 	MaxKeyLength  = 256
 	MaxValueBytes = 64 * 1024
-	MaxTTL        = 90 * time.Hour // 90 days upper bound
+	MaxTTL        = 90 * 24 * time.Hour // 90 days upper bound
 	DefaultTTL    = 24 * time.Hour
 
 	maxKeyLength  = MaxKeyLength
