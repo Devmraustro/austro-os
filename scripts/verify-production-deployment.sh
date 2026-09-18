@@ -597,8 +597,12 @@ printf '\n=== 8b. Backup/restore verification is pipefail-safe ===\n'
 # The safe form consumes the whole stream (`grep -F ... >/dev/null`): it cannot
 # truncate the data and never turns the producer's exit status into a lie. This
 # guard stops the unsafe shape from silently returning.
+#
+# Comments are stripped first, for the same reason the proxy-config assertions
+# strip them: the fix documents the shape it forbids in a comment, and a raw
+# scan would flag that explanation as if it were the bug.
 backup_verify_unsafe() {
-    grep -En 'head +-[0-9]+[[:space:]]*\|[[:space:]]*grep +-q' "$1"
+    strip_comments "$1" | grep -En 'head +-[0-9]+[[:space:]]*\|[[:space:]]*grep +-q'
 }
 
 for s in scripts/backup.sh scripts/restore.sh; do
