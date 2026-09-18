@@ -1,4 +1,5 @@
 const { test, expect } = require('@playwright/test');
+const { signIn } = require('./support');
 
 // Publishing approval vertical slice, exercised through the real browser.
 //
@@ -24,16 +25,6 @@ const adminA = env('BROWSER_E2E_ADMIN_A');
 const memberA = env('BROWSER_E2E_MEMBER_A');
 const adminB = env('BROWSER_E2E_ADMIN_B');
 const browserPassword = env('BROWSER_E2E_PASSWORD');
-
-async function signIn(page, username, password) {
-  await page.goto('/');
-  await expect(page.locator('#auth-view')).toBeVisible();
-  await page.locator('#username').fill(username);
-  await page.locator('#password').fill(password);
-  await page.locator('#login-btn').click();
-  await expect(page.locator('#app-view')).toBeVisible();
-  await expect(page.locator('#identity')).toContainText(username);
-}
 
 async function refreshPublications(page) {
   const response = page.waitForResponse((r) =>

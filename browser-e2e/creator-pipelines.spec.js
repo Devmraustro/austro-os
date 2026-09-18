@@ -1,6 +1,7 @@
 const { test, expect } = require('@playwright/test');
 const { execFileSync } = require('node:child_process');
 const { appendFileSync, readFileSync } = require('node:fs');
+const { signIn } = require('./support');
 
 function env(name) {
   const value = process.env[name];
@@ -16,17 +17,6 @@ const adminB = env('BROWSER_E2E_ADMIN_B');
 const browserPassword = env('BROWSER_E2E_PASSWORD');
 const workspaceAName = env('BROWSER_E2E_WORKSPACE_A_NAME');
 const workspaceBName = env('BROWSER_E2E_WORKSPACE_B_NAME');
-
-async function signIn(page, username, password, observeStates = false) {
-  await page.goto('/');
-  await expect(page.locator('#auth-view')).toBeVisible();
-  if (observeStates) await observeHiddenStates(page);
-  await page.locator('#username').fill(username);
-  await page.locator('#password').fill(password);
-  await page.locator('#login-btn').click();
-  await expect(page.locator('#app-view')).toBeVisible();
-  await expect(page.locator('#identity')).toContainText(username);
-}
 
 async function signOut(page) {
   const logoutResponse = page.waitForResponse((response) =>
@@ -249,7 +239,7 @@ test('executes the real Creator/Pipeline DOM journey and security journeys', asy
     // WORKSPACE → CREATOR/PIPELINE. The admin starts with an isolated empty
     // workspace. The UI has a real loading transition and renders the empty
     // state before a pipeline is created.
-    await signIn(adminPage, adminA, browserPassword, true);
+    await signIn(adminPage, adminA, browserPassword, () => observeHiddenStates(adminPage));
     await expect(adminPage.locator('#pipelines-card')).toBeVisible();
     await expect(adminPage.locator('#pipeline-empty')).toBeVisible();
     await expect(adminPage.locator('#pipeline-table')).toBeHidden();

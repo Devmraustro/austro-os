@@ -1,4 +1,5 @@
 const { test, expect } = require('@playwright/test');
+const { signIn } = require('./support');
 
 // Memory vertical slice, exercised through the real browser.
 //
@@ -20,16 +21,6 @@ const founderPassword = env('BROWSER_E2E_FOUNDER_PASSWORD');
 const memberA = env('BROWSER_E2E_MEMBER_A');
 const browserPassword = env('BROWSER_E2E_PASSWORD');
 const workspaceA = env('BROWSER_E2E_WORKSPACE_A');
-
-async function signIn(page, username, password) {
-  await page.goto('/');
-  await expect(page.locator('#auth-view')).toBeVisible();
-  await page.locator('#username').fill(username);
-  await page.locator('#password').fill(password);
-  await page.locator('#login-btn').click();
-  await expect(page.locator('#app-view')).toBeVisible();
-  await expect(page.locator('#identity')).toContainText(username);
-}
 
 test('memory journey: save, read back, and overwrite one workspace cell', async ({ browser }) => {
   const context = await browser.newContext();
