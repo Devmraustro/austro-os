@@ -1539,8 +1539,12 @@
             setMessage(msg, "Action refused: " + errorMessage(r), false);
             return;
           }
-          setMessage(msg, "Publication is now " + (r.body && r.body.status ? r.body.status : "updated") + ".", true);
-          loadPublications(false);
+          var status = r.body && r.body.status ? r.body.status : "updated";
+          /* The refresh clears the message area, so the result of the action
+           * is written after the list reload rather than being wiped by it. */
+          loadPublications(false).then(function () {
+            setMessage(msg, "Publication is now " + status + ".", true);
+          });
         }).catch(function () {
           setMessage(msg, "Could not reach the API. The publication was not changed.", false);
         });
@@ -1676,8 +1680,12 @@
             setMessage(msg, "Action refused: " + errorMessage(r), false);
             return;
           }
-          setMessage(msg, "Pipeline is now " + (r.body && r.body.status ? r.body.status : "updated") + ".", true);
-          loadPipelines(false);
+          var status = r.body && r.body.status ? r.body.status : "updated";
+          /* The refresh clears the message area, so the result of the action
+           * is written after the list reload rather than being wiped by it. */
+          loadPipelines(false).then(function () {
+            setMessage(msg, "Pipeline is now " + status + ".", true);
+          });
         }).catch(function () {
           setMessage(msg, "Could not reach the API. The pipeline was not changed.", false);
         });
