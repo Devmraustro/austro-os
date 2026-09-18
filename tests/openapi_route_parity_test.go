@@ -19,6 +19,23 @@ type specOperation struct {
 	method     string
 	path       string
 	principles bool
+	secure     bool
+}
+
+// nodeHasBearerAuth reports whether a `security` node references the bearerAuth
+// scheme. The scheme is looked for as a scalar anywhere in the node so that
+// either the compact `- bearerAuth: []` form or a longer requirement list is
+// recognised.
+func nodeHasBearerAuth(n *yaml.Node) bool {
+	if n.Value == "bearerAuth" {
+		return true
+	}
+	for _, c := range n.Content {
+		if nodeHasBearerAuth(c) {
+			return true
+		}
+	}
+	return false
 }
 
 // parseOpenAPI walks the spec as a node tree rather than unmarshalling into a
@@ -76,8 +93,11 @@ func parseOpenAPI(t *testing.T) (ops []specOperation, schemas map[string]bool, r
 			op := specOperation{method: method, path: p}
 			if opNode := item.Content[j+1]; opNode.Kind == yaml.MappingNode {
 				for k := 0; k+1 < len(opNode.Content); k += 2 {
-					if opNode.Content[k].Value == "principles" {
+					switch opNode.Content[k].Value {
+					case "principles":
 						op.principles = true
+					case "security":
+						op.secure = nodeHasBearerAuth(opNode.Content[k+1])
 					}
 				}
 			}
@@ -154,6 +174,34 @@ func TestOpenAPIDeclaresPrinciplesForAuthenticatedOperations(t *testing.T) {
 		}
 		require.True(t, op.principles,
 			"%s %s must declare the constitutional principles it serves", op.method, op.path)
+	}
+}
+
+// TestOpenAPIRequiresBearerAuthOnProtectedOperations keeps the security
+// requirement from silently disappearing. Dropping a `security:` block would
+// publish the operation as unauthenticated and every other parity check would
+// still pass: the route is registered and the principles are declared, but the
+// contract now invites anonymous calls. Only the liveness probes and the
+// pre-authentication auth endpoints may be unauthenticated.
+func TestOpenAPIRequiresBearerAuthOnProtectedOperations(t *testing.T) {
+	ops, _, _ := parseOpenAPI(t)
+	public := map[string]bool{
+		"GET /health/live":         true,
+		"GET /health/ready":        true,
+		"POST /api/auth/bootstrap": true,
+		"POST /api/auth/login":     true,
+		"POST /api/auth/refresh":   true,
+		"POST /api/auth/logout":    true,
+	}
+	for _, op := range ops {
+		key := op.method + " " + op.path
+		if public[key] {
+			require.False(t, op.secure,
+				"%s is a public endpoint and must not advertise bearerAuth", key)
+			continue
+		}
+		require.True(t, op.secure,
+			"%s must require bearerAuth; a missing security block would publish it as unauthenticated", key)
 	}
 }
 
