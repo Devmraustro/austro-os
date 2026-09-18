@@ -34,6 +34,84 @@
 
   function el(id) { return document.getElementById(id); }
 
+  /* ---------- dashboard ---------- */
+
+  /* The dashboard is a live session summary and a capability-access view. Its
+   * capability states come from one bounded read per capability, issued as the
+   * signed-in caller, so the state shown is the server's own authorization
+   * answer for this session rather than a client-side guess from the role. */
+  var dashState = {};
+  var dashOrder = ["Workspaces", "Departments", "Teams", "AI Employees",
+    "Audit", "Tasks", "Knowledge", "Publications", "Pipelines"];
+
+  function setCapability(name, state) {
+    dashState[name] = state;
+    renderDashboardCapabilities();
+  }
+
+  function capabilityFromStatus(status) {
+    if (status === 200) return "available";
+    if (status === 403) return "denied";
+    if (status === 401) return "session expired";
+    return "error";
+  }
+
+  function renderDashboardCapabilities() {
+    var ul = el("dashboard-capabilities");
+    if (!ul) return;
+    ul.innerHTML = "";
+    for (var i = 0; i < dashOrder.length; i++) {
+      var name = dashOrder[i];
+      var state = dashState[name] || "loading";
+      var li = document.createElement("li");
+      var label = document.createElement("span");
+      label.textContent = name;
+      var chip = document.createElement("span");
+      chip.textContent = state;
+      if (state === "available") chip.className = "state";
+      else if (state === "loading") chip.className = "muted";
+      else chip.className = "bad";
+      li.appendChild(label);
+      li.appendChild(chip);
+      ul.appendChild(li);
+    }
+  }
+
+  function setDashAPI(text) {
+    var summary = el("dashboard-summary");
+    if (!summary) return;
+    var node = summary.querySelector('dd[data-dash="api"]');
+    if (node) node.textContent = text;
+  }
+
+  /* One bounded read per capability, issued as the signed-in caller. The result
+   * is the server's own authorization answer for this session, which is exactly
+   * the access state the dashboard reports -- the browser never guesses it. */
+  var dashProbes = [
+    { name: "Workspaces", path: "/workspaces" },
+    { name: "Departments", path: "/departments?limit=1" },
+    { name: "Teams", path: "/teams?limit=1" },
+    { name: "AI Employees", path: "/ai-employees?limit=1" },
+    { name: "Audit", path: "/audit/events?limit=1" },
+    { name: "Tasks", path: "/tasks?limit=1" },
+    { name: "Knowledge", path: "/knowledge?limit=1" },
+    { name: "Publications", path: "/publications?limit=1" },
+    { name: "Pipelines", path: "/pipelines?limit=1" }
+  ];
+
+  function loadDashboard() {
+    for (var i = 0; i < dashProbes.length; i++) setCapability(dashProbes[i].name, "loading");
+    for (var j = 0; j < dashProbes.length; j++) {
+      (function (probe) {
+        authenticated("GET", probe.path).then(function (r) {
+          setCapability(probe.name, capabilityFromStatus(r.status));
+        }).catch(function () {
+          setCapability(probe.name, "error");
+        });
+      })(dashProbes[j]);
+    }
+  }
+
   function setMessage(node, text, ok) {
     if (!text) { node.hidden = true; node.textContent = ""; return; }
     node.hidden = false;
@@ -133,6 +211,12 @@
       var key = nodes[i].getAttribute("data-field");
       nodes[i].textContent = key in fields ? fields[key] : "—";
     }
+    var summary = el("dashboard-summary");
+    if (summary) {
+      summary.querySelector('dd[data-dash="identity"]').textContent = me.username + " · " + me.role;
+      summary.querySelector('dd[data-dash="scope"]').textContent =
+        me.workspace_id ? me.workspace_id : "organization-level (no workspace)";
+    }
   }
 
   function setStatus(field, text, good) {
@@ -145,14 +229,27 @@
   function loadStatus() {
     setStatus("live", "checking…");
     setStatus("ready", "checking…");
+    setDashAPI("checking…");
+    var live = false;
+    var ready = false;
+    var settled = 0;
+    function settle() {
+      settled++;
+      if (settled < 2) return;
+      if (live && ready) setDashAPI("live and ready");
+      else if (live) setDashAPI("live, not ready");
+      else setDashAPI("unreachable");
+    }
     request("GET", "/health/live").then(function (r) {
-      var ok = r.status === 200;
-      setStatus("live", ok ? "ok" : "unavailable (" + r.status + ")", ok);
-    }).catch(function () { setStatus("live", "unreachable", false); });
+      live = r.status === 200;
+      setStatus("live", live ? "ok" : "unavailable (" + r.status + ")", live);
+      settle();
+    }).catch(function () { setStatus("live", "unreachable", false); settle(); });
     request("GET", "/health/ready").then(function (r) {
-      var ok = r.status === 200;
-      setStatus("ready", ok ? "ready" : "not ready (" + r.status + ")", ok);
-    }).catch(function () { setStatus("ready", "unreachable", false); });
+      ready = r.status === 200;
+      setStatus("ready", ready ? "ready" : "not ready (" + r.status + ")", ready);
+      settle();
+    }).catch(function () { setStatus("ready", "unreachable", false); settle(); });
   }
 
   function renderWorkspaces(list) {
@@ -201,6 +298,7 @@
   function enterApp() {
     showApp();
     loadStatus();
+    loadDashboard();
     loadWorkspaces();
     loadDepartments(false);
     loadTeams(false);
@@ -285,6 +383,8 @@
   });
 
   el("logout-btn").addEventListener("click", function () { signOut(true); });
+
+  el("dashboard-refresh-btn").addEventListener("click", function () { loadDashboard(); });
 
   el("workspace-form").addEventListener("submit", function (ev) {
     ev.preventDefault();

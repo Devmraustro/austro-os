@@ -375,3 +375,37 @@ func TestOrganizationHierarchyIsRendered(t *testing.T) {
 		}
 	}
 }
+
+// TestDashboardIsRendered pins the dashboard surface: the summary and the
+// capability list must exist in the page and the script must load it. The
+// values themselves are covered by the browser suite against a live server.
+func TestDashboardIsRendered(t *testing.T) {
+	assets, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	var html, js Asset
+	for _, a := range Assets() {
+		switch {
+		case strings.HasSuffix(a.File, "index.html"):
+			html = a
+		case strings.HasSuffix(a.File, "app.js"):
+			js = a
+		}
+	}
+	if html.File == "" {
+		t.Fatal("no index.html asset is declared")
+	}
+	if js.File == "" {
+		t.Fatal("no app.js asset is declared")
+	}
+	body := stripHTMLComments(string(assets[html]))
+	for _, id := range []string{"dashboard-card", "dashboard-summary", "dashboard-capabilities", "dashboard-refresh-btn"} {
+		if !strings.Contains(body, id) {
+			t.Errorf("dashboard element %s must be present", id)
+		}
+	}
+	if !strings.Contains(stripJSComments(string(assets[js])), "loadDashboard") {
+		t.Error("app.js must load the dashboard for the signed-in session")
+	}
+}

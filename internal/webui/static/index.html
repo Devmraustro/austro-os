@@ -44,6 +44,26 @@
     </header>
 
     <main class="content">
+      <section class="card" id="dashboard-card">
+        <h2>Dashboard</h2>
+        <p class="muted">
+          Live summary for the signed-in session. Every value is read from the API
+          for this caller; nothing here is a client-side guess.
+        </p>
+        <dl id="dashboard-summary" class="details">
+          <dt>Signed in</dt><dd data-dash="identity">—</dd>
+          <dt>Scope</dt><dd data-dash="scope">—</dd>
+          <dt>API</dt><dd data-dash="api">—</dd>
+        </dl>
+        <h3>Capability access</h3>
+        <p class="muted">
+          Whether the server allowed a bounded read for this session. “denied” means
+          the caller's role or workspace scope refused it — the browser does not decide this.
+        </p>
+        <ul id="dashboard-capabilities" class="list"></ul>
+        <button type="button" id="dashboard-refresh-btn">Refresh</button>
+      </section>
+
       <section class="card">
         <h2>Identity</h2>
         <dl id="identity-details" class="details">
