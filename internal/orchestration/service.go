@@ -197,6 +197,12 @@ func (s *Service) Retry(ctx context.Context, workspaceID, id uuid.UUID, actor st
 	if actor == "" {
 		return nil, ErrUnauthorizedActor
 	}
+	// Retry re-enters the same stage work as Advance, so it shares the
+	// per-workspace advance budget. Without this an operator could bypass the
+	// ceiling that bounds repeated stage execution.
+	if !s.throttle.Allow(workspaceID.String()) {
+		return nil, ErrRateLimited
+	}
 	p, err := s.getOwned(ctx, workspaceID, id)
 	if err != nil {
 		return nil, err

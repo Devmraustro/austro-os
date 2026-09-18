@@ -331,6 +331,28 @@ func TestRateLimiting(t *testing.T) {
 	}
 }
 
+func TestRetrySharesAdvanceRateLimit(t *testing.T) {
+	store := newMemStore()
+	svc := NewService(store, StubResearcher{}, StubScriptWriter{}, &failOnceReviewer{}, StubPublisher{}, nil, nil)
+	ws := validWS()
+	p := basePipeline(t, store, ws)
+
+	if _, err := svc.Advance(ctx(), ws, p.ID, StageResearch, StageScript); err != nil {
+		t.Fatalf("research->script: %v", err)
+	}
+	if _, err := svc.Advance(ctx(), ws, p.ID, StageScript, StageReview); err == nil {
+		t.Fatal("temporary stage failure must be returned")
+	}
+	// Retry re-enters the same stage work as Advance, so it must respect the
+	// shared per-workspace budget and refuse before any state work.
+	for i := 0; i < 10; i++ {
+		svc.throttle.Allow(ws.String())
+	}
+	if _, err := svc.Retry(ctx(), ws, p.ID, "operator"); err != ErrRateLimited {
+		t.Fatalf("expected ErrRateLimited, got %v", err)
+	}
+}
+
 func TestHandlerAndEventKind(t *testing.T) {
 	h := NewHandler(NewService(newMemStore(), nil, nil, nil, nil, nil, nil))
 
