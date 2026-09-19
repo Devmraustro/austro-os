@@ -186,6 +186,22 @@ $DC logs worker | grep '"message":"worker-started"'
 
 ---
 
+## Periodic monitoring and alerting
+
+`scripts/monitor.sh` is the periodic companion to the healthcheck: it emits the
+signals above as JSON lines every run, exits non-zero when any signal is
+failing, and can push a failure alert to an operator webhook
+(`AUSTRO_ALERT_WEBHOOK_URL`). Run it every minute from cron or a systemd timer
+and treat a non-zero exit as the paging trigger, not as a prompt to run it by
+hand. The healthcheck stays the deep, on-demand verification; the monitor is
+the always-on signal set.
+
+See [monitoring-and-alerting.md](monitoring-and-alerting.md) for the full
+signal list, thresholds, the webhook contract, and how to prove the alert path
+works on a staging host before going live.
+
+---
+
 ## Quick reference: what is exposed
 
 | Port | Exposure | Service |

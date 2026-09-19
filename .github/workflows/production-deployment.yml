@@ -691,6 +691,23 @@ jobs:
           }
           echo "PASS: 1 workspace, 1 task, 1 knowledge document restored; API ready over HTTPS"
 
+      - name: Run the operational monitor against the restored stack
+        # scripts/monitor.sh is the periodic signal emitter documented in
+        # docs/monitoring-and-alerting.md. This step is its rehearsal: executed
+        # against the live post-restore stack with the proxy signal skipped the
+        # same way the smoke job skips healthcheck's proxy checks — the real
+        # HTTPS path is what restore.sh's healthcheck just asserted. Alert
+        # delivery stays off because no webhook exists in CI; a passing summary
+        # here is the monitor observing the same topology the deploy, healthcheck,
+        # backup and restore steps established.
+        run: |
+          set -euo pipefail
+          monitor_log=/tmp/rehearsal-monitor.jsonl
+          AUSTRO_ENV_FILE="$ENV_FILE" AUSTRO_MONITOR_SKIP_PROXY="1" scripts/monitor.sh >"$monitor_log"
+          grep -q '"signal":"summary","status":"pass"' "$monitor_log" \
+            || { echo "::error::monitor did not report a passing summary against the live stack"; cat "$monitor_log"; exit 1; }
+          echo "PASS: monitor reported every signal nominal against the live stack"
+
       - name: Negative control — a wrong runtime credential must fail the healthcheck
         # The stack is still running; only the env file is tampered, so the only
         # check that can fail is the runtime-database one. A pass here would mean
