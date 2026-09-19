@@ -201,7 +201,9 @@ the creator-pipeline and organization-boundary mutation suites pass their full
 matrices at the two full-bandwidth PR heads that produced this release
 (31/31 at `c4e83e69dd3e`; 30/30 at `fbcd4b41facab1357a7a9b8f716d1db97bc84a73`),
 and the release main itself re-ran all main workflows green (8/8). The
-certification PR re-runs this journey on its own head.
+certification PR re-ran the journey on its own head (31/31 at
+`53141089cdb26f4ccba03798f69422330202964e`), and the certification main
+re-ran all main workflows green (8/8).
 
 ## 15. Performance baseline
 
@@ -283,7 +285,8 @@ evidence.
 | Real-Chromium E2E + mutation suites at PR head | `c4e83e69dd3e` 31/31; `fbcd4b41facab1357a7a9b8f716d1db97bc84a73` 30/30 | PASS |
 | RBAC parity | 48 routes ↔ 48 (action, resource-pattern) pairs | 1:1 |
 | RLS posture | 12 protected tables, enabled + forced; runtime role unprivileged (no superuser, no `BYPASSRLS`, owns nothing) | verified per deploy and per restore |
-| Certification PR | PR number recorded at merge | CI green, gate re-verified |
+| Certification PR | PR #10, merged as `02b7086aac89d30b9c3418e5ec8b7661baa7ba38`; rehearsal ran the monitor step against the live restored stack (workflow run `35443417081`) | merged; 31/31 green on the PR head, gate re-verified |
+| Certification main (post-merge, 8/8 checks green) | Build/Vet/Unit `105899429651`, Full Phase 1 + Phase 2 Regression `105899572439`, Phase-1 gate `105899429763`, Production deployment static `105899429710`, compose-config `105899429640`, image `105899429755`, smoke `105899429753`, rehearsal `105899429855` | PASS |
 
 ## What this certificate does not say
 
