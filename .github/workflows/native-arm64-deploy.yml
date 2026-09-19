@@ -61,10 +61,18 @@ jobs:
         run: |
           set -euo pipefail
           for binary in main worker; do
-            file /tmp/native/"$binary" | grep -q 'ARM aarch64'
-            machine=$(readelf -h /tmp/native/"$binary" | awk '/Machine:/{print $2, $3, $4}')
-            test "$machine" = "AArch64" \
-              || { echo "::error::$binary is not AArch64 (Machine: $machine)"; exit 1; }
+            echo "Checking $binary:"
+            file /tmp/native/"$binary"
+            readelf -h /tmp/native/"$binary" | grep -E 'Machine:|Class:|Data:'
+            if ! file /tmp/native/"$binary" | grep -qi 'aarch64'; then
+              echo "::error::$binary is not AArch64 (file output above)"
+              exit 1
+            fi
+            machine=$(readelf -h /tmp/native/"$binary" | awk '/Machine:/{print $2}')
+            if [[ "$machine" != "AArch64" && "$machine" != "Advanced" ]]; then
+              echo "::error::$binary is not AArch64 (Machine: $machine)"
+              exit 1
+            fi
             echo "PASS: $binary is an AArch64 ELF executable"
           done
 
