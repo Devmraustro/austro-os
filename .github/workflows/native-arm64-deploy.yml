@@ -1,0 +1,217 @@
+name: AUSTRO OS Native ARM64 Deployment
+
+# Builds, verifies and packages the native linux/arm64 release used by the
+# `deploy/native/` deployment path, then — when explicitly triggered and the
+# repository is configured for it — deploys that release to the one VM the
+# operator designated as the production host.
+#
+# The build job is the verification gate for the native binaries that the
+# Docker path does not cover: a GOOS=linux GOARCH=arm64 static build of BOTH
+# entrypoints, byte-format assertions (AArch64 ELF, no interpreter), the
+# operator scripts under bash -n + shellcheck (error severity), and the native
+# nginx.conf validated with `nginx -t` against generated self-signed material.
+#
+# The deploy job is deliberate manual surface. It runs ONLY on
+# `workflow_dispatch` AND when the repository variable `DEPLOY_ENABLED` equals
+# `true`, and it reads its host/credential secrets from the GitHub environment
+# `native-prod`. Nothing about the deploy job can run from a pull request or a
+# push, so this workflow can never touch production outside an explicit,
+# gated, authenticated dispatch. Long-lived application secrets stay on the
+# VM in /etc/austro/austro.env; they never pass through this workflow.
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-arm64-deploy
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build and verify the native release. Deterministic, hermetic, byte-asserted.
+  # ---------------------------------------------------------------------------
+  build-and-verify:
+    name: Build and verify the linux/arm64 release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.13"
+          cache: true
+
+      - name: Build main and worker for linux/arm64
+        run: |
+          set -euo pipefail
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o /tmp/native/main .
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o /tmp/native/worker ./cmd/worker
+          ls -l /tmp/native
+
+      - name: Assert both binaries are AArch64 ELF executables
+        run: |
+          set -euo pipefail
+          for binary in main worker; do
+            echo "Checking $binary:"
+            file /tmp/native/"$binary"
+            readelf -h /tmp/native/"$binary" | grep -E 'Machine:|Class:|Data:'
+            if ! file /tmp/native/"$binary" | grep -qi 'aarch64'; then
+              echo "::error::$binary is not AArch64 (file output above)"
+              exit 1
+            fi
+            machine=$(readelf -h /tmp/native/"$binary" | awk '/Machine:/{print $2}')
+            if [[ "$machine" != "AArch64" && "$machine" != "Advanced" ]]; then
+              echo "::error::$binary is not AArch64 (Machine: $machine)"
+              exit 1
+            fi
+            echo "PASS: $binary is an AArch64 ELF executable"
+          done
+
+      - name: Assert both binaries are statically linked
+        run: |
+          set -euo pipefail
+          for binary in main worker; do
+            if readelf -l /tmp/native/"$binary" | grep -q INTERP; then
+              echo "::error::$binary has a dynamic interpreter; the static build contract is broken"
+              exit 1
+            fi
+            echo "PASS: $binary is statically linked (no INTERP segment)"
+          done
+
+      - name: Package the release
+        run: |
+          set -euo pipefail
+          sha="$(sha256sum /tmp/native/main /tmp/native/worker | awk '{print $1}' | sort | sha256sum | cut -d' ' -f1)"
+          mkdir -p /tmp/release
+          tar -C /tmp/native -czf "/tmp/release/austro-native-${sha}.tar.gz" main worker
+          sha256sum "/tmp/release/austro-native-${sha}.tar.gz" | sed 's#  /tmp/release/#  #' > "/tmp/release/SHA256SUMS"
+          cat "/tmp/release/SHA256SUMS"
+          echo "AUSTRO_NATIVE_ARCHIVE=/tmp/release/austro-native-${sha}.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Shell syntax check on every native operator script
+        run: |
+          set -euo pipefail
+          for script in deploy/native/*.sh; do
+            bash -n "$script"
+            echo "syntax OK: $script"
+          done
+
+      - name: Shellcheck the native operator scripts
+        run: |
+          set -euo pipefail
+          shellcheck --severity=error deploy/native/*.sh
+          echo "PASS: no shellcheck errors in deploy/native"
+
+      - name: Validate the native nginx configuration with real TLS material
+        # The managed nginx.conf is complete and references TLS paths under
+        # /etc/austro/tls; nginx -t will not accept it without a certificate and
+        # key, so valid self-signed material is generated (stays on the runner)
+        # and the whole configuration is load-tested exactly as bootstrap does.
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y >/dev/null
+          sudo apt-get install -y nginx >/dev/null
+          sudo install -d /etc/austro/tls
+          sudo openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
+            -keyout /etc/austro/tls/privkey.pem \
+            -out /etc/austro/tls/fullchain.pem \
+            -subj "/CN=ci-native.invalid" \
+            -addext "subjectAltName=DNS:ci-native.invalid" 2>/dev/null
+          sudo install -m 0644 -o root -g root deploy/native/nginx.conf /etc/nginx/nginx.conf
+          sudo nginx -t
+          echo "PASS: native nginx.conf accepts real TLS material"
+
+      - name: Assert no secret-shaped values in the native deployment layer
+        run: |
+          set -euo pipefail
+          if grep -rInE 'BEGIN [A-Z ]*PRIVATE KEY|AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9]{20,}' \
+              deploy/native .github/workflows/native-arm64-deploy.yml; then
+            echo "::error::secret-shaped value found in the native deployment layer"
+            exit 1
+          fi
+          echo "PASS: no secret-shaped values"
+
+      - name: Upload the release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: austro-native
+          path: |
+            /tmp/release/austro-native-*.tar.gz
+            /tmp/release/SHA256SUMS
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Deploy to the designated VM. Manual dispatch + explicit repository variable
+  # + environment secrets; everything else skips this job.
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy the release to the native host
+    needs: build-and-verify
+    if: ${{ github.event_name == 'workflow_dispatch' && vars.DEPLOY_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: native-prod
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download the release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: austro-native
+          path: /tmp/release
+
+      - name: Prepare the SSH key
+        run: |
+          set -euo pipefail
+          install -m 0600 /dev/null "$RUNNER_TEMP/deploy_key"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$RUNNER_TEMP/deploy_key"
+          echo "SSH_KEY_PATH=$RUNNER_TEMP/deploy_key" >> "$GITHUB_ENV"
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Copy the release and installer to the host
+        run: |
+          set -euo pipefail
+          ssh_opts=(-i "$SSH_KEY_PATH" -p "$DEPLOY_PORT" \
+            -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20)
+          ssh "${ssh_opts[@]}" "$DEPLOY_USER@$DEPLOY_HOST" \
+            'mkdir -p /tmp/austro-deploy && rm -f /tmp/austro-deploy/*'
+          scp -i "$SSH_KEY_PATH" -P "$DEPLOY_PORT" \
+            -o StrictHostKeyChecking=accept-new \
+            /tmp/release/austro-native-*.tar.gz /tmp/release/SHA256SUMS \
+            deploy/native/install-release.sh "$DEPLOY_USER@$DEPLOY_HOST:/tmp/austro-deploy/"
+          ssh "${ssh_opts[@]}" "$DEPLOY_USER@$DEPLOY_HOST" \
+            'ls -l /tmp/austro-deploy/ && sha256sum -c --ignore-missing /tmp/austro-deploy/SHA256SUMS'
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+
+      - name: Install the release with install-release.sh
+        run: |
+          set -euo pipefail
+          ssh_opts=(-i "$SSH_KEY_PATH" -p "$DEPLOY_PORT" \
+            -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20)
+          archive="$(basename /tmp/release/austro-native-*.tar.gz)"
+          expected_sha="$(awk '{print $1}' /tmp/release/SHA256SUMS | cut -d' ' -f1)"
+          ssh "${ssh_opts[@]}" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "sudo -n bash /tmp/austro-deploy/install-release.sh /tmp/austro-deploy/${archive} ${expected_sha}"
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+
+      - name: Remove the SSH key
+        if: always()
+        run: rm -f "$SSH_KEY_PATH"
