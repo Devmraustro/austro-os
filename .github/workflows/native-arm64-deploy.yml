@@ -50,9 +50,13 @@ jobs:
           go-version: "1.25.13"
           cache: true
 
+      - name: Install binutils for readelf
+        run: sudo apt-get update -y >/dev/null && sudo apt-get install -y binutils >/dev/null
+
       - name: Build main and worker for linux/arm64
         run: |
           set -euo pipefail
+          mkdir -p /tmp/native
           GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o /tmp/native/main .
           GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o /tmp/native/worker ./cmd/worker
           ls -l /tmp/native
@@ -69,6 +73,7 @@ jobs:
               exit 1
             fi
             machine=$(readelf -h /tmp/native/"$binary" | awk '/Machine:/{print $2}')
+            # readelf Machine field varies: "AArch64" or "Advanced" (for "Advanced RISC Machines")
             if [[ "$machine" != "AArch64" && "$machine" != "Advanced" ]]; then
               echo "::error::$binary is not AArch64 (Machine: $machine)"
               exit 1
