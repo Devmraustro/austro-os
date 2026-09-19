@@ -126,6 +126,28 @@ authorization is the provider's configuration: the application never relies on
 `trust`, and a provider-issued credential that does not authenticate simply fails
 the DSN connection at startup.
 
+### 6. Single ARM64 Linux VM — native system services (no containers) — **SUPPORTED**
+
+A zero-container deployment path in `deploy/native/`: the API, the worker,
+PostgreSQL 16 + pgvector, Redis and RabbitMQ all run as native systemd
+services on one Ubuntu 24.04 ARM64 host, with nginx as the only public
+ingress. It is designed for provider Always Free AArch64 shapes — notably
+Oracle Cloud's — and matches the Compose path's security model: loopback-only
+datastores, scram on loopback, a non-superuser runtime role without
+`BYPASSRLS`, RLS enabled and forced, and a fail-closed TLS-only proxy.
+
+- No Docker is required on the host and no Docker is required where a release
+  is built; the release is a statically linked AArch64 ELF pair produced with
+  `GOOS=linux GOARCH=arm64 CGO_ENABLED=0`.
+- Releases are installed by `deploy/native/install-release.sh` (checksum,
+  atomic symlink switch, health-gate, rollback). Full runbook:
+  [free-native-deployment.md](free-native-deployment.md); operations:
+  [native-operations.md](native-operations.md).
+- This is a **single-host** path: it keeps the "one PostgreSQL primary"
+  invariant and does not scale horizontally. If requirements later imply a
+  distributed scheduler workload, the Compose path is still the deployment
+  unit — see *Not supported* below.
+
 ---
 
 ## Not supported
@@ -160,7 +182,9 @@ Go processes.
 **Architecture:** the Dockerfile builds `GOOS=linux GOARCH=amd64`. On arm64
 (for example an Apple Silicon development host or an ARM VM) either build with
 `--build-arg`-free native settings after changing `GOARCH`, or use the amd64
-image under emulation (slow, unverified). This is `NOT TESTED` on arm64.
+image under emulation (slow, unverified). The container image is documented as
+`NOT TESTED` on arm64; the **native path** (target 6) is the tested ARM route —
+its release binaries are built and byte-verified for `linux/arm64` in CI.
 
 ---
 
@@ -202,3 +226,9 @@ public-DNS resolution, operator-issued certificates, real internet traffic, or
 your host's volumes and backup storage. Treat it as **not proven on your host**
 until you have run `scripts/deploy.sh` and `scripts/healthcheck.sh` there
 yourself.
+
+The native path (target 6) has the same honest boundary, in the other
+direction: its release is **build-verified** (AArch64 ELF, static) in CI, but
+no line of it has run on a real VM. Per-capability statuses are recorded in
+[FREE_DEPLOYMENT_CERTIFICATION.md](FREE_DEPLOYMENT_CERTIFICATION.md); every VM
+stage is `OPERATOR CONFIGURATION REQUIRED` until an operator executes it.
