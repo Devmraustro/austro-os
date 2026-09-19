@@ -125,8 +125,11 @@ jobs:
           set -euo pipefail
           sudo apt-get update -y >/dev/null
           sudo apt-get install -y nginx >/dev/null
+          # Ensure nginx user and runtime dirs exist (some minimal images need this)
+          id -u nginx &>/dev/null || sudo useradd -r -s /usr/sbin/nologin nginx
+          sudo install -d -o nginx -g nginx /var/run/nginx
           sudo install -d /etc/austro/tls
-          # Generate self-signed cert (openssl -addext may not be available on all versions)
+          # Generate self-signed cert
           sudo openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
             -keyout /etc/austro/tls/privkey.pem \
             -out /etc/austro/tls/fullchain.pem \
