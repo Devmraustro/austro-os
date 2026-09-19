@@ -1,0 +1,42 @@
+[Unit]
+Description=AUSTRO OS worker (native arm64)
+Documentation=https://github.com/Devmraustro/austro-os
+# The worker consumes from RabbitMQ and writes to PostgreSQL; it also waits on
+# the API's /health/live inside ExecStart (the curl loop) so a cold boot does
+# not race the API's role provisioning. After=austro-api.service orders the
+# starts; the curl loop is the actual gate.
+After=network-online.target postgresql.service rabbitmq-server.service austro-api.service
+Wants=network-online.target postgresql.service rabbitmq-server.service
+
+[Service]
+Type=simple
+User=austro
+Group=austro
+# Read before privileges drop; file stays owner root, mode 0600.
+EnvironmentFile=/etc/austro/austro.env
+WorkingDirectory=/opt/austro/current
+# The wait loop runs INSIDE ExecStart because ExecStartPre failures do not
+# trigger Restart=on-failure. Restarting the whole command re-runs the loop,
+# so a dependency that is slow to come up is retried for as long as systemd
+# is configured to restart us.
+ExecStart=/bin/bash -c 'until curl -fsS http://127.0.0.1:8080/health/live >/dev/null 2>&1; do sleep 2; done; exec /opt/austro/current/worker'
+
+TimeoutStopSec=90
+
+Restart=on-failure
+RestartSec=3
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadOnlyPaths=/opt/austro/current
+
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
