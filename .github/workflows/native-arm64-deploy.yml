@@ -126,14 +126,16 @@ jobs:
           sudo apt-get update -y >/dev/null
           sudo apt-get install -y nginx >/dev/null
           sudo install -d /etc/austro/tls
+          # Generate self-signed cert (openssl -addext may not be available on all versions)
           sudo openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
             -keyout /etc/austro/tls/privkey.pem \
             -out /etc/austro/tls/fullchain.pem \
-            -subj "/CN=ci-native.invalid" \
-            -addext "subjectAltName=DNS:ci-native.invalid" 2>/dev/null
+            -subj "/CN=ci-native.invalid" 2>/dev/null
           sudo install -m 0644 -o root -g root deploy/native/nginx.conf /etc/nginx/nginx.conf
+          echo "=== nginx version ==="
+          sudo nginx -v
           echo "=== nginx -t output ==="
-          sudo nginx -t
+          sudo nginx -t 2>&1
           echo "PASS: native nginx.conf accepts real TLS material"
 
       - name: Assert no secret-shaped values in the native deployment layer
