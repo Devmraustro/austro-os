@@ -643,6 +643,9 @@ func TestKnowledgeCreatedAtIsStableAcrossUpdates(t *testing.T) {
 	claims := memberClaims(uuid.NewString())
 	created := createDocViaAPI(t, store, claims, "stable")
 
+	// Ensure timestamp resolution on Windows (default ~15ms) by waiting briefly.
+	time.Sleep(time.Millisecond * 10)
+
 	rec := serveKnowledge(t, store, &recordingSink{}, claims, http.MethodPatch, "/knowledge/"+created.ID,
 		`{"title":"changed"}`)
 	require.Equal(t, http.StatusOK, rec.Code)
