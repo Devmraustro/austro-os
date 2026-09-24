@@ -3,7 +3,9 @@ package austro_os_test
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"net/url"
+	"os"
 	"testing"
 	"time"
 
@@ -210,6 +212,39 @@ func TestPreProvisionedModeEndToEnd(t *testing.T) {
 
 	rt := runtimeDB(t, topo)
 	adm := adminDB(t, topo)
+
+	// Bootstrap re-creates the organization-level policies (org_admin_policy
+	// on workspaces, audit_org_policy on audit_events) TO the topology's
+	// admin role. This test bootstrapped with a fixture topology, so those
+	// policies now name the fixture admin role; once the fixture roles are
+	// dropped, no live role matches them and every administrative-pool query
+	// in the rest of the suite (and the running API) would see nothing.
+	// Restore them to the suite's real topology admin role before finishing.
+	t.Cleanup(func() {
+		real, err := database.ResolveTopology(getEnv().postgresDSN, os.Getenv("AUSTRO_POSTGRES_RUNTIME_DSN"))
+		if err != nil {
+			t.Errorf("resolve real topology for policy restore: %v", err)
+			return
+		}
+		restore, err := sql.Open("pgx", getEnv().postgresDSN)
+		if err != nil {
+			t.Errorf("open owner for policy restore: %v", err)
+			return
+		}
+		defer restore.Close()
+		stmts := []string{
+			"DROP POLICY IF EXISTS org_admin_policy ON workspaces",
+			fmt.Sprintf("CREATE POLICY org_admin_policy ON workspaces TO %s USING (true)", real.Admin),
+			"DROP POLICY IF EXISTS audit_org_policy ON audit_events",
+			fmt.Sprintf("CREATE POLICY audit_org_policy ON audit_events TO %s USING (true)", real.Admin),
+		}
+		for _, s := range stmts {
+			if _, err := restore.Exec(s); err != nil {
+				t.Errorf("restore organization-level policy: %v", err)
+			}
+		}
+	})
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	require.NoError(t, database.VerifyRuntimeSecurity(ctx, rt, topo.Runtime),
