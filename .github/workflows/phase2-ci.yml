@@ -484,3 +484,13 @@ jobs:
             exit 1
           fi
           echo "PASS: $passes runtime security tests"
+
+      - name: Upload x86_64 release binaries
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: austro-x64-release
+          path: |
+            /tmp/austro-api
+            /tmp/austro-worker
+          retention-days: 7
