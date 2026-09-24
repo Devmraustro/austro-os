@@ -56,6 +56,34 @@ type Config struct {
 	// explicitly so the runtime role has its own credential.
 	PostgresRuntimeDSN string
 
+	// PostgresAdminDSN is the explicit connection credential for the narrow
+	// organization-level role (AUSTRO_POSTGRES_ADMIN_DSN). When empty, the
+	// admin DSN is derived from the runtime DSN (same host and database, the
+	// admin role name), which keeps the classic self-provisioned deployment
+	// working unchanged. In pre-provisioned mode it is CONFIGURATION
+	// REQUIRED: the platform created the role with its own credential, and
+	// the application must connect with exactly that credential instead of a
+	// derived one.
+	PostgresAdminDSN string
+
+	// PostgresPreProvisionedRoles (AUSTRO_POSTGRES_PREPROVISIONED_ROLES=true)
+	// selects the externally-provisioned topology: the runtime and admin
+	// roles already exist on the server, created by the platform or an
+	// operator rather than by the application. The application then never
+	// creates, alters or re-passwords them; at startup it verifies their
+	// attributes against the live database (role exists, is a LOGIN role,
+	// is not a superuser, holds no BYPASSRLS, holds neither CREATEROLE nor
+	// CREATEDB) and fails fast on any deviation. Schema bootstrap through
+	// the owner, the required GRANTs, RLS enablement and forcing, and the
+	// live isolation canary run exactly as in self-provisioned mode.
+	PostgresPreProvisionedRoles bool
+
+	// preProvisionedRolesRaw is the raw environment text of
+	// AUSTRO_POSTGRES_PREPROVISIONED_ROLES. Strict validation rejects a
+	// value that does not parse as a boolean (fail-fast) instead of
+	// silently treating a typo as "off".
+	preProvisionedRolesRaw string
+
 	RedisAddr        string
 	RabbitMQURL      string
 	RabbitMQQueue    string
@@ -151,21 +179,43 @@ func defaults() *Config {
 		}
 	}
 	ownerDSN := getEnv("AUSTRO_POSTGRES_DSN", "postgres://austro:austro@localhost:5432/austro?sslmode=disable")
+
+	preProvisionedRolesRaw := os.Getenv("AUSTRO_POSTGRES_PREPROVISIONED_ROLES")
+	preProvisionedRoles := false
+	if preProvisionedRolesRaw != "" {
+		if b, err := strconv.ParseBool(preProvisionedRolesRaw); err == nil {
+			preProvisionedRoles = b
+		}
+	}
+	// In pre-provisioned mode the runtime DSN must be stated explicitly: the
+	// role already exists with the platform's own credential, so deriving a
+	// DSN from the owner (owner's password, guessed role name) would be a
+	// credential the server cannot authenticate. An empty value is rejected
+	// by Validate instead of being silently guessed.
+	var runtimeDSN string
+	if preProvisionedRoles {
+		runtimeDSN = os.Getenv("AUSTRO_POSTGRES_RUNTIME_DSN")
+	} else {
+		// Derived rather than defaulted to a constant so there is exactly
+		// one place a deployment states its database location, and so
+		// forgetting the runtime DSN lands on the unprivileged role instead
+		// of quietly serving traffic as the schema owner.
+		runtimeDSN = getEnv("AUSTRO_POSTGRES_RUNTIME_DSN", DeriveRuntimeDSN(ownerDSN))
+	}
 	return &Config{
-		ServerAddress: getEnv("AUSTRO_SERVER_ADDR", "0.0.0.0:8080"),
-		PostgresDSN:   ownerDSN,
-		// Derived rather than defaulted to a constant so there is exactly one
-		// place a deployment states its database location, and so forgetting
-		// the runtime DSN lands on the unprivileged role instead of quietly
-		// serving traffic as the schema owner.
-		PostgresRuntimeDSN: getEnv("AUSTRO_POSTGRES_RUNTIME_DSN", DeriveRuntimeDSN(ownerDSN)),
-		RedisAddr:          getEnv("AUSTRO_REDIS_ADDR", "localhost:6379"),
-		RabbitMQURL:        getEnv("AUSTRO_RABBITMQ_URL", "amqp://austro:austro@localhost:5672"),
-		RabbitMQQueue:      getEnv("AUSTRO_RABBITMQ_QUEUE", "austro.events"),
-		JWTSecret:          getEnv("AUSTRO_JWT_SECRET", "change-me-in-production"),
-		JWTRefreshSecret:   getEnv("AUSTRO_JWT_REFRESH_SECRET", "change-me-in-production"),
-		Environment:        getEnv("AUSTRO_ENV", "development"),
-		WorkspaceID:        getEnv("AUSTRO_WORKSPACE_ID", "default"),
+		ServerAddress:               getEnv("AUSTRO_SERVER_ADDR", "0.0.0.0:8080"),
+		PostgresDSN:                 ownerDSN,
+		PostgresRuntimeDSN:          runtimeDSN,
+		PostgresAdminDSN:            os.Getenv("AUSTRO_POSTGRES_ADMIN_DSN"),
+		PostgresPreProvisionedRoles: preProvisionedRoles,
+		preProvisionedRolesRaw:      preProvisionedRolesRaw,
+		RedisAddr:                   getEnv("AUSTRO_REDIS_ADDR", "localhost:6379"),
+		RabbitMQURL:                 getEnv("AUSTRO_RABBITMQ_URL", "amqp://austro:austro@localhost:5672"),
+		RabbitMQQueue:               getEnv("AUSTRO_RABBITMQ_QUEUE", "austro.events"),
+		JWTSecret:                   getEnv("AUSTRO_JWT_SECRET", "change-me-in-production"),
+		JWTRefreshSecret:            getEnv("AUSTRO_JWT_REFRESH_SECRET", "change-me-in-production"),
+		Environment:                 getEnv("AUSTRO_ENV", "development"),
+		WorkspaceID:                 getEnv("AUSTRO_WORKSPACE_ID", "default"),
 
 		FounderUsername: os.Getenv("AUSTRO_FOUNDER_USERNAME"),
 		FounderPassword: os.Getenv("AUSTRO_FOUNDER_PASSWORD"),
@@ -241,6 +291,37 @@ func (c *Config) Validate() error {
 		}
 		if c.PostgresRuntimeDSN == c.PostgresDSN {
 			missing = append(missing, "AUSTRO_POSTGRES_RUNTIME_DSN")
+		}
+	}
+
+	// Pre-provisioned mode: the topology was created outside this process, so
+	// both serving principals must be stated with their real credentials. A
+	// missing or placeholder DSN, or an admin DSN that collapses onto the
+	// owner or the runtime, is rejected here at configuration time rather
+	// than discovered at the first request. Role-level collapse (same role,
+	// different credential) is caught later by the topology resolver, which
+	// sees the parsed role names.
+	// The flag itself must parse as a boolean no matter what it parsed to:
+	// a typo like "true " would otherwise fall through as "off" and the
+	// pre-provisioned topology would silently go unverified.
+	if c.preProvisionedRolesRaw != "" {
+		if _, err := strconv.ParseBool(c.preProvisionedRolesRaw); err != nil {
+			missing = append(missing, "AUSTRO_POSTGRES_PREPROVISIONED_ROLES")
+		}
+	}
+
+	if c.PostgresPreProvisionedRoles {
+		if c.PostgresRuntimeDSN == "" || isInsecure(c.PostgresRuntimeDSN) {
+			missing = append(missing, "AUSTRO_POSTGRES_RUNTIME_DSN")
+		}
+		if c.PostgresAdminDSN == "" || isInsecure(c.PostgresAdminDSN) {
+			missing = append(missing, "AUSTRO_POSTGRES_ADMIN_DSN")
+		}
+		if c.PostgresAdminDSN != "" && c.PostgresAdminDSN == c.PostgresDSN {
+			missing = append(missing, "AUSTRO_POSTGRES_ADMIN_DSN")
+		}
+		if c.PostgresAdminDSN != "" && c.PostgresAdminDSN == c.PostgresRuntimeDSN {
+			missing = append(missing, "AUSTRO_POSTGRES_ADMIN_DSN")
 		}
 	}
 

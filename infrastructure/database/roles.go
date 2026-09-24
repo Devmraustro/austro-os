@@ -2,10 +2,12 @@ package database
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -69,17 +71,44 @@ type Topology struct {
 	AdminDSN   string
 	Runtime    string
 	Admin      string
+
+	// PreProvisioned records that the runtime and admin roles were expected
+	// to exist on the server already (AUSTRO_POSTGRES_PREPROVISIONED_ROLES).
+	// In that mode the bootstrap verifies these principals against the live
+	// database and re-asserts the grants without ever creating a role or
+	// touching a password; otherwise it self-provisions them.
+	PreProvisioned bool
 }
 
 // ResolveTopology derives the three principals from configuration. The runtime
 // DSN is derived from the owner DSN when it is not set explicitly, so a process
 // with no extra configuration still lands on the unprivileged role instead of
-// quietly serving traffic as the table owner.
+// quietly serving traffic as the table owner. The administrative principal is
+// derived the same way; ResolveTopologyWithAdmin is the form that also accepts
+// an explicit admin DSN.
 //
 // It is an error for the runtime principal to be the owner principal: that is
 // the exact misconfiguration the split exists to prevent, and it is rejected
 // here rather than discovered later as a policy that never applied.
 func ResolveTopology(ownerDSN, runtimeDSN string) (*Topology, error) {
+	return ResolveTopologyWithAdmin(ownerDSN, runtimeDSN, "")
+}
+
+// ResolveTopologyWithAdmin is ResolveTopology with one addition: a dedicated
+// administrative DSN. When adminDSN is supplied it is used exactly as given —
+// its role name and credential are the operator's statement of fact, and
+// deriving a different one would silently connect as the wrong principal. When
+// it is empty the admin principal is derived from the runtime DSN exactly as
+// before (role <runtime>_admin or AUSTRO_POSTGRES_ADMIN_USER, the runtime
+// DSN's host/database/credential), so the classic self-provisioned deployment
+// is bit-for-bit unchanged.
+//
+// Whatever the mode, the three principals must be three distinct roles: an
+// admin that is the owner or the runtime concentrates a credential into a
+// principal the security model assumes is separate, and the failure would
+// surface as a confusing permission problem months later instead of a startup
+// refusal.
+func ResolveTopologyWithAdmin(ownerDSN, runtimeDSN, adminDSN string) (*Topology, error) {
 	ownerRole, err := roleFromDSN(ownerDSN)
 	if err != nil {
 		return nil, fmt.Errorf("owner dsn: %w", err)
@@ -103,21 +132,56 @@ func ResolveTopology(ownerDSN, runtimeDSN string) (*Topology, error) {
 			return nil, fmt.Errorf("role name %q is not a supported identifier", r)
 		}
 	}
-	admin := adminRoleName(runtimeRole)
+	admin := ""
+	resolvedAdminDSN := ""
+	if adminDSN != "" {
+		admin, err = roleFromDSN(adminDSN)
+		if err != nil {
+			return nil, fmt.Errorf("admin dsn: %w", err)
+		}
+		resolvedAdminDSN = adminDSN
+	} else {
+		admin = adminRoleName(runtimeRole)
+		resolvedAdminDSN, err = withRole(runtimeDSN, admin)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if !validRole.MatchString(admin) {
 		return nil, fmt.Errorf("admin role name %q is not a supported identifier", admin)
 	}
-	adminDSN, err := withRole(runtimeDSN, admin)
-	if err != nil {
-		return nil, err
+	if strings.EqualFold(admin, ownerRole) {
+		return nil, fmt.Errorf(
+			"administrative role %q must differ from the schema owner %q: the "+
+				"owner credential must never serve the organization-level path, "+
+				"and an admin that is the owner can grant itself anything",
+			admin, ownerRole)
+	}
+	if strings.EqualFold(admin, runtimeRole) {
+		return nil, fmt.Errorf(
+			"administrative role %q must differ from the application runtime role %q: "+
+				"the audit chain and founder operations run on a principal that "+
+				"workspace policies deliberately do not name",
+			admin, runtimeRole)
 	}
 	return &Topology{
-		OwnerDSN:   ownerDSN,
-		RuntimeDSN: runtimeDSN,
-		AdminDSN:   adminDSN,
-		Runtime:    runtimeRole,
-		Admin:      admin,
+		OwnerDSN:       ownerDSN,
+		RuntimeDSN:     runtimeDSN,
+		AdminDSN:       resolvedAdminDSN,
+		Runtime:        runtimeRole,
+		Admin:          admin,
+		PreProvisioned: preProvisionedRolesEnabled(),
 	}, nil
+}
+
+// preProvisionedRolesEnabled reports whether the process must treat the
+// runtime and admin roles as provisioned outside the application
+// (AUSTRO_POSTGRES_PREPROVISIONED_ROLES). An unparseable value counts as off
+// here because the strict configuration loader is the fail-fast gate that
+// rejects such a value before the topology is ever resolved.
+func preProvisionedRolesEnabled() bool {
+	v, err := strconv.ParseBool(os.Getenv("AUSTRO_POSTGRES_PREPROVISIONED_ROLES"))
+	return err == nil && v
 }
 
 // deriveRuntimeDSN rewrites an owner DSN onto the unprivileged runtime role,
@@ -190,6 +254,11 @@ func quoteLit(s string) string {
 // owner connection and is idempotent, so it is safe on every boot and after
 // every migration that adds a table.
 //
+// This is the SELF-PROVISIONED path: the process is the authority that creates
+// the roles and sets their passwords. The pre-provisioned counterpart is
+// assertPreProvisionedRoles, which must never create a role, alter a role or
+// touch a password at all.
+//
 // The privileges are deliberately re-asserted in full each time: a grant made
 // once would not cover a table created by a later migration, and a silent gap
 // there surfaces as a confusing "permission denied" in production rather than
@@ -237,11 +306,99 @@ func provisionRoles(db *sql.DB, topo *Topology) error {
 		}
 	}
 
-	// Runtime role: ordinary workspace-scoped DML on every table, then the
-	// audit table narrowed to append-only. Revoking UPDATE and DELETE there is
-	// what makes the audit log append-only from the application's own
-	// connection, independent of any application-level discipline.
-	// #nosec G201 -- all interpolated role identifiers are validated.
+	return grantRolePrivileges(db, topo)
+}
+
+// assertPreProvisionedRoles verifies, against the live database, that the
+// externally provisioned runtime and admin principals exist and carry exactly
+// the attributes the security contract requires:
+//
+//   - the role exists
+//   - the role is a LOGIN role
+//   - the role is not a superuser
+//   - the role does not hold BYPASSRLS
+//   - the role does not hold CREATEROLE or CREATEDB
+//
+// It is the pre-provisioned counterpart of provisionRoles. Where that function
+// would create the roles and set their passwords, this one refuses to serve on
+// any deviation: the application has neither the right nor the need to repair
+// a role that belongs to the platform, and a startup refusal is the only
+// honest outcome for a topology that is not what the operator declared.
+//
+// The grant re-assertion that follows it (grantRolePrivileges) still runs in
+// pre-provisioned mode: existing roles still need the schema privileges, and
+// a migration that added a table must extend them. Granting is not role
+// mutation — it touches no role attribute and no password.
+func assertPreProvisionedRoles(db *sql.DB, topo *Topology) error {
+	for _, role := range []string{topo.Runtime, topo.Admin} {
+		if !validRole.MatchString(role) {
+			return fmt.Errorf("role name %q is not a supported identifier", role)
+		}
+		if err := verifyPreProvisionedRole(db, role); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// verifyPreProvisionedRole checks one role in pg_roles. Every checked
+// attribute is observable from any connection, so the check is trustworthy
+// from the owner connection.
+func verifyPreProvisionedRole(db *sql.DB, role string) error {
+	var (
+		superuser, login, bypass, createrole, createdb bool
+	)
+	err := db.QueryRow(`
+		SELECT rolsuper, rolcanlogin, rolbypassrls, rolcreaterole, rolcreatedb
+		FROM pg_roles WHERE rolname = $1`, role).
+		Scan(&superuser, &login, &bypass, &createrole, &createdb)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf(
+			"pre-provisioned role %q does not exist on the server; create it with "+
+				"LOGIN, NOSUPERUSER, NOBYPASSRLS, NOCREATEDB and NOCREATEROLE before "+
+				"starting with AUSTRO_POSTGRES_PREPROVISIONED_ROLES", role)
+	}
+	if err != nil {
+		return fmt.Errorf("verify pre-provisioned role %s: %w", role, err)
+	}
+	if !login {
+		return fmt.Errorf(
+			"pre-provisioned role %q is not a LOGIN role and cannot authenticate", role)
+	}
+	if superuser {
+		return fmt.Errorf(
+			"pre-provisioned role %q is a superuser, which bypasses row level security", role)
+	}
+	if bypass {
+		return fmt.Errorf(
+			"pre-provisioned role %q holds BYPASSRLS, which bypasses row level security", role)
+	}
+	if createrole || createdb {
+		var privs []string
+		if createrole {
+			privs = append(privs, "CREATEROLE")
+		}
+		if createdb {
+			privs = append(privs, "CREATEDB")
+		}
+		return fmt.Errorf(
+			"pre-provisioned role %q holds %s, which the security contract forbids",
+			role, strings.Join(privs, " and "))
+	}
+	return nil
+}
+
+// grantRolePrivileges grants the runtime and admin principals exactly the
+// privileges the application needs. Both modes run it: self-provisioned after
+// creating the roles, pre-provisioned after verifying them.
+//
+// Runtime role: ordinary workspace-scoped DML on every table, then the audit
+// table narrowed to append-only. Revoking UPDATE and DELETE there is what
+// makes the audit log append-only from the application's own connection,
+// independent of any application-level discipline.
+// #nosec G201 -- all interpolated role identifiers are validated by the
+// callers before this function is reached.
+func grantRolePrivileges(db *sql.DB, topo *Topology) error {
 	grants := fmt.Sprintf(`
 	GRANT USAGE ON SCHEMA public TO %s, %s;
 	GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO %s;
