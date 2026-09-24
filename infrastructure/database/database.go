@@ -40,18 +40,20 @@ func Initialize(cfg *config.Config) *sql.DB {
 }
 
 // MustInitializeTopology applies the schema as the owner principal, provisions
-// the runtime and admin principals, and returns pools connected as those
-// principals. The owner pool is closed before returning, so no code path in the
-// process can reach the schema owner credential after startup.
+// (or, in pre-provisioned mode, verifies) the runtime and admin principals, and
+// returns pools connected as those principals. The owner pool is closed before
+// returning, so no code path in the process can reach the schema owner
+// credential after startup.
 //
 // Before anything is returned the runtime pool is verified against the live
-// database (VerifyRuntimeSecurity). That check is what turns the topology from
-// an intention into a property: it fails startup if the role the process
-// actually connected as is a superuser, holds BYPASSRLS, owns a protected
-// table, is missing a forced policy, or can in fact see another workspace's
-// rows.
+// database (VerifyRuntimeSecurity) and the administrative pool is verified the
+// same way at its own principal (VerifyAdminRole). Those checks are what turn
+// the topology from an intention into a property: startup fails if the role
+// the process actually connected as is a superuser, holds BYPASSRLS, owns a
+// protected table, is missing a forced policy, or can in fact see another
+// workspace's rows.
 func MustInitializeTopology(cfg *config.Config) *Handles {
-	topo, err := ResolveTopology(cfg.PostgresDSN, cfg.PostgresRuntimeDSN)
+	topo, err := ResolveTopologyWithAdmin(cfg.PostgresDSN, cfg.PostgresRuntimeDSN, cfg.PostgresAdminDSN)
 	if err != nil {
 		logger.NewEntry("database-topology-invalid").SetLevel("error").WithError(err).Log()
 		os.Exit(1)
@@ -76,10 +78,17 @@ func MustInitializeTopology(cfg *config.Config) *Handles {
 		_ = admin.Close()
 		os.Exit(1)
 	}
+	if err := VerifyAdminRole(ctx, admin, topo.Admin); err != nil {
+		logger.NewEntry("database-admin-security-failed").SetLevel("error").WithError(err).Log()
+		_ = runtime.Close()
+		_ = admin.Close()
+		os.Exit(1)
+	}
 
 	logger.NewEntry("database-topology-ready").
 		With("runtime_role", topo.Runtime).
 		With("admin_role", topo.Admin).
+		With("pre_provisioned_roles", topo.PreProvisioned).
 		With("rls_tables_forced", len(rlsTables())).
 		Log()
 
@@ -110,8 +119,19 @@ func Bootstrap(owner *sql.DB, topo *Topology) error {
 		{"migrate-organization", func() error { return migrateOrganization(owner) }},
 		{"enable-rls", func() error { return enableRLS(owner) }},
 		// Roles before policies: CREATE POLICY ... TO <role> requires the role
-		// to exist, so provisioning them afterwards fails the policy step.
-		{"roles", func() error { return provisionRoles(owner, topo) }},
+		// to exist, so provisioning them afterwards fails the policy step. In
+		// pre-provisioned mode the roles already exist: this step verifies
+		// their attributes against the live database and re-asserts the
+		// grants, creating and altering nothing.
+		{"roles", func() error {
+			if topo.PreProvisioned {
+				if err := assertPreProvisionedRoles(owner, topo); err != nil {
+					return err
+				}
+				return grantRolePrivileges(owner, topo)
+			}
+			return provisionRoles(owner, topo)
+		}},
 		{"table-ownership", func() error { return assertOwnership(owner, topo) }},
 		{"policies", func() error { return setupRLSPolicies(owner, topo.Admin) }},
 		{"force-rls", func() error { return forceRLS(owner) }},

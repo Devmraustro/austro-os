@@ -142,3 +142,136 @@ func TestConfigErrorUsesSettingNames(t *testing.T) {
 	require.Contains(t, err.Error(), "AUSTRO_JWT_SECRET")
 	require.Contains(t, err.Error(), "AUSTRO_JWT_REFRESH_SECRET")
 }
+
+// ---------------------------------------------------------------------------
+// Pre-provisioned roles (AUSTRO_POSTGRES_PREPROVISIONED_ROLES)
+//
+// The topology below mirrors a real AlwaysData deployment: the platform
+// pre-created the roles austro (owner), austro_app (runtime) and
+// austro_app_admin (admin) on postgresql-austro.alwaysdata.net, database
+// austro_os, and the application connects to all three with dedicated
+// credentials.
+// ---------------------------------------------------------------------------
+
+const (
+	ppOwnerDSN   = "postgres://austro:pp-owner-cred-1234@postgresql-austro.alwaysdata.net:5432/austro_os?sslmode=require"
+	ppRuntimeDSN = "postgres://austro_app:pp-runtime-cred-5678@postgresql-austro.alwaysdata.net:5432/austro_os?sslmode=require"
+	ppAdminDSN   = "postgres://austro_app_admin:pp-admin-cred-9012@postgresql-austro.alwaysdata.net:5432/austro_os?sslmode=require"
+)
+
+// ppEnv states the pre-provisioned topology through the environment and
+// neutralises every related setting the scenario does not name, so each test
+// sees exactly the configuration it declares.
+func ppEnv(t *testing.T, flag, ownerDSN, runtimeDSN, adminDSN string) {
+	t.Helper()
+	t.Setenv("AUSTRO_POSTGRES_DSN", ownerDSN)
+	t.Setenv("AUSTRO_POSTGRES_RUNTIME_DSN", runtimeDSN)
+	t.Setenv("AUSTRO_POSTGRES_ADMIN_DSN", adminDSN)
+	t.Setenv("AUSTRO_POSTGRES_PREPROVISIONED_ROLES", flag)
+	t.Setenv("AUSTRO_REDIS_ADDR", "redis:6379")
+	t.Setenv("AUSTRO_RABBITMQ_URL", "amqp://austro:austro@rabbitmq:5672")
+	t.Setenv("AUSTRO_JWT_SECRET", "prod-access-secret-1234567890-abcdef")
+	t.Setenv("AUSTRO_JWT_REFRESH_SECRET", "prod-refresh-secret-1234567890-abcdef")
+}
+
+// TestPreProvisionedConfigValid verifies a complete pre-provisioned topology
+// (owner + explicit runtime + explicit admin DSN) passes the strict loader,
+// and that the explicit DSNs are carried through verbatim rather than
+// re-derived.
+func TestPreProvisionedConfigValid(t *testing.T) {
+	ppEnv(t, "true", ppOwnerDSN, ppRuntimeDSN, ppAdminDSN)
+	cfg, err := config.LoadStrict()
+	require.NoError(t, err)
+	require.True(t, cfg.PostgresPreProvisionedRoles)
+	require.Equal(t, ppRuntimeDSN, cfg.PostgresRuntimeDSN,
+		"the explicit runtime DSN must be used as supplied, not derived")
+	require.Equal(t, ppAdminDSN, cfg.PostgresAdminDSN,
+		"the dedicated admin DSN must be used as supplied, not derived")
+}
+
+// TestPreProvisionedMissingRuntimeDSN verifies pre-provisioned mode without an
+// explicit runtime DSN fails fast: deriving one from the owner would be a
+// credential the server cannot authenticate.
+func TestPreProvisionedMissingRuntimeDSN(t *testing.T) {
+	ppEnv(t, "true", ppOwnerDSN, "", ppAdminDSN)
+	_, err := config.LoadStrict()
+	require.Error(t, err)
+	require.ErrorIs(t, err, config.ErrConfigInvalid)
+	require.Contains(t, err.Error(), "AUSTRO_POSTGRES_RUNTIME_DSN")
+}
+
+// TestPreProvisionedMissingAdminDSN verifies pre-provisioned mode without an
+// explicit admin DSN fails fast: the platform created the admin role with its
+// own credential, and a derived DSN would not authenticate as it.
+func TestPreProvisionedMissingAdminDSN(t *testing.T) {
+	ppEnv(t, "true", ppOwnerDSN, ppRuntimeDSN, "")
+	_, err := config.LoadStrict()
+	require.Error(t, err)
+	require.ErrorIs(t, err, config.ErrConfigInvalid)
+	require.Contains(t, err.Error(), "AUSTRO_POSTGRES_ADMIN_DSN")
+}
+
+// TestPreProvisionedRuntimeEqualsOwner verifies the runtime principal is
+// rejected when it collapses onto the schema owner, in pre-provisioned mode as
+// in any other.
+func TestPreProvisionedRuntimeEqualsOwner(t *testing.T) {
+	ppEnv(t, "true", ppOwnerDSN, ppOwnerDSN, ppAdminDSN)
+	_, err := config.LoadStrict()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "AUSTRO_POSTGRES_RUNTIME_DSN")
+}
+
+// TestPreProvisionedAdminEqualsOwner verifies the admin principal is rejected
+// when it collapses onto the schema owner.
+func TestPreProvisionedAdminEqualsOwner(t *testing.T) {
+	ppEnv(t, "true", ppOwnerDSN, ppRuntimeDSN, ppOwnerDSN)
+	_, err := config.LoadStrict()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "AUSTRO_POSTGRES_ADMIN_DSN")
+}
+
+// TestPreProvisionedAdminEqualsRuntime verifies the admin principal is
+// rejected when it collapses onto the application runtime role.
+func TestPreProvisionedAdminEqualsRuntime(t *testing.T) {
+	ppEnv(t, "true", ppOwnerDSN, ppRuntimeDSN, ppRuntimeDSN)
+	_, err := config.LoadStrict()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "AUSTRO_POSTGRES_ADMIN_DSN")
+}
+
+// TestPreProvisionedInvalidFlagRejected verifies a flag value that does not
+// parse as a boolean is a configuration error (fail-fast), not a silent "off".
+func TestPreProvisionedInvalidFlagRejected(t *testing.T) {
+	ppEnv(t, "maybe", ppOwnerDSN, ppRuntimeDSN, ppAdminDSN)
+	_, err := config.LoadStrict()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "AUSTRO_POSTGRES_PREPROVISIONED_ROLES")
+}
+
+// TestNormalModeUnchangedByPreProvisionedSetting verifies that with the flag
+// unset or false the classic self-provisioned derivation is exactly what the
+// process gets: the runtime DSN derived from the owner, no admin DSN at all,
+// and the flag reported off.
+func TestNormalModeUnchangedByPreProvisionedSetting(t *testing.T) {
+	for _, flag := range []string{"", "false"} {
+		t.Run("flag="+flag, func(t *testing.T) {
+			ppEnv(t, flag, ppOwnerDSN, "", "")
+			cfg, err := config.LoadStrict()
+			require.NoError(t, err)
+			require.False(t, cfg.PostgresPreProvisionedRoles)
+			require.Equal(t, config.DeriveRuntimeDSN(ppOwnerDSN), cfg.PostgresRuntimeDSN,
+				"normal mode must keep deriving the runtime DSN from the owner")
+			require.Empty(t, cfg.PostgresAdminDSN)
+		})
+	}
+}
+
+// TestDedicatedAdminDSNSupportedInNormalMode verifies an explicitly supplied
+// admin DSN is honored (not replaced by a derivation) when the flag is off.
+func TestDedicatedAdminDSNSupportedInNormalMode(t *testing.T) {
+	ppEnv(t, "", ppOwnerDSN, ppRuntimeDSN, ppAdminDSN)
+	cfg, err := config.LoadStrict()
+	require.NoError(t, err)
+	require.False(t, cfg.PostgresPreProvisionedRoles)
+	require.Equal(t, ppAdminDSN, cfg.PostgresAdminDSN)
+}

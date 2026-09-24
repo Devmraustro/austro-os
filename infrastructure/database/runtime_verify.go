@@ -46,6 +46,43 @@ func VerifyRuntimeSecurity(ctx context.Context, db *sql.DB, expectedRole string)
 	return verifyIsolationLive(ctx, db)
 }
 
+// VerifyAdminRole proves the administrative pool authenticates as exactly the
+// configured administrative role and that the role carries no attribute which
+// would let it skip row level security.
+//
+// The admin pool is not workspace-scoped by policy: its reach is the narrow
+// set of grants and the explicit policies that name it. A superuser or a
+// BYPASSRLS holder outranks both of those, so the same two attributes the
+// runtime pool is verified for are verified here as well. In pre-provisioned
+// mode the credential comes from the platform, and this check is what proves
+// the dedicated admin DSN authenticates as the expected admin role rather
+// than as something else that happens to be named in the DSN's host.
+func VerifyAdminRole(ctx context.Context, db *sql.DB, expectedRole string) error {
+	var current string
+	var super, bypass bool
+	err := db.QueryRowContext(ctx, `
+		SELECT r.rolname, r.rolsuper, r.rolbypassrls
+		FROM pg_roles r WHERE r.rolname = current_user`).Scan(&current, &super, &bypass)
+	if err != nil {
+		return fmt.Errorf("admin role attributes: %w", err)
+	}
+	if expectedRole != "" && !strings.EqualFold(current, expectedRole) {
+		return fmt.Errorf(
+			"administrative pool is connected as %q but the configured administrative role is %q; "+
+				"the dedicated admin DSN must authenticate as the expected admin role",
+			current, expectedRole)
+	}
+	if super {
+		return fmt.Errorf(
+			"administrative role %q is a superuser, which bypasses row level security", current)
+	}
+	if bypass {
+		return fmt.Errorf(
+			"administrative role %q holds BYPASSRLS, which bypasses row level security", current)
+	}
+	return nil
+}
+
 // verifyRoleAttributes asserts the connected principal is not a superuser and
 // does not hold BYPASSRLS. Either attribute makes PostgreSQL skip row level
 // security entirely — including under FORCE — which would render every policy
