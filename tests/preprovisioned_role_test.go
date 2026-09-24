@@ -37,6 +37,13 @@ const (
 	preRTPass    = "pre-provisioned-runtime-cred"
 	preAdmPass   = "pre-provisioned-admin-cred"
 	goodRoleAtts = "LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE"
+
+	// Dedicated canary workspaces, following the rtWorkspaceA/B discipline of
+	// rls_runtime_role_test.go: this test must never touch the shared
+	// workspaceA/workspaceB fixtures, whose row ids and names other tests in
+	// the suite assert on.
+	ppWorkspaceA = "33333333-3333-3333-3333-333333333333"
+	ppWorkspaceB = "44444444-4444-4444-4444-444444444444"
 )
 
 // dsnWithRole rewrites a DSN's credential to the given role/password, keeping
@@ -235,12 +242,14 @@ func TestPreProvisionedModeEndToEnd(t *testing.T) {
 	}
 
 	// The pre-provisioned runtime role is still workspace-isolated from the
-	// very connection it serves on.
-	seedWorkspace(t, topo, workspaceB, "pre-provisioned-canary")
-	tx := bindWorkspace(t, rt, workspaceB)
+	// very connection it serves on. Both canary workspaces exist; from B's
+	// session B must be visible and A must not be.
+	seedWorkspace(t, topo, ppWorkspaceA, "pre-provisioned-other")
+	seedWorkspace(t, topo, ppWorkspaceB, "pre-provisioned-canary")
+	tx := bindWorkspace(t, rt, ppWorkspaceB)
 	var own, other int
-	require.NoError(t, tx.QueryRow(`SELECT count(*) FROM workspaces WHERE id = $1`, workspaceB).Scan(&own))
-	require.NoError(t, tx.QueryRow(`SELECT count(*) FROM workspaces WHERE id = $1`, workspaceA).Scan(&other))
+	require.NoError(t, tx.QueryRow(`SELECT count(*) FROM workspaces WHERE id = $1`, ppWorkspaceB).Scan(&own))
+	require.NoError(t, tx.QueryRow(`SELECT count(*) FROM workspaces WHERE id = $1`, ppWorkspaceA).Scan(&other))
 	require.GreaterOrEqual(t, own, 1, "the runtime role must see its own workspace")
 	require.Equal(t, 0, other,
 		"the pre-provisioned runtime role must not see another workspace's rows")
@@ -257,8 +266,8 @@ func TestPreProvisionedBootstrapFailsFast(t *testing.T) {
 		admAttrs string
 		wantMsg  string
 	}{
-		{"missing-runtime-role", "", goodRoleAtts, preRTRole + " does not exist"},
-		{"missing-admin-role", goodRoleAtts, "", preAdmRole + " does not exist"},
+		{"missing-runtime-role", "", goodRoleAtts, `"` + preRTRole + `" does not exist`},
+		{"missing-admin-role", goodRoleAtts, "", `"` + preAdmRole + `" does not exist`},
 		{"superuser-runtime", "LOGIN SUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE", goodRoleAtts, "superuser"},
 		{"bypass-rls-admin", goodRoleAtts, "LOGIN NOSUPERUSER BYPASSRLS NOCREATEDB NOCREATEROLE", "BYPASSRLS"},
 		{"no-login-runtime", "NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE", goodRoleAtts, "LOGIN role"},
