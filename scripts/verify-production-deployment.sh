@@ -190,6 +190,24 @@ assert_grep "ca-certificates installed" 'apk add --no-cache ca-certificates' "$D
 assert_grep "API binary built" 'go build .* -o /out/main \.' "$DOCKERFILE"
 assert_grep "worker binary built from the existing entrypoint" 'go build .* -o /out/worker \./cmd/worker' "$DOCKERFILE"
 assert_grep "build path is trimmed" '\-trimpath' "$DOCKERFILE"
+# Build identity must be stamped into both binaries, and must be verified
+# rather than assumed: a mistyped -X path yields a correctly shaped image whose
+# binaries silently report dev/unknown.
+assert_grep "version is linked into the binaries" '\-X ?austro-os/internal/buildinfo\.Version=' "$DOCKERFILE"
+assert_grep "source commit is linked into the binaries" '\-X ?austro-os/internal/buildinfo\.Commit=' "$DOCKERFILE"
+assert_grep "commit is supplied by the build, not derived in the stage" '^ARG COMMIT=' "$DOCKERFILE"
+assert_grep "identity is asserted before the image is accepted" 'does not embed COMMIT=' "$DOCKERFILE"
+assert_grep "image label records the linked version" 'org\.opencontainers\.image\.version="\$\{VERSION\}"' "$DOCKERFILE"
+assert_grep "image label records the source revision" 'org\.opencontainers\.image\.revision="\$\{COMMIT\}"' "$DOCKERFILE"
+# An ARG is scoped to the stage that declares it, so the runtime stage must
+# redeclare the ones its labels use. Without this the labels expand to empty and
+# the image disagrees with its own binaries.
+assert_grep "runtime stage redeclares the version arg" '^ARG VERSION=' "$DOCKERFILE"
+assert_grep "runtime stage redeclares the commit arg" '^ARG COMMIT=' "$DOCKERFILE"
+# No build date in the link flags: a timestamp would make two builds of the
+# same commit differ and break reproducibility.
+assert_no_grep "no build timestamp linked into the binaries" '\-X ?austro-os/internal/buildinfo\.[A-Za-z]*(Date|Time|Timestamp)=' "$DOCKERFILE"
+assert_no_grep "SOURCE_DATE_EPOCH is not set in the image build" 'SOURCE_DATE_EPOCH' "$DOCKERFILE"
 assert_no_grep_i "no secret baked into the image" '(ARG|ENV) +[A-Z_]*SECRET=' "$DOCKERFILE"
 assert_no_grep_i "no secret baked into the image (password)" '(ARG|ENV) +[A-Z_]*PASSWORD=' "$DOCKERFILE"
 

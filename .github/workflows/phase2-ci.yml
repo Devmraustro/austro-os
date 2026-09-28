@@ -124,7 +124,17 @@ jobs:
         # EXISTS + RLS policies) at startup via database.Initialize, then serves
         # HTTP. Building the binary once avoids a go run compile race during
         # the readiness wait.
-        run: go build -o /tmp/austro-api .
+        # This binary is uploaded as the x86_64 release artifact, so it carries
+        # the release identity. scripts/build-release.sh is the single source of
+        # truth for those flags; the direct build below exists only because the
+        # test stack also needs the binary in place before the readiness wait.
+        run: |
+          set -euo pipefail
+          PKG=austro-os/internal/buildinfo
+          COMMIT="$(git rev-parse HEAD)"
+          go build -trimpath \
+            -ldflags "-s -w -X $PKG.Version=1.0 -X $PKG.Commit=$COMMIT" \
+            -o /tmp/austro-api .
 
       - name: Install PostgreSQL client
         # apt-get applies no network timeout of its own, so a stalled mirror
@@ -244,7 +254,11 @@ jobs:
           AUSTRO_FOUNDER_USERNAME: founder
           AUSTRO_FOUNDER_PASSWORD: founder-dev-password-min-16-chars
         run: |
-          go build -o /tmp/austro-worker ./cmd/worker
+          PKG=austro-os/internal/buildinfo
+          COMMIT="$(git rev-parse HEAD)"
+          go build -trimpath \
+            -ldflags "-s -w -X $PKG.Version=1.0 -X $PKG.Commit=$COMMIT" \
+            -o /tmp/austro-worker ./cmd/worker
           nohup /tmp/austro-worker > /tmp/austro-worker.log 2>&1 &
           echo $! > /tmp/austro-worker.pid
           sleep 2
@@ -484,6 +498,29 @@ jobs:
             exit 1
           fi
           echo "PASS: $passes runtime security tests"
+
+      - name: Assert the uploaded release binaries report their own identity
+        # The artifact is uploaded with if: always(), so it can exist even when
+        # the suite failed. This step runs only on success, and it is what makes
+        # the uploaded binaries trustworthy: a consumer must be able to run
+        # --version and learn which commit they got.
+        if: success()
+        run: |
+          set -euo pipefail
+          expected="$(git rev-parse HEAD)"
+          for binary in /tmp/austro-api /tmp/austro-worker; do
+            actual="$($binary --version)"
+            echo "$binary: $actual"
+            case "$actual" in
+              *"commit=$expected"*)
+                echo "PASS: $binary reports commit $expected" ;;
+              *)
+                echo "::error::$binary does not report commit $expected"
+                echo "::error::got: $actual"
+                exit 1
+                ;;
+            esac
+          done
 
       - name: Upload x86_64 release binaries
         if: always()

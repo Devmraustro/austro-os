@@ -21,6 +21,7 @@ import (
 	"austro-os/internal/audit"
 	"austro-os/internal/auth"
 	"austro-os/internal/authz"
+	"austro-os/internal/buildinfo"
 	"austro-os/internal/composition"
 	"austro-os/internal/config"
 	"austro-os/internal/department"
@@ -44,6 +45,16 @@ import (
 const shutdownDrainTimeout = 75 * time.Second
 
 func main() {
+	// Build identity is answered before anything else, including configuration.
+	// A `version` subcommand that required a valid production environment would be
+	// useless exactly where it is most needed: on a host where the environment is
+	// misconfigured, or on a binary an operator is trying to identify. Nothing
+	// here reads the environment, so this cannot leak configuration.
+	if len(os.Args) > 1 && buildinfo.IsVersionArg(os.Args[1]) {
+		buildinfo.PrintVersion(os.Stdout, "api")
+		return
+	}
+
 	cfg, err := config.LoadStrict()
 	if err != nil {
 		logger.NewEntry("invalid-configuration").SetLevel("error").WithError(err).Log()
@@ -121,7 +132,8 @@ func main() {
 	pipelineHandler := api.NewPipelineHandler(rt.Orchestration)
 
 	logger.NewEntry("austro-os-startup").
-		With("version", "1.0").
+		With("version", buildinfo.Version).
+		With("commit", buildinfo.Commit).
 		With("environment", cfg.Environment).
 		With("composition", "ok").
 		With("ai_backend", rt.AIBackend).

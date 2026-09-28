@@ -12,6 +12,7 @@ import (
 	"austro-os/infrastructure/database"
 	"austro-os/infrastructure/postgres"
 	"austro-os/infrastructure/rabbitmq"
+	"austro-os/internal/buildinfo"
 	"austro-os/internal/composition"
 	"austro-os/internal/config"
 	logger "austro-os/internal/log"
@@ -19,6 +20,13 @@ import (
 )
 
 func main() {
+	// Build identity is answered before configuration, for the same reason as
+	// the API: identifying a binary must not require a working environment.
+	if len(os.Args) > 1 && buildinfo.IsVersionArg(os.Args[1]) {
+		buildinfo.PrintVersion(os.Stdout, "worker")
+		return
+	}
+
 	// Runtime entrypoints use LoadStrict: missing or insecure settings fail fast
 	// instead of silently degrading to development defaults. There is no
 	// insecure default RabbitMQ fallback here.
@@ -77,6 +85,8 @@ func main() {
 	}
 
 	logger.NewEntry("worker-composed").
+		With("version", buildinfo.Version).
+		With("commit", buildinfo.Commit).
 		With("ai_backend", rt.AIBackend).
 		With("publish_backend", rt.PublishBackend).
 		With("execution_worker", rt.ExecutionWorker != nil).

@@ -54,11 +54,14 @@ jobs:
         run: sudo apt-get update -y >/dev/null && sudo apt-get install -y binutils >/dev/null
 
       - name: Build main and worker for linux/arm64
+        # scripts/build-release.sh is the single source of truth for build
+        # identity, so the version and commit embedded here cannot drift from
+        # the other release builds. It refuses to stamp a dirty tree.
         run: |
           set -euo pipefail
-          mkdir -p /tmp/native
-          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o /tmp/native/main .
-          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o /tmp/native/worker ./cmd/worker
+          scripts/build-release.sh /tmp/native arm64
+          mv /tmp/native/austro-api    /tmp/native/main
+          mv /tmp/native/austro-worker /tmp/native/worker
           ls -l /tmp/native
 
       - name: Assert both binaries are AArch64 ELF executables
@@ -90,6 +93,25 @@ jobs:
               exit 1
             fi
             echo "PASS: $binary is statically linked (no INTERP segment)"
+          done
+
+      - name: Assert both binaries report the expected build identity
+        # Proves the release metadata is really inside the shipped ELF, not just
+        # in the build log. A binary that cannot name its own commit is a
+        # provenance gap, and this is what catches it before packaging.
+        run: |
+          set -euo pipefail
+          expected="$(git rev-parse HEAD)"
+          for binary in main worker; do
+            # qemu is not needed: this code path returns before any
+            # initialisation, so the arm64 binary runs under static
+            # interpretation only if the kernel is arm64. Instead of executing
+            # it, read the identity back out of the binary's own data.
+            if ! strings /tmp/native/"$binary" | grep -q "$expected"; then
+              echo "::error::$binary does not embed the source commit $expected"
+              exit 1
+            fi
+            echo "PASS: $binary embeds commit $expected"
           done
 
       - name: Package the release

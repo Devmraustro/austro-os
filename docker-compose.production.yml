@@ -122,6 +122,25 @@ x-austro-logging: &austro-logging
     max-size: "10m"
     max-file: "3"
 
+# Build identity for the application image. The API and the worker are the same
+# image, so they must be built from the same source; an anchor rather than two
+# copies makes drift between them impossible.
+#
+# The `:?` form is deliberate. Compose substitutes it and ABORTS with a named
+# error when the variable is unset or empty. That is the behaviour we want: a
+# release image that cannot name its source commit is worse than a release that
+# does not start, because it looks correct and cannot be traced later. Export
+# these before `docker compose build`:
+#
+#   export AUSTRO_BUILD_COMMIT="$(git rev-parse HEAD)"   # full 40-char SHA
+#   export AUSTRO_BUILD_VERSION=1.0
+#
+# The Dockerfile independently refuses to stamp an empty or non-SHA commit and
+# fails the build, so a mistaken value here fails twice over rather than once.
+x-austro-build-args: &austro-build-args
+  VERSION: "${AUSTRO_BUILD_VERSION:?set AUSTRO_BUILD_VERSION to the release version, e.g. 1.0}"
+  COMMIT: "${AUSTRO_BUILD_COMMIT:?set AUSTRO_BUILD_COMMIT to the full 40-character git SHA of the release commit}"
+
 services:
 
   # -------------------------------------------------------------------------
@@ -249,6 +268,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args: *austro-build-args
     image: austro-os:1.0
     # The image's default CMD is ./main (the API); this is stated explicitly so
     # the service definition does not depend on the image default.
@@ -311,6 +331,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args: *austro-build-args
     image: austro-os:1.0
     # The same image, a different entrypoint. Absolute path because the compose
     # working directory is an implementation detail.
