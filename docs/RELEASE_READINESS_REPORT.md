@@ -12,8 +12,9 @@ or committed, and no push.
 
 **Date:** 2026-09-27
 **Baseline commit (start of pass):** `224bb24089ccbf74dc08ce9c6b3831918c4157fb` (`main`)
-**Release-candidate commit (end of pass):** `91e9c8c3b084e3a96ebc912c9132fa458e299c2c`
-+ `995d07c66bfcf11fdd20e9491f685fa41940ad07`. Both local, neither pushed.
+**Release-candidate commit:** `91e9c8c3b084e3a96ebc912c9132fa458e299c2c`
+(56 reviewed paths), followed by two documentation-only commits. All local,
+none pushed.
 
 ---
 
@@ -474,10 +475,17 @@ live-path test.
 
 ## 5. Release candidate
 
-**Source: commit `995d07c66bfcf11fdd20e9491f685fa41940ad07`, tree
-`8cecea10e2e5685a050a2713c1e07244c152520e`.** The source was materialised with
-`git archive <commit>` into an empty directory, so the build cannot be influenced
-by the working directory, by untracked files, or by `.gitignore`.
+**Source: the commit that adds this report** — tree recorded in
+`release-manifest.json` alongside the artifact digests. The source was
+materialised with `git archive <commit>` into an empty directory, so the build
+cannot be influenced by the working directory, by untracked files, or by
+`.gitignore`.
+
+This wording is deliberate. A SHA cannot be embedded in a file that is part of
+the commit that SHA identifies, so the manifest — which lives outside the
+repository — is the authoritative record of the exact source compiled. The
+report points at it rather than restating a hash that would go stale on the next
+commit.
 
 Built with the repository's own convention, matching
 `.github/workflows/native-arm64-deploy.yml:60-61`:
@@ -733,9 +741,10 @@ chain.
 
 | | |
 |---|---|
-| Release-candidate commit | `91e9c8c3b084e3a96ebc912c9132fa458e299c2c` (56 files) + `995d07c66bfcf11fdd20e9491f685fa41940ad07` (evidence follow-up) |
-| Built from | `995d07c66bfcf11fdd20e9491f685fa41940ad07`, tree `8cecea10e2e5685a050a2713c1e07244c152520e` |
+| Release-candidate commit | `91e9c8c3b084e3a96ebc912c9132fa458e299c2c` — the 56 reviewed paths |
+| Follow-ups | two documentation-only commits; neither changes a single byte of any artifact, which the manifest's reproducible digests demonstrate |
 | Artifacts | 4 (linux/amd64, linux/arm64 × api, worker), byte-reproducible across two builds |
+| Build source | recorded in `release-manifest.json` (`provenance.git_commit`), which also pins the tree |
 | Frozen architecture gate | re-frozen to `9119aa71…` under approval; static verifier 189/0 |
 | Staged-tree verification | build 0, vet 0, tests 0 (26/26 packages) |
 | Pushed | **No** |
