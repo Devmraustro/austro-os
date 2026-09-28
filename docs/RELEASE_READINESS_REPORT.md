@@ -141,13 +141,14 @@ working tree can satisfy a test through a file that was never staged.
 | Files exported | 377 |
 | `go build ./...` | **exit 0** |
 | `go vet ./...` | **exit 0** |
-| `go test ./... -count=1` | **exit 1** — see below |
+| `go test ./... -count=1` (first attempt) | **exit 1** — see below |
+| After the fix below, `go test ./... -count=1` | **exit 0** — 26/26 packages |
 
 The build and vet results confirm the self-containment claim in §0: with the
 execution subsystem staged, the tracked wiring compiles. Had any of those
 sources been left unstaged, the export would not have compiled at all.
 
-The test run failed on exactly one subtest. Reproduced verbatim it reads:
+The first test run failed on exactly one subtest. Reproduced verbatim it reads:
 
 ```
 --- FAIL: TestPhase1ExitCriteria/16_<redacted-slug>_in_V1
