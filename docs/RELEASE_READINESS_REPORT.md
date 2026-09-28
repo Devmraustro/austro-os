@@ -11,7 +11,9 @@ production or AlwaysData host, no paid provider call, no secret printed, copied
 or committed, and no push.
 
 **Date:** 2026-09-27
-**Baseline commit:** `224bb24089ccbf74dc08ce9c6b3831918c4157fb` (`main`)
+**Baseline commit (start of pass):** `224bb24089ccbf74dc08ce9c6b3831918c4157fb` (`main`)
+**Release-candidate commit (end of pass):** `91e9c8c3b084e3a96ebc912c9132fa458e299c2c`
++ `995d07c66bfcf11fdd20e9491f685fa41940ad07`. Both local, neither pushed.
 
 ---
 
@@ -35,9 +37,9 @@ history showed `0a868d3d…` matched **all 297 commits** — the file had never 
 modified. It is a source-integrity pin on a single architecture-constitution
 test, not an architecture baseline and not a release commit.
 
-### 72 dirty paths is really 55
+### 72 dirty paths is really 56
 
-`git status` reported 58 tracked modifications. Only **28** have any content
+`git status` reported 58 tracked modifications. Only **28** had any content
 difference; the other **30** are `core.autocrlf` artifacts for which `git diff`
 returns empty. Adding the untracked files gives the real count:
 
@@ -46,8 +48,29 @@ returns empty. Adding the untracked files gives the real count:
 | Tracked with real content changes | 28 (5 of them already staged before this work began) |
 | Tracked "modified" with zero content diff (CRLF/stat artifacts) | 30 |
 | Untracked files | 28 (16 status entries; `internal/execution/` expands to 13) |
-| Committed in the release-candidate commit | **55** |
+| **Committed in the release-candidate commit** | **56** |
 | Deliberately excluded | `erl_crash.dump`, `specifications/Final_Technical_Specification.md`, the 30 CRLF artifacts |
+
+56 rather than 28 + 28 because the 5 pre-staged AlwaysData files are counted
+once, in the untracked column and the tracked column, not twice; and because
+`.gitignore` picked up a 29th real tracked change after that measurement was
+first taken. The committed figure is 24 modified + 32 new.
+
+**The count was verified, not estimated.** An earlier estimate of "40 paths" was
+wrong, which is why the final number comes from an explicit allowlist script
+that prints every path, classifies it, and asserts the set staged in the index is
+identical to the set reviewed. The script reported:
+
+```
+=== EXACT ALLOWLIST COUNT: 56 ===
+=== anything staged that is NOT in the allowlist? ===
+  none
+=== exclusions still unstaged? ===
+  correctly not staged: erl_crash.dump
+  correctly not staged: specifications/Final_Technical_Specification.md
+=== zero-diff artifacts present in worktree: 30
+=== of those wrongly present in allowlist  : 0
+```
 
 ### The execution subsystem was never in the repository
 
@@ -451,46 +474,67 @@ live-path test.
 
 ## 5. Release candidate
 
-Built with the repository's own convention (`Dockerfile`,
-`.github/workflows/native-arm64-deploy.yml`): `-trimpath -ldflags "-s -w"`,
-`CGO_ENABLED=0`. Binary names match what each install script expects
-(`austro-api`/`austro-worker`).
+**Source: commit `995d07c66bfcf11fdd20e9491f685fa41940ad07`, tree
+`8cecea10e2e5685a050a2713c1e07244c152520e`.** The source was materialised with
+`git archive <commit>` into an empty directory, so the build cannot be influenced
+by the working directory, by untracked files, or by `.gitignore`.
+
+Built with the repository's own convention, matching
+`.github/workflows/native-arm64-deploy.yml:60-61`:
+`-trimpath -ldflags '-s -w'`, `CGO_ENABLED=0`. Binary names match what each
+install script expects (`austro-api`/`austro-worker`).
 
 Location: `C:\Users\AUSTRO\AppData\Local\Temp\opencode\austro-release-candidate\`
 (manifest: `release-manifest.json`)
 
 | Target | File | Bytes | SHA-256 |
 |---|---|---|---|
-| linux/amd64 | `austro-api` | 13,963,426 | `985f0856e27848493cd3d2cb3aac41f42ea94129e3b2a6145d6e5602115e51b9` |
-| linux/amd64 | `austro-worker` | 12,001,442 | `b436c07d96f4393cf56ecb5a8c624b4cefa904eff8b43ff0b6339db68ce83ff2` |
-| linux/arm64 | `austro-api` | 13,107,362 | `3556e4e7f7c8e32becce3a142553dd8f8825705c6078b736bcd48880ea46fc77` |
-| linux/arm64 | `austro-worker` | 11,337,890 | `5f026cb974d37344947a2f2c1e0cdcd7d6df38c580e70cefecc34159f9333f1a` |
+| linux/amd64 | `austro-api` | 13,963,426 | `99dab4e2c7c731a578fa17434b8236224c87779f9e4ea4579dccb7d04c64515d` |
+| linux/amd64 | `austro-worker` | 12,001,442 | `9dcd4b86b9ac2b482fbdff778e9ed2b00b993efbb9f242c6f559ad345b3360d2` |
+| linux/arm64 | `austro-api` | 13,107,362 | `e07a5cb6d827d3d41d21a4cf7a1f82c3f4319463d7663f0e790421220f31d69b` |
+| linux/arm64 | `austro-worker` | 11,337,890 | `a3b82b0fb642416fd94c0540bc389bfe7a1cbecd04414916ea1e22d82cc1d4af` |
 
-Provenance: `go1.26.8 windows/amd64`, HEAD `224bb24089ccbf74dc08ce9c6b3831918c4157fb`,
-working tree **dirty**, `git diff HEAD` SHA-256
-`40d66d3eaccf12a7e8967600f50b409cf0df1d3294e9f3359a0e2e055864bfcc`.
+### Reproducibility — VERIFIED, not assumed
 
-### Reproducibility caveat
+The candidate was built **twice** from the same commit into separate output
+trees. All four artifacts are byte-for-byte identical:
 
-**This candidate is not reproducible from a commit.** The commit alone does not
-identify these binaries: 72 paths differ from HEAD, including untracked
-production-critical sources (`infrastructure/postgres/executions.go`,
-`infrastructure/rabbitmq/executions.go`). The diff fingerprint above is what pins
-the exact source compiled, and it is recorded for that reason.
+```
+amd64   main    REPRODUCIBLE  99dab4e2c7c731a578fa17434b8236224c87779f9e4ea4579dccb7d04c64515d
+amd64   worker  REPRODUCIBLE  9dcd4b86b9ac2b482fbdff778e9ed2b00b993efbb9f242c6f559ad345b3360d2
+arm64   main    REPRODUCIBLE  e07a5cb6d827d3d41d21a4cf7a1f82c3f4319463d7663f0e790421220f31d69b
+arm64   worker  REPRODUCIBLE  a3b82b0fb642416fd94c0540bc389bfe7a1cbecd04414916ea1e22d82cc1d4af
+```
 
-Two consequences an operator must understand:
+`-trimpath` is what makes this hold: it removes local filesystem paths from the
+binary, so the build no longer encodes the directory it happened to run in. The
+digests were then re-hashed from the delivered files and matched the manifest
+again, and the manifest's `git_commit` was checked against the repository HEAD.
 
-- No binary embeds its build identity. The repository has no version variable and
-  no `-X` ldflags, so nothing in the artifact or in `/health` reports which commit
-  or dirty state produced it. Identifying a running deployment requires the
-  manifest.
-- `erl_crash.dump` is present as an untracked file in the working tree. It is an
-  Erlang crash artifact from a prior RabbitMQ operation and must not be packaged
-  or committed.
+The earlier candidate is superseded. Its `linux/amd64` `austro-api` digest was
+`985f0856…` against `99dab4e2…` now, at an identical byte count. The difference
+is not noise: that build was made from a working tree whose execution subsystem
+was **untracked**, so it was compiled from sources that the fingerprint did not
+describe. Same size, different code.
 
-**Recommendation:** commit the tree, then rebuild so the candidate is identified
-by a commit alone. That was not done here because committing was out of scope for
-this pass.
+### What remains true of any candidate
+
+**No binary embeds its build identity.** The repository exposes no version
+variable and no `-X` ldflags target, so nothing inside the artifact or in
+`/health` reports which commit produced it. Identifying a running deployment
+requires this manifest. Adding a `version` variable populated by ldflags is the
+natural follow-up; it was not added here because it is new source and would
+require re-running the whole verification chain.
+
+Reproducibility is guaranteed **for this toolchain** (`go1.26.8`) and these
+flags. A different Go release may produce different bytes, so the toolchain
+version is recorded in the manifest alongside the digests.
+
+### Build hygiene
+
+`erl_crash.dump` and `specifications/Final_Technical_Specification.md` are
+absent from the commit and from the extracted build source; both were confirmed
+absent with `git cat-file` rather than assumed.
 
 ---
 
@@ -615,8 +659,7 @@ the control proves the check discriminates. **The new execution-transport block 
 `docker-compose.production.yml` is therefore machine-validated, not merely
 read over.**
 
-**Revised static verification: 188 passed, 1 failed** — the single remaining
-failure being the deliberate frozen-gate decision (B4).
+**Static verification after the approved re-freeze: 189 passed, 0 failed.**
 
 The naming sensitivity itself is worth fixing at some point so this does not
 mislead the next person: a `python3`-only probe reports a hard BLOCKED on a
@@ -629,14 +672,15 @@ code under test.
 
 | Phase | Status | Note |
 |---|---|---|
-| 1. Baseline: transport, providers, deployment | **DONE** | §1; the deployment-layer gap was the headline finding |
-| 2. Explicit RabbitMQ transport configuration | **DONE** | §2.1, §2.2, §2.3, §2.4 |
+| 1. Baseline: transport, providers, deployment | **DONE** | §0, §1; the deployment-layer gap and the untracked-subsystem finding were the headline results |
+| 2. Explicit RabbitMQ transport configuration | **DONE** | §2.1–§2.4, §0.2; staged tree builds, vets and tests clean on its own |
 | 3. Real AI provider configuration and smoke test | **PARTIAL** | Offline path verified; live path implemented but not run — B1 |
 | 4. Target deployment environment verification | **PARTIAL** | Native Windows stack re-verified; Compose never executed (B3); AlwaysData feasibility unresolved (B2) |
-| 5. Secrets handling | **DONE** | No secret printed, copied or committed; no new secret introduced; validation never echoes values |
+| 5. Secrets handling | **DONE** | §0; no secret printed, copied or committed; no new secret introduced; validation never echoes values |
 | 6. Smoke test of the built artifact | **PARTIAL** | Binaries rebuilt and restarted live, health 200, queue logged from config. Not a release-mode smoke test — the local run is the offline development configuration by design |
 | 7. Migration and rollback | **DONE (inherited, re-checked)** | Bootstrap is idempotent, applied at startup by the owner DSN; worker is gated on API health so migrations apply once. Native path has atomic symlink switch + rollback; Compose rollback is redeploy of the previous image tag |
-| 8. Test suite regression | **DONE** | Full live suite, `-count=1`, exit 0, 26/26 packages || 9. Release candidate | **DONE with caveat** | 4 artifacts, checksums, provenance; not commit-reproducible (B5) |
+| 8. Test suite regression | **DONE** | §0.2; full live suite, `-count=1`, exit 0, 26/26 packages, run against the exported index as well as the working tree |
+| 9. Release candidate | **DONE** | §5; 4 artifacts built twice from a commit, byte-identical, independently re-hashed |
 | 10. This report | **DONE** | — |
 
 ---
@@ -644,29 +688,62 @@ code under test.
 ## 8. What was deliberately not done
 
 - No deployment, and no connection to any production, staging or AlwaysData host.
+- No push. Two commits are local only.
 - No paid or external provider call of any kind.
 - No secret value read, displayed, copied into a file, or committed.
-- No `git commit`, `git add`, `git reset`, `git checkout` or `stash` — the
-  pre-existing dirty tree is untouched.
-- No edit to the frozen-gate SHA (B4).
-- No CI run; CI results could not be observed from this environment.
+- No `git reset`, `git checkout`, `git clean` or `stash`. The pre-existing dirty
+  tree was preserved; only the reviewed 56 paths were staged, by explicit path.
+- No edit to the banned-term list in the frozen-gate test, and no tightening of
+  the `.githubx` prefix behaviour, since either would need a further approved
+  re-freeze.
+- No `git add .` and no directory-level staging at any point.
+- No CI run; CI results could not be observed from this environment. The claim in
+  `deploy/alwaysdata/RELEASE.md` that "all CI workflows pass" is inherited from
+  earlier work and is **not** verified by this pass.
 
 ---
 
 ## 9. To reach `RELEASE CANDIDATE READY — VERIFIED SCOPE`
 
-1. Decide B4 — re-freeze the gate at `9119aa71…` as an approved change, or revert
-   `tests/phase1_exit_criteria_test.go`. It is the only remaining
-   static-verification failure. Then resolve B5 (commit) and rebuild, so the
-   candidate is identified by a commit.
-2. Run the live provider test (§4) with a real credential, and add the equivalent
-   for the `generic-http` publishing backend.
-3. Confirm AlwaysData worker feasibility (B2), or drop AlwaysData from the
-   release scope and target 1/2/6, which are the documented supported targets.
-4. Run `docker compose -f docker-compose.production.yml config`, then
-   `scripts/deploy.sh` and `scripts/healthcheck.sh` on a real Docker host (B3).
+B4 and B5 are closed. The remaining work is external, and none of it can be
+settled from this environment:
 
-Items 2–4 are operator actions on real infrastructure. Nothing in this pass can
-substitute for them, and no amount of local test coverage would. Item 1 is a
-decision, not a task, and is deliberately left open rather than resolved by
-rewriting the gate.
+1. **B1** — run the live provider test (§4) with a real credential, obtained
+   securely and with approval for a possibly billable request, and add the
+   equivalent for the `generic-http` publishing backend.
+2. **B2** — obtain authoritative AlwaysData documentation or account evidence
+   that a supervised, persistent, non-HTTP worker is supported. If that cannot
+   be obtained, drop AlwaysData from the release scope and target 1/2/6, which
+   are the documented supported targets.
+3. **B3** — run `docker compose -f docker-compose.production.yml config` and a
+   real Compose bring-up on a machine with a Docker engine.
+4. Add a `version` variable populated via ldflags so a binary reports its own
+   provenance instead of depending on this manifest (§5).
+
+Items 1–3 are operator actions on real infrastructure. Nothing in this pass can
+substitute for them, and no amount of local test coverage would. Item 4 is a
+small code change that would close the last self-inflicted gap in the candidate
+chain.
+
+---
+
+## 10. Final state
+
+**Status: RELEASE READINESS INCOMPLETE — BLOCKERS REMAIN**
+
+| | |
+|---|---|
+| Release-candidate commit | `91e9c8c3b084e3a96ebc912c9132fa458e299c2c` (56 files) + `995d07c66bfcf11fdd20e9491f685fa41940ad07` (evidence follow-up) |
+| Built from | `995d07c66bfcf11fdd20e9491f685fa41940ad07`, tree `8cecea10e2e5685a050a2713c1e07244c152520e` |
+| Artifacts | 4 (linux/amd64, linux/arm64 × api, worker), byte-reproducible across two builds |
+| Frozen architecture gate | re-frozen to `9119aa71…` under approval; static verifier 189/0 |
+| Staged-tree verification | build 0, vet 0, tests 0 (26/26 packages) |
+| Pushed | **No** |
+| Deployed | **No** |
+| Open blockers | B1 live AI provider, B2 AlwaysData worker topology, B3 Docker/Compose unexecuted |
+
+The code is in a state where a release decision can be made. The three remaining
+blockers are all about *external facts that cannot be established from this
+environment* — a live provider response, a hosting platform's actual capabilities,
+and a working Docker engine. Each is stated with what evidence would close it
+rather than left as a vague "unverified".
