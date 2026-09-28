@@ -1521,6 +1521,200 @@ paths:
       principles:
         - Principle 11 — Human Oversight
         - Principle 4 — Quality Over Speed
+  /tasks/{id}/execute:
+    post:
+      summary: Admit a task to the AI execution runtime
+      description: |
+        Admits one task to the execution runtime for the named AI employee inside
+        the caller's workspace.
+
+        The workspace, the task and the employee are all resolved from data the
+        caller can already see: the workspace comes from the verified token, and
+        the task and AI employee are looked up inside it. Nothing in the request
+        selects a tenant. At admission the server captures a sanitized snapshot
+        of the task and employee into the execution context so the worker never
+        re-reads raw data at run time; provider credentials never enter the
+        snapshot.
+
+        A fresh admission returns 202 with created=true. A repeated call with
+        the same idempotency_key and an identical payload replays the existing
+        execution: 202 (created=false) while it is pending or running, 200 with
+        the result once it is completed. A repeated key with a different payload
+        is a 409, and an employee at its concurrency ceiling is a 429.
+
+        max_attempts is optional and defaults to 3 server-side; the retry
+        scheduler only retries errors classified as retryable, up to that bound.
+      operationId: executeTask
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExecuteTaskRequest'
+      responses:
+        '200':
+          description: The execution already finished; the idempotent replay returns its result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Execution'
+        '202':
+          description: The execution was admitted (or a pending/running execution was replayed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Execution'
+        '400':
+          description: Malformed task id, missing ai_employee_id, or an unknown body field
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Caller has no workspace context
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such task or AI employee in the caller's workspace
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The idempotency key already names an execution with a different payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: The AI employee is at its max_concurrent_executions ceiling
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 1 — Vision First
+        - Principle 9 — Security by Design
+  /executions/{id}:
+    get:
+      summary: Read one execution
+      description: |
+        Returns a single execution. The id is the execution, not a workspace: it
+        is resolved only inside the caller's own workspace, so an id belonging
+        to another tenant is not found rather than forbidden.
+      operationId: getExecution
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The execution
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Execution'
+        '400':
+          description: Malformed execution id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Caller has no workspace context
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such execution in the caller's workspace
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 13 — Observability
+        - Principle 10 — Privacy by Design
+  /executions/{id}/cancel:
+    post:
+      summary: Cancel an execution
+      description: |
+        Cancels a pending or running execution and is idempotent: an execution
+        already in a terminal state is returned as-is rather than rejected. A
+        cancelled execution stops consuming the AI employee's concurrency
+        capacity and can never be taken out on a lease again.
+      operationId: cancelExecution
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '202':
+          description: The cancellation was accepted and the current execution state is returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Execution'
+        '400':
+          description: Malformed execution id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Caller has no workspace context
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such execution in the caller's workspace
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      principles:
+        - Principle 11 — Human Oversight
+        - Principle 9 — Security by Design
   /knowledge:
     post:
       summary: Create a knowledge document
@@ -2933,6 +3127,102 @@ components:
             - cancelled
             - rejected
             - failed
+    ExecuteTaskRequest:
+      type: object
+      description: |
+        Admission body for the execution runtime. ai_employee_id is required and
+        names the AI employee that runs the task; both are resolved inside the
+        caller's workspace. max_attempts is optional (default 3) and caps how
+        many attempts the retry scheduler may make; idempotency_key, when
+        present, makes repeated admission replay the same execution.
+      required:
+        - ai_employee_id
+      additionalProperties: false
+      properties:
+        ai_employee_id:
+          type: string
+          format: uuid
+        max_attempts:
+          type: integer
+          minimum: 1
+          default: 3
+        idempotency_key:
+          type: string
+          maxLength: 255
+    Execution:
+      type: object
+      description: |
+        One execution of a task by an AI employee. It is workspace-scoped tenant
+        data: status advances only through the runtime (claim, worker, retry
+        scheduler, recovery) or the cancel command. result_json carries the
+        persisted provider output verbatim once the execution completes.
+      required:
+        - id
+        - workspace_id
+        - ai_employee_id
+        - status
+        - attempt
+        - max_attempts
+        - created
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        workspace_id:
+          type: string
+          format: uuid
+        ai_employee_id:
+          type: string
+          format: uuid
+        task_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [pending, running, completed, failed, cancelled]
+        attempt:
+          type: integer
+          description: Attempts actually started; increments only on claim.
+        max_attempts:
+          type: integer
+        idempotency_key:
+          type: string
+        last_error_code:
+          type: string
+          enum:
+            - none
+            - deadline_exceeded
+            - provider_timeout
+            - rate_limit
+            - unavailable
+            - canceled
+            - not_found
+            - unknown
+            - worker_lease_expired
+        error_detail:
+          type: string
+        result_json:
+          description: Persisted provider output, present once completed.
+        created:
+          type: boolean
+          description: true on a fresh admission; false on an idempotent replay.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        failed_at:
+          type: string
+          format: date-time
+        cancelled_at:
+          type: string
+          format: date-time
     AuditEventView:
       type: object
       description: |

@@ -2,6 +2,7 @@ package austro_os_test
 
 import (
 	"testing"
+	"time"
 
 	"austro-os/internal/config"
 
@@ -84,11 +85,18 @@ func TestConfigInvalidValueRejected(t *testing.T) {
 // both Validate and LoadStrict.
 func TestConfigValidPasses(t *testing.T) {
 	cfg := &config.Config{
-		PostgresDSN:      "postgres://austro:austro@db:5432/austro?sslmode=disable",
-		RedisAddr:        "redis:6379",
-		RabbitMQURL:      "amqp://austro:austro@rabbitmq:5672",
-		JWTSecret:        "prod-access-secret-1234567890-abcdef",
-		JWTRefreshSecret: "prod-refresh-secret-1234567890-abcdef",
+		PostgresDSN:                "postgres://austro:austro@db:5432/austro?sslmode=disable",
+		RedisAddr:                  "redis:6379",
+		RabbitMQURL:                "amqp://austro:austro@rabbitmq:5672",
+		JWTSecret:                  "prod-access-secret-1234567890-abcdef",
+		JWTRefreshSecret:           "prod-refresh-secret-1234567890-abcdef",
+		ExecutionQueue:             config.DefaultExecutionQueue,
+		ExecutionLeaseTTL:          60 * time.Second,
+		ExecutionHeartbeatInterval: 20 * time.Second,
+		ExecutionWindow:            50 * time.Second,
+		ExecutionSweepInterval:     5 * time.Second,
+		ExecutionRetryBackoffBase:  2 * time.Second,
+		ExecutionRetryBackoffMax:   2 * time.Minute,
 	}
 	require.NoError(t, cfg.Validate())
 

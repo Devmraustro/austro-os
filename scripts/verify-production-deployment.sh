@@ -32,8 +32,37 @@ ENV_EXAMPLE=".env.example"
 NGINX_CONF="deploy/nginx/nginx.conf"
 CADDYFILE="deploy/caddy/Caddyfile"
 
+# Immutability pin on the Phase 1 architecture-constitution test. The gate fails
+# if this file's bytes change, so that a weakened architecture check cannot be
+# merged quietly. It is a source-integrity pin, not a release commit.
+#
+# Decision history
+# ----------------
+# 0a868d3da41f175cc263a6301f806e3bc1125093dab9cf8db98bb17b54e8769a
+#   Pinned at commit 224bb24089ccbf74dc08ce9c6b3831918c4157fb. This digest
+#   matched the file at every one of the 297 commits in history at the time of
+#   the re-freeze decision - the file had never been modified.
+#
+# 9119aa71aa1cd95eda7fa0aeabf14042a960770ce4ea1e3fc896f6f7ec4b0a67
+#   Re-frozen with user approval (Option B) for the release candidate. Exactly
+#   one line changed, line 200, inside subtest 16
+#   ("no k8s/microservices/kafka/elasticsearch in V1"):
+#       - strings.HasPrefix(filepath.ToSlash(path), root+"/.github")
+#       + strings.HasPrefix(filepath.ToSlash(path), filepath.ToSlash(root)+"/.github")
+#   The `.github` skip in that subtest compared a forward-slashed path against a
+#   root that still contained backslashes on Windows, so the comparison never
+#   matched and the forbidden-technology scan ran over the CI workflows that the
+#   skip exists to exclude. Those workflows legitimately name the banned
+#   technologies (`.github/workflows/phase1-exit-criteria.yml` names "k8s",
+#   `.github/workflows/production-deployment.yml` names "kubernetes" and "k8s"),
+#   so on Windows the gate failed spuriously. On Linux the root is already
+#   slash-separated, making the new form a no-op, so the banned-word list, every
+#   other subtest, and the gate's strictness are unchanged.
+#
+# Digest recomputed from the exact final file bytes and cross-checked against
+# three independent implementations (sha256sum, openssl dgst, python hashlib).
 FROZEN_FILE="tests/phase1_exit_criteria_test.go"
-FROZEN_SHA="0a868d3da41f175cc263a6301f806e3bc1125093dab9cf8db98bb17b54e8769a"
+FROZEN_SHA="9119aa71aa1cd95eda7fa0aeabf14042a960770ce4ea1e3fc896f6f7ec4b0a67"
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -698,6 +727,10 @@ for var in \
     AUSTRO_PUBLISH_BACKEND \
     AUSTRO_PUBLISH_WEBHOOK_URL \
     AUSTRO_PUBLISH_TOKEN \
+    AUSTRO_EXECUTION_TRANSPORT_BACKEND \
+    AUSTRO_EXECUTION_QUEUE \
+    AUSTRO_EXECUTION_WORKSPACE_IDS \
+    AUSTRO_ALLOW_STUB_BACKENDS \
     AUSTRO_ENV; do
     if grep -q "$var" "$ENV_EXAMPLE"; then
         pass "documented in .env.example: $var"
@@ -705,6 +738,96 @@ for var in \
         fail "undocumented in .env.example: $var"
     fi
 done
+
+# ---------------------------------------------------------------------------
+printf '\n=== 11. AI execution transport contract ===\n'
+# ---------------------------------------------------------------------------
+# The execution subsystem was implemented, tested against a real broker, and
+# absent from every deployment artifact at once: with nothing setting these,
+# a production deployment inherited the offline stub transport and, with no
+# workspaces configured, started no dispatcher at all — while every health
+# check and monitoring probe still reported the deployment healthy.
+#
+# So each artifact an operator copies has to name the transport explicitly. A
+# setting nobody can find in the file they deployed is not a configurable
+# setting.
+EXECUTION_VARS=(
+    AUSTRO_EXECUTION_TRANSPORT_BACKEND
+    AUSTRO_EXECUTION_QUEUE
+    AUSTRO_EXECUTION_WORKSPACE_IDS
+    AUSTRO_ALLOW_STUB_BACKENDS
+)
+PROD_ENV_TEMPLATES=(
+    "deploy/alwaysdata/austro.env.alwaysdata"
+    "deploy/native/austro.env.example"
+    "$ENV_EXAMPLE"
+    "$COMPOSE"
+)
+# The subset of the above that genuinely claims to be a production environment.
+# .env.example is excluded, and the reason is given at the stub check below.
+PROD_ONLY_TEMPLATES=(
+    "deploy/alwaysdata/austro.env.alwaysdata"
+    "deploy/native/austro.env.example"
+    "$COMPOSE"
+)
+for artifact in "${PROD_ENV_TEMPLATES[@]}"; do
+    if [[ ! -f "$artifact" ]]; then
+        fail "deployment artifact is missing: $artifact"
+        continue
+    fi
+    for var in "${EXECUTION_VARS[@]}"; do
+        if grep -q "$var" "$artifact"; then
+            pass "$artifact declares $var"
+        else
+            fail "$artifact does not declare $var"
+        fi
+    done
+done
+
+# The production compose file must select the broker-backed transport by default
+# rather than inheriting the development stub, so a production deployment fails
+# loudly at deploy time instead of at application-log-reading time.
+assert_grep "production compose defaults the execution transport to rabbitmq" \
+    'AUSTRO_EXECUTION_TRANSPORT_BACKEND:-rabbitmq' "$COMPOSE"
+
+# The development compose file must stay on the offline defaults. A release gate
+# that broke `docker compose up` on a fresh clone would have been "fixed" by
+# being removed.
+assert_no_grep "development compose leaves the execution transport on its offline default" \
+    'AUSTRO_EXECUTION_TRANSPORT_BACKEND' docker-compose.yml
+assert_no_grep "development compose leaves execution workspaces unset" \
+    'AUSTRO_EXECUTION_WORKSPACE_IDS' docker-compose.yml
+
+# A production template must not hand an operator a configuration that runs no
+# real work. Every stub adapter answers successfully without contacting a real
+# service, so an active *_BACKEND=stub in a file that sets AUSTRO_ENV=production
+# is a deployment that serves traffic, reports healthy and does nothing.
+#
+# .env.example is deliberately NOT in this list. It is the general example, it
+# keeps AUSTRO_ENV commented out, and its active stubs are what make a fresh
+# clone runnable with no account and no egress — that is the property this
+# project is built around, and a gate that forbade it would push every new user
+# towards a paid provider. What matters instead is that the file cannot claim to
+# be a production environment while doing so, which the next check enforces.
+for template in "${PROD_ONLY_TEMPLATES[@]}"; do
+    [[ -f "$template" ]] || continue
+    if grep -Eq '^[[:space:]]*AUSTRO_(AI|PUBLISH|EXECUTION_TRANSPORT)_BACKEND=stub' "$template"; then
+        fail "$template ships an active stub backend; comment it out so the choice is explicit"
+    else
+        pass "$template ships no active stub backend"
+    fi
+done
+
+# The two production templates must actually claim production (otherwise the
+# rule above is checking files that were never production), and the general
+# example must not: shipping stubs is only safe while the environment is not
+# declared production, and the application refuses a stub the moment it is.
+for template in "deploy/alwaysdata/austro.env.alwaysdata" "deploy/native/austro.env.example"; do
+    assert_grep "$template declares AUSTRO_ENV=production" \
+        '^[[:space:]]*AUSTRO_ENV=production' "$template"
+done
+assert_no_grep "$ENV_EXAMPLE does not declare itself a production environment while shipping stubs" \
+    '^[[:space:]]*AUSTRO_ENV=production' "$ENV_EXAMPLE"
 
 # ---------------------------------------------------------------------------
 printf '\n=== SUMMARY ===\n'

@@ -63,6 +63,7 @@ func main() {
 	rt, err := composition.Compose(cfg, composition.Stores{
 		Publications: postgres.NewPublicationStore(db),
 		Pipelines:    postgres.NewPipelineStore(db),
+		Executions:   postgres.NewExecutionStore(db),
 	}, composition.Sinks{
 		AIDecision:    rabbitmq.NewDecisionSink(sink),
 		PublishAudit:  auditstore.NewPublishSink(auditStore),
@@ -78,6 +79,7 @@ func main() {
 	logger.NewEntry("worker-composed").
 		With("ai_backend", rt.AIBackend).
 		With("publish_backend", rt.PublishBackend).
+		With("execution_worker", rt.ExecutionWorker != nil).
 		With("usage_limit_per_workspace", cfg.AIUsageLimitPerWorkspace).
 		Log()
 
@@ -95,6 +97,30 @@ func main() {
 		os.Exit(1)
 	}
 
+	// AI execution dispatch consumer. The composed runtime derives the worker
+	// from the same execution store and provider the API admits into; it runs on
+	// the dedicated execution queue so dispatch messages never collide with
+	// pipeline/publication events. The store being unable to materialize is a
+	// composition defect, so the worker process refuses to start without it.
+	if rt.ExecutionWorker == nil {
+		fmt.Fprintf(os.Stderr, "Composition did not wire the AI execution worker\n")
+		os.Exit(1)
+	}
+	execWP := worker.NewWorker(worker.WorkerConfig{
+		URL: cfg.RabbitMQURL,
+		// The same AUSTRO_EXECUTION_QUEUE the dispatcher publishes to. Both
+		// processes resolve it from configuration (defaulting to
+		// config.DefaultExecutionQueue) so a deployment that renames the queue
+		// renames it in one place; a name pinned here instead would leave the
+		// dispatcher publishing into a queue nothing consumes, with both
+		// processes reporting healthy.
+		QueueName: cfg.ExecutionQueue,
+	}, newExecutionHandler(rt.ExecutionWorker))
+	if err := execWP.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to start execution worker: %v\n", err)
+		os.Exit(1)
+	}
+
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
@@ -102,6 +128,7 @@ func main() {
 		<-stop
 		logger.NewEntry("worker-shutting-down").Log()
 		wp.Stop()
+		execWP.Stop()
 		os.Exit(0)
 	}()
 

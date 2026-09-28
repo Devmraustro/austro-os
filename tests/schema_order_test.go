@@ -24,6 +24,8 @@ func TestSchemaOrderWorkspacesBeforeCeos(t *testing.T) {
 		"founders", "workspaces", "ceos", "departments", "teams",
 		"ai_employees", "audit_events", "tasks", "knowledge_documents",
 		"memory_embeddings", "publications", "pipelines", "users",
+		"ai_executions", "ai_execution_retries", "retry_dispatch_log",
+		"ai_execution_dlq", "ai_tool_calls", "execution_contexts",
 	}
 	for _, table := range tables {
 		marker := "CREATE TABLE IF NOT EXISTS " + table + " ("
@@ -56,8 +58,8 @@ func TestSchemaOrderWorkspacesBeforeCeos(t *testing.T) {
 func TestSchemaRLSPoliciesIntact(t *testing.T) {
 	content := readSchemaSource(t)
 
-	if got := strings.Count(content, "CREATE POLICY workspace_isolation_policy"); got != 10 {
-		t.Errorf("expected 10 workspace_isolation_policy declarations, got %d", got)
+	if got := strings.Count(content, "CREATE POLICY workspace_isolation_policy"); got != 16 {
+		t.Errorf("expected 16 workspace_isolation_policy declarations, got %d", got)
 	}
 	if !strings.Contains(content, "CREATE POLICY founder_org_policy") {
 		t.Error("founder_org_policy declaration missing")

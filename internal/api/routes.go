@@ -71,6 +71,15 @@ func Routes() []Route {
 		{http.MethodGet, "/tasks/{id}"},
 		{http.MethodPatch, "/tasks/{id}"},
 		{http.MethodPost, "/tasks/{id}/transition"},
+		// AI execution (the Creator runtime). Executions are workspace-scoped
+		// tenant data like tasks: the workspace is taken from the verified
+		// claims, these paths carry no workspace segment, and the {id} is the
+		// execution — or, on the admission route, the task the caller asks the
+		// AI employee to run. Cancellation is a named command rather than a
+		// status write, mirroring the transition route's reasoning for tasks.
+		{http.MethodPost, "/tasks/{id}/execute"},
+		{http.MethodGet, "/executions/{id}"},
+		{http.MethodPost, "/executions/{id}/cancel"},
 		// Knowledge management (ADR-007 contract, routing completed by ADR-023).
 		// Workspace-scoped like tasks: no workspace segment exists to forge, and
 		// the {id} is the document, resolved only inside the caller's workspace.

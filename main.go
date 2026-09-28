@@ -24,6 +24,7 @@ import (
 	"austro-os/internal/composition"
 	"austro-os/internal/config"
 	"austro-os/internal/department"
+	"austro-os/internal/execution"
 	"austro-os/internal/knowledge"
 	logger "austro-os/internal/log"
 	"austro-os/internal/memory"
@@ -87,12 +88,18 @@ func main() {
 
 	authHandler := api.NewAuthHandler(cfg, jwtSvc, postgres.NewUserStore(db)).SetAuditSink(auditStore)
 
+	// AI execution store. It is created before composition because the composed
+	// runtime derives the admission service and the worker from it; the same
+	// instance is reused below for dispatch, keeping one store per process.
+	executionStore := postgres.NewExecutionStore(db)
+
 	// The API composes the full runtime with the production adapters: PostgreSQL
 	// stores, Redis memory, RabbitMQ event/audit sinks. This proves the wiring
 	// and keeps backend selection honest on a live process.
 	rt, err := composition.Compose(cfg, composition.Stores{
 		Publications: postgres.NewPublicationStore(db),
 		Pipelines:    postgres.NewPipelineStore(db),
+		Executions:   executionStore,
 	}, composition.Sinks{
 		AIDecision:    rabbitmq.NewDecisionSink(sink),
 		PublishAudit:  auditstore.NewPublishSink(auditStore),
@@ -119,8 +126,58 @@ func main() {
 		With("composition", "ok").
 		With("ai_backend", rt.AIBackend).
 		With("publish_backend", rt.PublishBackend).
+		With("execution_transport_backend", rt.ExecutionTransportBackend).
 		With("usage_limit_per_workspace", cfg.AIUsageLimitPerWorkspace).
 		Log()
+
+	// AI execution dispatch. The dispatcher is the only consumer of the claim
+	// and stale-reclaim paths (fenced in SQL by lease owner and generation), and
+	// one sweep loop per configured workspace runs alongside the API. Each
+	// claimed retry is handed to the configured transport: the deterministic
+	// stub by default, a broker-backed publisher once one is selected. The loop
+	// is deliberately not started when no workspace ids are configured, which is
+	// the off switch for deployments that want admission without a local
+	// dispatcher.
+	dispatchCtx, stopDispatch := context.WithCancel(context.Background())
+	if len(cfg.ExecutionWorkspaceIDs) > 0 {
+		var dispatchPub execution.Publisher
+		switch cfg.ExecutionTransportBackend {
+		case "", config.ExecutionTransportBackendStub:
+			dispatchPub = execution.NewStubPublisher()
+		case config.ExecutionTransportBackendRabbitMQ:
+			// The queue name comes from configuration (AUSTRO_EXECUTION_QUEUE,
+			// default config.DefaultExecutionQueue) for the same reason the
+			// worker resolves it from configuration: the two sides are separate
+			// processes and a name pinned on only one of them silently splits
+			// the pipeline in half.
+			execSink, serr := rabbitmq.NewReconnectingSink(cfg.RabbitMQURL, cfg.ExecutionQueue)
+			if serr != nil {
+				logger.NewEntry("execution-transport-sink-failed").SetLevel("error").WithError(serr).Log()
+				os.Exit(1)
+			}
+			defer execSink.Close()
+			dispatchPub = rabbitmq.NewExecutionPublisher(execSink)
+		default:
+			logger.NewEntry("execution-transport-unknown").SetLevel("error").
+				With("backend", cfg.ExecutionTransportBackend).Log()
+			os.Exit(1)
+		}
+		execDispatcher := execution.NewDispatcher(
+			executionStore, dispatchPub, execution.NewWorkerID(),
+			cfg.ExecutionLeaseTTL, cfg.ExecutionRetryBackoffBase, cfg.ExecutionRetryBackoffMax,
+		)
+		for _, ws := range cfg.ExecutionWorkspaceIDs {
+			go execDispatcher.Run(dispatchCtx, ws, cfg.ExecutionSweepInterval)
+		}
+		logger.NewEntry("execution-dispatch-started").
+			With("workspaces", len(cfg.ExecutionWorkspaceIDs)).
+			With("transport", cfg.ExecutionTransportBackend).
+			With("queue", cfg.ExecutionQueue).Log()
+	} else {
+		stopDispatch()
+		logger.NewEntry("execution-dispatch-idle").
+			With("reason", "no AUSTRO_EXECUTION_WORKSPACE_IDS configured").Log()
+	}
 
 	// Workspaces are organization-level records, so the store runs on the admin
 	// handle rather than the runtime one. The runtime role is deliberately not
@@ -196,6 +253,14 @@ func main() {
 	aiEmployeeService := aiemployee.NewService(aiEmployeeStore, teamResolverForEmployee)
 	aiEmployeeHandler := api.NewAIEmployeeHandler(aiEmployeeService).SetAuditSink(auditStore)
 
+	// AI execution. The store runs on the unprivileged runtime handle so RLS
+	// confines executions to the caller's workspace. The handler composes the
+	// task and employee services so the admission snapshot is built only from
+	// data the caller can already see; admission captures that snapshot in the
+	// same transaction that persists the execution. The service itself comes
+	// from the composed runtime (rt.Execution), built from the same store.
+	executionHandler := api.NewExecutionHandler(rt.Execution, taskService, aiEmployeeService).SetAuditSink(auditStore)
+
 	// The browser application (ADR-016) is embedded in the binary. Loading it
 	// here turns a missing asset into a startup failure rather than a runtime
 	// 404 on a blank page.
@@ -258,6 +323,13 @@ func main() {
 		{Method: http.MethodGet, Pattern: "/tasks/{id}"}:             taskHandler.Get,
 		{Method: http.MethodPatch, Pattern: "/tasks/{id}"}:           taskHandler.Update,
 		{Method: http.MethodPost, Pattern: "/tasks/{id}/transition"}: taskHandler.Transition,
+
+		// AI execution. Admission, the single read and human cancellation are
+		// protected routes reached only through an explicit rbac rule; the
+		// workspace comes from the verified claims and RLS binds it in the store.
+		{Method: http.MethodPost, Pattern: "/tasks/{id}/execute"}:     executionHandler.Execute,
+		{Method: http.MethodGet, Pattern: "/executions/{id}"}:         executionHandler.Get,
+		{Method: http.MethodPost, Pattern: "/executions/{id}/cancel"}: executionHandler.Cancel,
 
 		// Knowledge management. Same shape as tasks: every route is protected,
 		// so each is reachable only through an explicit RBAC rule, and the store
@@ -360,6 +432,7 @@ func main() {
 		if err := srv.Shutdown(ctx); err != nil {
 			logger.NewEntry("austro-os-shutdown-drain-incomplete").SetLevel("error").WithError(err).Log()
 		}
+		stopDispatch()
 		close(idleClosed)
 	}()
 

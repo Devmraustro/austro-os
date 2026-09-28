@@ -6,13 +6,16 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"austro-os/internal/ai"
 	"austro-os/internal/composition"
 	"austro-os/internal/config"
+	"austro-os/internal/execution"
 	"austro-os/internal/orchestration"
 	"austro-os/internal/publish"
 
@@ -141,6 +144,14 @@ func (m *memPipelines) Update(_ context.Context, workspaceID uuid.UUID, p *orche
 }
 
 var _ orchestration.PipelineStore = (*memPipelines)(nil)
+
+// fakeExecutionStore satisfies the execution ports without implementing any
+// behaviour: composition only stores the object, never calls it, so the
+// embedded nil interfaces are enough to prove the wiring.
+type fakeExecutionStore struct {
+	execution.ExecutionStore
+	execution.Materializer
+}
 
 // ---- helpers ----
 
@@ -424,5 +435,69 @@ func TestComposeStubReviewerBypassesGateway(t *testing.T) {
 	}
 	if _, ok := rt.AIProvider.(ai.StubProvider); !ok {
 		t.Fatalf("expected stub provider under stub backend, got %T", rt.AIProvider)
+	}
+}
+
+// TestComposeWiresExecutionRuntime proves the composed runtime derives the AI
+// execution admission service and the worker from the supplied execution store
+// (which must double as the materializer) and surfaces the resolved dispatch
+// transport selector. No store means no execution runtime, exactly like the
+// other optional ports.
+func TestComposeWiresExecutionRuntime(t *testing.T) {
+	cfg := stubCfg()
+	cfg.ExecutionLeaseTTL = 60 * time.Second
+	cfg.ExecutionHeartbeatInterval = 20 * time.Second
+	cfg.ExecutionWindow = 50 * time.Second
+	cfg.ExecutionRetryBackoffBase = 2 * time.Second
+	cfg.ExecutionRetryBackoffMax = 2 * time.Minute
+
+	rt, err := composition.Compose(cfg, composition.Stores{
+		Publications: newMemPublications(),
+		Pipelines:    newMemPipelines(),
+		Executions:   fakeExecutionStore{},
+	}, composition.Sinks{})
+	if err != nil {
+		t.Fatalf("Compose: %v", err)
+	}
+	if rt.Execution == nil {
+		t.Fatalf("expect execution admission service to be wired")
+	}
+	if rt.ExecutionWorker == nil {
+		t.Fatalf("expect execution worker to be wired")
+	}
+	if rt.ExecutionTransportBackend != config.ExecutionTransportBackendStub {
+		t.Fatalf("expected stub execution transport, got %q", rt.ExecutionTransportBackend)
+	}
+
+	// Without an execution store no execution runtime is built.
+	noExec, err := composeStub()
+	if err != nil {
+		t.Fatalf("Compose: %v", err)
+	}
+	if noExec.Execution != nil || noExec.ExecutionWorker != nil {
+		t.Fatalf("expected no execution runtime without an execution store")
+	}
+}
+
+// TestComposeFailsClosedOnExecutionStoreWithoutMaterializer proves a store that
+// cannot materialize the sanitized snapshot is rejected instead of producing a
+// worker that could only ever fail at run time.
+func TestComposeFailsClosedOnExecutionStoreWithoutMaterializer(t *testing.T) {
+	cfg := stubCfg()
+	cfg.ExecutionLeaseTTL = 60 * time.Second
+	cfg.ExecutionHeartbeatInterval = 20 * time.Second
+	cfg.ExecutionWindow = 50 * time.Second
+	cfg.ExecutionRetryBackoffBase = 2 * time.Second
+	cfg.ExecutionRetryBackoffMax = 2 * time.Minute
+
+	_, err := composition.Compose(cfg, composition.Stores{
+		Publications: newMemPublications(),
+		Pipelines:    newMemPipelines(),
+		Executions:   struct{ execution.ExecutionStore }{},
+	}, composition.Sinks{})
+	if err == nil {
+		t.Fatalf("expected error for execution store without materializer")
+	} else if !strings.Contains(err.Error(), "Materializer") {
+		t.Fatalf("expected materializer error, got %v", err)
 	}
 }

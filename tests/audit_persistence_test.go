@@ -400,13 +400,20 @@ func seedAuditUser(t *testing.T, topo *database.Topology, username, password, wo
 func newTestAuthHandler(t *testing.T, rt *sql.DB, sink audit.Sink) *api.AuthHandler {
 	t.Helper()
 	cfg := &config.Config{
-		PostgresDSN:        getEnv().postgresDSN,
-		PostgresRuntimeDSN: "postgres://runtime@db:5432/austro?sslmode=disable",
-		RedisAddr:          "redis:6379",
-		RabbitMQURL:        "amqp://austro:austro@rabbitmq:5672",
-		JWTSecret:          "test-access-secret-1234567890-abcdef",
-		JWTRefreshSecret:   "test-refresh-secret-1234567890-abcdef",
-		Environment:        "test",
+		PostgresDSN:                getEnv().postgresDSN,
+		PostgresRuntimeDSN:         "postgres://runtime@db:5432/austro?sslmode=disable",
+		RedisAddr:                  "redis:6379",
+		RabbitMQURL:                "amqp://austro:austro@rabbitmq:5672",
+		JWTSecret:                  "test-access-secret-1234567890-abcdef",
+		JWTRefreshSecret:           "test-refresh-secret-1234567890-abcdef",
+		Environment:                "test",
+		ExecutionQueue:             config.DefaultExecutionQueue,
+		ExecutionLeaseTTL:          60 * time.Second,
+		ExecutionHeartbeatInterval: 20 * time.Second,
+		ExecutionWindow:            50 * time.Second,
+		ExecutionSweepInterval:     5 * time.Second,
+		ExecutionRetryBackoffBase:  2 * time.Second,
+		ExecutionRetryBackoffMax:   2 * time.Minute,
 	}
 	require.NoError(t, cfg.Validate())
 	return api.NewAuthHandler(cfg, auth.Initialize(cfg), postgres.NewUserStore(rt)).SetAuditSink(sink)

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
 
@@ -12,13 +13,21 @@ import (
 // that tests can focus on the external-boundary validation rules in isolation.
 func secureCore() *Config {
 	return &Config{
-		PostgresDSN:      "postgres://austro:austro@db:5432/austro?sslmode=disable",
-		RedisAddr:        "redis:6379",
-		RabbitMQURL:      "amqp://austro:austro@rabbitmq:5672",
-		JWTSecret:        "prod-access-secret-1234567890-abcdef",
-		JWTRefreshSecret: "prod-refresh-secret-1234567890-abcdef",
-		AIBackend:        AIBackendStub,
-		PublishBackend:   PublishBackendStub,
+		PostgresDSN:                "postgres://austro:austro@db:5432/austro?sslmode=disable",
+		RedisAddr:                  "redis:6379",
+		RabbitMQURL:                "amqp://austro:austro@rabbitmq:5672",
+		JWTSecret:                  "prod-access-secret-1234567890-abcdef",
+		JWTRefreshSecret:           "prod-refresh-secret-1234567890-abcdef",
+		AIBackend:                  AIBackendStub,
+		PublishBackend:             PublishBackendStub,
+		ExecutionTransportBackend:  ExecutionTransportBackendStub,
+		ExecutionQueue:             DefaultExecutionQueue,
+		ExecutionLeaseTTL:          60 * time.Second,
+		ExecutionHeartbeatInterval: 20 * time.Second,
+		ExecutionWindow:            50 * time.Second,
+		ExecutionSweepInterval:     5 * time.Second,
+		ExecutionRetryBackoffBase:  2 * time.Second,
+		ExecutionRetryBackoffMax:   2 * time.Minute,
 	}
 }
 
@@ -239,6 +248,14 @@ func fullRuntimeEnv(t *testing.T) {
 	t.Setenv("AUSTRO_PUBLISH_MAX_ATTEMPTS", "5")
 	t.Setenv("AUSTRO_PUBLISH_RETRY_BACKOFF_BASE", "500ms")
 	t.Setenv("AUSTRO_PUBLISH_RETRY_BACKOFF_MAX", "30s")
+	t.Setenv("AUSTRO_EXECUTION_TRANSPORT_BACKEND", ExecutionTransportBackendStub)
+	t.Setenv("AUSTRO_EXECUTION_LEASE_TTL", "90s")
+	t.Setenv("AUSTRO_EXECUTION_HEARTBEAT_INTERVAL", "30s")
+	t.Setenv("AUSTRO_EXECUTION_WINDOW", "75s")
+	t.Setenv("AUSTRO_EXECUTION_SWEEP_INTERVAL", "7s")
+	t.Setenv("AUSTRO_EXECUTION_RETRY_BACKOFF_BASE", "3s")
+	t.Setenv("AUSTRO_EXECUTION_RETRY_BACKOFF_MAX", "4m")
+	t.Setenv("AUSTRO_EXECUTION_WORKSPACE_IDS", "16dd4e23-8b1a-4b82-9f3c-9f3c9f3c9f3c, 2cbea6f0-6f6d-4be0-9a8d-e9c8d0f0a1b2")
 }
 
 // TestLoadStrictSingleCanonicalEnvironment proves both runtime entrypoints
@@ -263,6 +280,15 @@ func TestLoadStrictSingleCanonicalEnvironment(t *testing.T) {
 	require.Equal(t, 500*time.Millisecond, cfg.PublishRetryBackoffBase)
 	require.Equal(t, 30*time.Second, cfg.PublishRetryBackoffMax)
 	require.Equal(t, "austro.events.production", cfg.RabbitMQQueue)
+	require.Equal(t, ExecutionTransportBackendStub, cfg.ExecutionTransportBackend)
+	require.Equal(t, 90*time.Second, cfg.ExecutionLeaseTTL)
+	require.Equal(t, 30*time.Second, cfg.ExecutionHeartbeatInterval)
+	require.Equal(t, 75*time.Second, cfg.ExecutionWindow)
+	require.Equal(t, 7*time.Second, cfg.ExecutionSweepInterval)
+	require.Equal(t, 3*time.Second, cfg.ExecutionRetryBackoffBase)
+	require.Equal(t, 4*time.Minute, cfg.ExecutionRetryBackoffMax)
+	require.Len(t, cfg.ExecutionWorkspaceIDs, 2)
+	require.Equal(t, "16dd4e23-8b1a-4b82-9f3c-9f3c9f3c9f3c", cfg.ExecutionWorkspaceIDs[0].String())
 }
 
 // TestValidateRejectsNegativeRetrySettings verifies the panic-prone negative
@@ -430,4 +456,359 @@ func TestValidateErrorMessageIsDeterministicAndDeduplicated(t *testing.T) {
 	}
 	require.Equal(t, 1, strings.Count(first.Error(), "AUSTRO_JWT_SECRET"),
 		"a setting flagged by two rules must be named once")
+}
+
+// TestValidateRejectsBadExecutionRuntimeSettings verifies the execution runtime
+// durations must be positive and satisfy the pacing relationships the
+// dispatcher/worker rely on; zero/negative values and a heartbeat, window or
+// backoff cap that violate the lease are configuration errors, not runtime
+// panics.
+func TestValidateRejectsBadExecutionRuntimeSettings(t *testing.T) {
+	zero := secureCore()
+	zero.ExecutionLeaseTTL = 0
+	err := zero.Validate()
+	require.ErrorIs(t, err, ErrConfigInvalid)
+	require.Contains(t, err.Error(), "AUSTRO_EXECUTION_LEASE_TTL")
+
+	negative := secureCore()
+	negative.ExecutionRetryBackoffBase = -time.Second
+	err = negative.Validate()
+	require.ErrorIs(t, err, ErrConfigInvalid)
+	require.Contains(t, err.Error(), "AUSTRO_EXECUTION_RETRY_BACKOFF_BASE")
+
+	badHeartbeat := secureCore()
+	badHeartbeat.ExecutionHeartbeatInterval = badHeartbeat.ExecutionLeaseTTL
+	err = badHeartbeat.Validate()
+	require.ErrorIs(t, err, ErrConfigInvalid)
+	require.Contains(t, err.Error(), "AUSTRO_EXECUTION_HEARTBEAT_INTERVAL")
+
+	badWindow := secureCore()
+	badWindow.ExecutionWindow = badWindow.ExecutionLeaseTTL + time.Second
+	err = badWindow.Validate()
+	require.ErrorIs(t, err, ErrConfigInvalid)
+	require.Contains(t, err.Error(), "AUSTRO_EXECUTION_WINDOW")
+
+	badBackoff := secureCore()
+	badBackoff.ExecutionRetryBackoffBase = 5 * time.Minute
+	err = badBackoff.Validate()
+	require.ErrorIs(t, err, ErrConfigInvalid)
+	require.Contains(t, err.Error(), "AUSTRO_EXECUTION_RETRY_BACKOFF")
+}
+
+// TestValidateRejectsUnknownExecutionTransport verifies an unrecognized
+// execution dispatch transport selector fails fast by setting name rather
+// than silently falling back to the stub.
+func TestValidateRejectsUnknownExecutionTransport(t *testing.T) {
+	cfg := secureCore()
+	cfg.ExecutionTransportBackend = "carrier-pigeon"
+	err := cfg.Validate()
+	require.ErrorIs(t, err, ErrConfigInvalid)
+	require.Contains(t, err.Error(), "AUSTRO_EXECUTION_TRANSPORT_BACKEND")
+	require.NotContains(t, err.Error(), "carrier-pigeon")
+}
+
+// TestValidateAcceptsRabbitMQExecutionTransport verifies the broker-backed
+// transport is a valid selector under validation (it requires no resting
+// credential; the entrypoint dials the configured RabbitMQ URL).
+func TestValidateAcceptsRabbitMQExecutionTransport(t *testing.T) {
+	cfg := secureCore()
+	cfg.ExecutionTransportBackend = ExecutionTransportBackendRabbitMQ
+	require.NoError(t, cfg.Validate())
+}
+
+// TestValidateRejectsMalformedWorkspaceIDs verifies AUSTRO_EXECUTION_WORKSPACE_IDS
+// must be a comma-separated list of UUIDs: a malformed token fails fast instead
+// of silently dispatching for a partial list.
+func TestValidateRejectsMalformedWorkspaceIDs(t *testing.T) {
+	cfg := secureCore()
+	cfg.executionWorkspaceIDsRaw = "16dd4e23-8b1a-4b82-9f3c-9f3c9f3c9f3c, not-a-uuid"
+	err := cfg.Validate()
+	require.ErrorIs(t, err, ErrConfigInvalid)
+	require.Contains(t, err.Error(), "AUSTRO_EXECUTION_WORKSPACE_IDS")
+
+	ok := secureCore()
+	ok.executionWorkspaceIDsRaw = "16dd4e23-8b1a-4b82-9f3c-9f3c9f3c9f3c"
+	ok.ExecutionWorkspaceIDs = []uuid.UUID{mustParse(t, ok.executionWorkspaceIDsRaw)}
+	require.NoError(t, ok.Validate())
+}
+
+func mustParse(t *testing.T, s string) uuid.UUID {
+	t.Helper()
+	id, err := uuid.Parse(s)
+	require.NoError(t, err)
+	return id
+}
+
+// productionCore returns a secureCore whose external boundaries are all real,
+// which is the only shape a production deployment is allowed to start in.
+func productionCore(t *testing.T) *Config {
+	t.Helper()
+	cfg := secureCore()
+	cfg.Environment = EnvironmentProduction
+	cfg.AIBackend = AIBackendOpenAICompatible
+	cfg.AIModel = "gpt-4o-mini"
+	cfg.AIBaseURL = "https://ai.austro.internal/v1"
+	cfg.AIAPIKey = "sk-prod-9f8e7d6c5b4a3d2e"
+	cfg.PublishBackend = PublishBackendGenericHTTP
+	cfg.PublishWebhookURL = "https://hook.austro.internal/deliver"
+	cfg.PublishToken = "tok-prod-1a2b3c4d5e6f"
+	cfg.ExecutionTransportBackend = ExecutionTransportBackendRabbitMQ
+	cfg.executionWorkspaceIDsRaw = "16dd4e23-8b1a-4b82-9f3c-9f3c9f3c9f3c"
+	cfg.ExecutionWorkspaceIDs = []uuid.UUID{mustParse(t, cfg.executionWorkspaceIDsRaw)}
+	return cfg
+}
+
+// offlineProductionCore returns a production configuration that runs the
+// deterministic stubs with no external settings at all.
+//
+// The external settings are cleared as well as the backend selectors, because
+// the pre-existing rule refuses a credential supplied while a stub is selected
+// (a configured key must never sit ignored in the environment). That is the
+// procedure an operator actually follows when taking a deployment offline —
+// remove the credentials, do not just flip the backend — so the fixture
+// reproduces it, and every production rule below then fails or passes for
+// exactly one reason.
+func offlineProductionCore(t *testing.T) *Config {
+	t.Helper()
+	cfg := productionCore(t)
+	cfg.AIBackend = AIBackendStub
+	cfg.AIModel = ""
+	cfg.AIBaseURL = ""
+	cfg.AIAPIKey = ""
+	cfg.PublishBackend = PublishBackendStub
+	cfg.PublishWebhookURL = ""
+	cfg.PublishToken = ""
+	cfg.ExecutionTransportBackend = ExecutionTransportBackendStub
+	cfg.ExecutionWorkspaceIDs = nil
+	return cfg
+}
+
+// TestValidateRejectsBlankExecutionQueue verifies the dispatch queue name
+// cannot be blank. The dispatcher and the worker are separate processes and the
+// name is the only thing that makes them meet, so an empty value would be a
+// configuration in which both halves start and no work ever crosses between
+// them.
+func TestValidateRejectsBlankExecutionQueue(t *testing.T) {
+	for _, blank := range []string{"", "   ", "\t"} {
+		cfg := secureCore()
+		cfg.ExecutionQueue = blank
+		err := cfg.Validate()
+		require.ErrorIs(t, err, ErrConfigInvalid, "queue name %q must be rejected", blank)
+		require.Contains(t, err.Error(), "AUSTRO_EXECUTION_QUEUE")
+	}
+}
+
+// TestProductionRejectsStubAdapters is the release gate: a deployment that
+// declares itself production may not run any deterministic stub. Every stub
+// answers successfully without contacting a real service, so this is the
+// configuration that serves traffic, reports healthy, and does no real work.
+func TestProductionRejectsStubAdapters(t *testing.T) {
+	cfg := offlineProductionCore(t)
+
+	err := cfg.Validate()
+	require.ErrorIs(t, err, ErrConfigInvalid)
+	for _, name := range []string{"AUSTRO_AI_BACKEND", "AUSTRO_PUBLISH_BACKEND", "AUSTRO_EXECUTION_TRANSPORT_BACKEND"} {
+		require.Contains(t, err.Error(), name)
+	}
+}
+
+// TestProductionRejectsEachStubIndividually verifies the three boundaries are
+// each refused on their own, so fixing one never silently leaves the other two
+// running as stubs.
+func TestProductionRejectsEachStubIndividually(t *testing.T) {
+	t.Run("ai", func(t *testing.T) {
+		cfg := offlineProductionCore(t)
+		cfg.AIBackend = AIBackendStub
+		require.Contains(t, cfg.Validate().Error(), "AUSTRO_AI_BACKEND")
+	})
+	t.Run("publish", func(t *testing.T) {
+		cfg := offlineProductionCore(t)
+		cfg.PublishBackend = PublishBackendStub
+		require.Contains(t, cfg.Validate().Error(), "AUSTRO_PUBLISH_BACKEND")
+	})
+	t.Run("execution transport", func(t *testing.T) {
+		cfg := productionCore(t)
+		cfg.ExecutionTransportBackend = ExecutionTransportBackendStub
+		require.Contains(t, cfg.Validate().Error(), "AUSTRO_EXECUTION_TRANSPORT_BACKEND")
+	})
+	t.Run("implicit empty ai backend", func(t *testing.T) {
+		cfg := offlineProductionCore(t)
+		cfg.AIBackend = ""
+		require.Contains(t, cfg.Validate().Error(), "AUSTRO_AI_BACKEND")
+	})
+}
+
+// TestProductionStubRuleIgnoresEnvironmentCasing verifies the production rule
+// cannot be stepped around by writing "Production" or leaving whitespace in the
+// label: an environment that only half activates its safety rules is worse than
+// one that never activates them, because it reads as configured.
+func TestProductionStubRuleIgnoresEnvironmentCasing(t *testing.T) {
+	for _, env := range []string{"Production", "PRODUCTION", " production "} {
+		cfg := productionCore(t)
+		cfg.Environment = env
+		cfg.AIBackend = AIBackendStub
+		err := cfg.Validate()
+		require.ErrorIs(t, err, ErrConfigInvalid, "environment %q must activate the production rules", env)
+		require.Contains(t, err.Error(), "AUSTRO_AI_BACKEND")
+	}
+}
+
+// TestProductionRejectsRabbitMQTransportWithoutWorkspaces verifies a
+// broker-backed dispatcher with no workspaces to sweep is a startup failure in
+// production. It would otherwise connect, log that it started, and never
+// dispatch anything: a silently broken subsystem wearing the costume of a
+// working one.
+func TestProductionRejectsRabbitMQTransportWithoutWorkspaces(t *testing.T) {
+	cfg := productionCore(t)
+	cfg.executionWorkspaceIDsRaw = ""
+	cfg.ExecutionWorkspaceIDs = nil
+
+	err := cfg.Validate()
+	require.ErrorIs(t, err, ErrConfigInvalid)
+	require.Contains(t, err.Error(), "AUSTRO_EXECUTION_WORKSPACE_IDS")
+}
+
+// TestAllowStubBackendsPermitsAnOfflineProductionStack verifies the documented
+// opt-in really does permit the stubs in production. A refusal an operator
+// cannot legally resolve is a bug, not a safety property: the deployment that
+// genuinely has no egress needs a visible, greppable way to say so.
+func TestAllowStubBackendsPermitsAnOfflineProductionStack(t *testing.T) {
+	cfg := offlineProductionCore(t)
+	cfg.AllowStubBackends = true
+
+	require.NoError(t, cfg.Validate())
+}
+
+// TestAllowStubBackendsRejectsUnparseableValue verifies the opt-in fails
+// closed. A typo that read as consent would grant exactly the exemption the
+// operator did not intend.
+func TestAllowStubBackendsRejectsUnparseableValue(t *testing.T) {
+	cfg := offlineProductionCore(t)
+	cfg.allowStubBackendsRaw = "yes-please"
+
+	err := cfg.Validate()
+	require.ErrorIs(t, err, ErrConfigInvalid)
+	require.Contains(t, err.Error(), "AUSTRO_ALLOW_STUB_BACKENDS")
+}
+
+// TestProductionAcceptsFullyConfiguredStack is the positive counterpart: a real
+// deployment with every boundary configured, at least one workspace to sweep and
+// a named queue validates cleanly. Without this the production rules would
+// simply be a wall.
+func TestProductionAcceptsFullyConfiguredStack(t *testing.T) {
+	require.NoError(t, productionCore(t).Validate())
+}
+
+// TestProductionAcceptsLocalKeylessAIBackend verifies the keyless local backend
+// is a legitimate production choice, so the gate does not push an operator
+// toward buying an API key they do not need.
+func TestProductionAcceptsLocalKeylessAIBackend(t *testing.T) {
+	cfg := productionCore(t)
+	cfg.AIBackend = AIBackendLocal
+	cfg.AIModel = "llama-3.1-8b"
+	cfg.AIBaseURL = "http://localhost:11434/v1"
+	cfg.AIAPIKey = ""
+
+	require.NoError(t, cfg.Validate())
+}
+
+// TestProductionWorkspaceRuleIsScopedToTheBrokerTransport verifies the
+// workspace requirement applies to a real transport only. Requiring workspaces
+// for a stub transport would be noise: a stub dispatch loop has nothing to
+// deliver anywhere.
+func TestProductionWorkspaceRuleIsScopedToTheBrokerTransport(t *testing.T) {
+	cfg := offlineProductionCore(t)
+	cfg.AllowStubBackends = true
+
+	require.NoError(t, cfg.Validate())
+}
+
+// TestOfflineDevelopmentIsUnaffectedByTheProductionRule verifies the release
+// gate does not leak into development: the stub defaults must keep working with
+// no configuration at all, which is the property that makes the project
+// runnable by anyone who clones it.
+func TestOfflineDevelopmentIsUnaffectedByTheProductionRule(t *testing.T) {
+	for _, env := range []string{"", "development", "test", "staging", "Production-like"} {
+		cfg := secureCore()
+		cfg.Environment = env
+		require.NoError(t, cfg.Validate(), "environment %q must stay on the offline defaults", env)
+	}
+}
+
+// TestLoadStrictAppliesTheProductionRuleThroughTheEnvironment verifies the gate
+// is reached by the real entrypoint path, not only by a hand-built struct: a
+// rule that only tests could trip would not protect a deployment.
+func TestLoadStrictAppliesTheProductionRuleThroughTheEnvironment(t *testing.T) {
+	t.Setenv("AUSTRO_POSTGRES_DSN", "postgres://austro:austro@db:5432/austro?sslmode=disable")
+	t.Setenv("AUSTRO_REDIS_ADDR", "redis:6379")
+	t.Setenv("AUSTRO_RABBITMQ_URL", "amqp://austro:austro@rabbitmq:5672")
+	t.Setenv("AUSTRO_JWT_SECRET", "prod-access-secret-1234567890-abcdef")
+	t.Setenv("AUSTRO_JWT_REFRESH_SECRET", "prod-refresh-secret-1234567890-abcdef")
+	t.Setenv("AUSTRO_ENV", "production")
+	t.Setenv("AUSTRO_AI_BACKEND", "stub")
+	t.Setenv("AUSTRO_PUBLISH_BACKEND", "stub")
+	t.Setenv("AUSTRO_EXECUTION_TRANSPORT_BACKEND", "rabbitmq")
+	t.Setenv("AUSTRO_EXECUTION_WORKSPACE_IDS", "16dd4e23-8b1a-4b82-9f3c-9f3c9f3c9f3c")
+
+	_, err := LoadStrict()
+	require.ErrorIs(t, err, ErrConfigInvalid)
+	require.Contains(t, err.Error(), "AUSTRO_AI_BACKEND")
+	require.Contains(t, err.Error(), "AUSTRO_PUBLISH_BACKEND")
+}
+
+// TestLoadStrictDefaultsTheExecutionQueue verifies the queue name is
+// deployment configuration with a documented default, read through the real
+// loader: unset yields the name the broker and the worker already use, and a
+// supplied value is honoured verbatim so a deployment may rename the queue in
+// one place.
+func TestLoadStrictDefaultsTheExecutionQueue(t *testing.T) {
+	t.Setenv("AUSTRO_POSTGRES_DSN", "postgres://austro:austro@db:5432/austro?sslmode=disable")
+	t.Setenv("AUSTRO_REDIS_ADDR", "redis:6379")
+	t.Setenv("AUSTRO_RABBITMQ_URL", "amqp://austro:austro@rabbitmq:5672")
+	t.Setenv("AUSTRO_JWT_SECRET", "prod-access-secret-1234567890-abcdef")
+	t.Setenv("AUSTRO_JWT_REFRESH_SECRET", "prod-refresh-secret-1234567890-abcdef")
+
+	t.Setenv("AUSTRO_EXECUTION_QUEUE", "")
+	cfg, err := LoadStrict()
+	require.NoError(t, err)
+	require.Equal(t, DefaultExecutionQueue, cfg.ExecutionQueue)
+
+	t.Setenv("AUSTRO_EXECUTION_QUEUE", "austro.executions.prod")
+	cfg, err = LoadStrict()
+	require.NoError(t, err)
+	require.Equal(t, "austro.executions.prod", cfg.ExecutionQueue)
+}
+
+// TestLoadStrictRejectsUnparseableExecutionSettings verifies a supplied-but
+// malformed execution duration fails fast under strict validation instead of
+// being silently replaced by the default.
+func TestLoadStrictRejectsUnparseableExecutionSettings(t *testing.T) {
+	t.Setenv("AUSTRO_POSTGRES_DSN", "postgres://austro:austro@db:5432/austro?sslmode=disable")
+	t.Setenv("AUSTRO_REDIS_ADDR", "redis:6379")
+	t.Setenv("AUSTRO_RABBITMQ_URL", "amqp://austro:austro@rabbitmq:5672")
+	t.Setenv("AUSTRO_JWT_SECRET", "prod-access-secret-1234567890-abcdef")
+	t.Setenv("AUSTRO_JWT_REFRESH_SECRET", "prod-refresh-secret-1234567890-abcdef")
+
+	t.Setenv("AUSTRO_EXECUTION_LEASE_TTL", "almost")
+	_, err := LoadStrict()
+	require.ErrorIs(t, err, ErrConfigInvalid)
+	require.Contains(t, err.Error(), "AUSTRO_EXECUTION_LEASE_TTL")
+
+	t.Setenv("AUSTRO_EXECUTION_LEASE_TTL", "60s")
+	t.Setenv("AUSTRO_EXECUTION_RETRY_BACKOFF_MAX", "30")
+	_, err = LoadStrict()
+	require.ErrorIs(t, err, ErrConfigInvalid)
+	require.Contains(t, err.Error(), "AUSTRO_EXECUTION_RETRY_BACKOFF_MAX")
+
+	// Well-formed values still load, and the third phase must be immune to
+	// whatever pacing-related execution timings the surrounding environment
+	// already exports: the 60s lease chosen here only stays consistent if the
+	// window and heartbeat are re-stated well under it.
+	t.Setenv("AUSTRO_EXECUTION_RETRY_BACKOFF_MAX", "2m")
+	t.Setenv("AUSTRO_EXECUTION_WINDOW", "40s")
+	t.Setenv("AUSTRO_EXECUTION_HEARTBEAT_INTERVAL", "20s")
+	cfg, err := LoadStrict()
+	require.NoError(t, err)
+	require.Equal(t, 60*time.Second, cfg.ExecutionLeaseTTL)
+	require.Equal(t, 2*time.Minute, cfg.ExecutionRetryBackoffMax)
 }

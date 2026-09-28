@@ -197,7 +197,7 @@ func TestPhase1ExitCriteria(t *testing.T) {
 		// Skip the CI detector workflow, which legitimately names the forbidden
 		// technologies as the check it enforces (not as adopted tooling).
 		walkAllText(t, root, func(path string, data []byte) error {
-			if strings.HasPrefix(filepath.ToSlash(path), root+"/.github") {
+			if strings.HasPrefix(filepath.ToSlash(path), filepath.ToSlash(root)+"/.github") {
 				return nil
 			}
 			lower := strings.ToLower(string(data))

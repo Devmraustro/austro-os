@@ -90,12 +90,18 @@ func TestRowSecurityOffDetectorIsBounded(t *testing.T) {
 	matches := grepContents(t, rowSecurityDirective())
 	for _, m := range matches {
 		if isCommentLine(m) ||
-			strings.Contains(m, ".github/workflows/") ||
+			strings.Contains(normalizePath(m), ".github/workflows/") ||
 			strings.Contains(m, "CRITICAL: SET row_security") {
 			continue
 		}
 		t.Fatalf("prohibited directive found outside the CI detector/guard: %s", m)
 	}
+}
+
+// normalizePath renders a "path :: line" record with forward slashes so
+// allowlist matching is independent of the platform's path separator.
+func normalizePath(s string) string {
+	return strings.ReplaceAll(s, "\\", "/")
 }
 
 // isCommentLine reports whether the given "path :: line" record (or plain

@@ -13,6 +13,7 @@ import (
 
 	"austro-os/internal/ai"
 	"austro-os/internal/config"
+	"austro-os/internal/execution"
 	"austro-os/internal/orchestration"
 	"austro-os/internal/publish"
 
@@ -26,6 +27,11 @@ type Stores struct {
 	Publications publish.PublicationStore
 	// Pipelines is the creator pipeline persistence port.
 	Pipelines orchestration.PipelineStore
+	// Executions is the AI execution persistence port. When supplied it also
+	// builds the execution admission service and the composed worker; the
+	// dispatcher stays process-local (the API entrypoint owns the sweep loop)
+	// and is wired there with its transport adapter.
+	Executions execution.ExecutionStore
 }
 
 // Sinks carries the observability/event output ports that the composition
@@ -72,6 +78,17 @@ type Runtime struct {
 	Orchestration *orchestration.Service
 	// Handler is the worker glue that advances pipelines from events.
 	Handler *orchestration.Handler
+
+	// Execution is the AI execution admission service. Nil when no execution
+	// store was supplied.
+	Execution *execution.Service
+	// ExecutionWorker is the composed AI execution attempt runner: it is driven
+	// by the broker transport (wired by the worker entrypoint) and only ever
+	// built when an execution store and a provider exist.
+	ExecutionWorker *execution.Worker
+	// ExecutionTransportBackend is the resolved execution dispatch transport
+	// selector.
+	ExecutionTransportBackend string
 }
 
 // Compose builds the runtime from the strict config and injected ports. It
@@ -89,6 +106,10 @@ func Compose(cfg *config.Config, stores Stores, sinks Sinks) (*Runtime, error) {
 	publishBackend := cfg.PublishBackend
 	if publishBackend == "" {
 		publishBackend = config.PublishBackendStub
+	}
+	executionTransportBackend := cfg.ExecutionTransportBackend
+	if executionTransportBackend == "" {
+		executionTransportBackend = config.ExecutionTransportBackendStub
 	}
 
 	// AI gateway: provider selected by AIBackend, per-workspace budget from the
@@ -151,17 +172,43 @@ func Compose(cfg *config.Config, stores Stores, sinks Sinks) (*Runtime, error) {
 	// service. No second publication engine is created in orchestration.
 	orchSvc.SetPublicationPort(pipelinePublicationAdapter{svc: publishSvc})
 
+	// AI execution runtime. The execution store doubles as the materializer (the
+	// adapter reconstructs the sanitized snapshot from execution_contexts), so
+	// one supplied store produces the admission service and the worker against
+	// the same provider the AI gateway already selected. The dispatcher is not
+	// built here: the API entrypoint owns the sweep loop and supplies its
+	// transport adapter (stub by default, a broker-backed publisher when
+	// selected), so it is wired in the entrypoint rather than as a shared sink.
+	var execSvc *execution.Service
+	var execWorker *execution.Worker
+	if stores.Executions != nil {
+		execSvc = execution.NewService(stores.Executions)
+		mat, ok := stores.Executions.(execution.Materializer)
+		if !ok {
+			return nil, fmt.Errorf("composition: execution store must also implement execution.Materializer")
+		}
+		execWorker = execution.NewWorker(
+			stores.Executions, mat, provider,
+			execution.NewWorkerID(),
+			cfg.ExecutionLeaseTTL, cfg.ExecutionHeartbeatInterval, cfg.ExecutionWindow,
+			cfg.ExecutionRetryBackoffBase, cfg.ExecutionRetryBackoffMax,
+		)
+	}
+
 	return &Runtime{
-		Config:         cfg,
-		AI:             gw,
-		AIProvider:     provider,
-		AIBackend:      aiBackend,
-		UsageGuard:     guard,
-		Publish:        publishSvc,
-		Publisher:      publisher,
-		PublishBackend: publishBackend,
-		Orchestration:  orchSvc,
-		Handler:        orchestration.NewHandler(orchSvc),
+		Config:                     cfg,
+		AI:                         gw,
+		AIProvider:                 provider,
+		AIBackend:                  aiBackend,
+		UsageGuard:                 guard,
+		Publish:                    publishSvc,
+		Publisher:                  publisher,
+		PublishBackend:             publishBackend,
+		Orchestration:              orchSvc,
+		Handler:                    orchestration.NewHandler(orchSvc),
+		Execution:                  execSvc,
+		ExecutionWorker:            execWorker,
+		ExecutionTransportBackend:  executionTransportBackend,
 	}, nil
 }
 

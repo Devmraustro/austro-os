@@ -88,6 +88,31 @@ x-austro-app-environment: &austro-app-environment
   AUSTRO_JWT_REFRESH_SECRET: "${AUSTRO_JWT_REFRESH_SECRET:?AUSTRO_JWT_REFRESH_SECRET is required}"
   AUSTRO_FOUNDER_USERNAME: "${AUSTRO_FOUNDER_USERNAME:?AUSTRO_FOUNDER_USERNAME is required}"
   AUSTRO_FOUNDER_PASSWORD: "${AUSTRO_FOUNDER_PASSWORD:?AUSTRO_FOUNDER_PASSWORD is required}"
+  # The AI execution transport. Production defaults to the broker-backed
+  # transport rather than the offline stub, because a stub dispatcher reports
+  # every dispatch successful while delivering nothing at all. The application
+  # refuses to start when AUSTRO_ENV is production and a stub is selected, when
+  # the broker transport has no workspaces to sweep, or when the queue name is
+  # blank, so a mistake in this section is a loud startup failure instead of a
+  # silently idle pipeline.
+  AUSTRO_EXECUTION_TRANSPORT_BACKEND: "${AUSTRO_EXECUTION_TRANSPORT_BACKEND:-rabbitmq}"
+  # The dispatcher (API process) and the worker (separate process) both resolve
+  # this name from configuration, so a deployment renames the queue here once
+  # rather than in two source files. It must match on both sides: a name set on
+  # only one leaves the dispatcher publishing into a queue nothing consumes
+  # while both processes report healthy.
+  AUSTRO_EXECUTION_QUEUE: "${AUSTRO_EXECUTION_QUEUE:-austro.executions}"
+  # Passed through rather than required here on purpose. The application is the
+  # authority on this setting, because it is the process that knows which
+  # environment it is actually running in, and its startup error names the
+  # variable directly. Forcing it with ${...:?} at this layer would also make
+  # the deliberate offline production stack (AUSTRO_ALLOW_STUB_BACKENDS=true)
+  # impossible to express, since that case has no workspaces to sweep.
+  AUSTRO_EXECUTION_WORKSPACE_IDS: "${AUSTRO_EXECUTION_WORKSPACE_IDS:-}"
+  # Documented in .env.example. Stated here so the key is always defined and the
+  # exemption from the production stub rule is an explicit, greppable value in
+  # the deployment rather than an accident of omission.
+  AUSTRO_ALLOW_STUB_BACKENDS: "${AUSTRO_ALLOW_STUB_BACKENDS:-false}"
 
 # Bounded container logs. The application logs JSON to stdout, so without a cap
 # the host's disk fills under sustained traffic.

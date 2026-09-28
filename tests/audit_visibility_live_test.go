@@ -228,10 +228,15 @@ func TestAuditVisibilityPagination(t *testing.T) {
 	require.Greater(t, ver.EventsChecked, 0)
 
 	const pageSize = 3
+	// The chain keeps growing as later tests (and repeated runs) append events,
+	// so the guard is derived from the live chain length instead of a fixed
+	// page budget: a page limit that is only comfortably large for a short
+	// chain would silently stop the walk early and look like a skipped row.
+	maxPages := (ver.EventsChecked/pageSize + 2) * 2
 	seen := map[int64]bool{}
 	cursor := ""
 	// Bounded so a broken cursor cannot loop forever and burn the suite timeout.
-	for page := 0; page < 400; page++ {
+	for page := 0; page < maxPages; page++ {
 		path := fmt.Sprintf("/audit/events?limit=%d", pageSize)
 		if cursor != "" {
 			path += "&before_seq=" + cursor

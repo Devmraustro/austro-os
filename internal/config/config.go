@@ -11,6 +11,8 @@ import (
 	"time"
 
 	logger "austro-os/internal/log"
+
+	"github.com/google/uuid"
 )
 
 // Reserved adapter names. The default (stub) adapters are the only ones that
@@ -35,6 +37,32 @@ const (
 	PublishBackendStub = "stub"
 	// PublishBackendGenericHTTP is a real generic HTTP delivery endpoint.
 	PublishBackendGenericHTTP = "generic-http"
+	// ExecutionTransportBackendStub is the deterministic, offline dispatch
+	// transport (default): the dispatcher logs each fenced dispatch and reports
+	// success without touching a broker. It is the AI execution analogue of the
+	// AI/publishing stub adapters.
+	ExecutionTransportBackendStub = "stub"
+	// ExecutionTransportBackendRabbitMQ is the broker-backed dispatch transport:
+	// each claimed retry is delivered durably to the dedicated execution queue
+	// for the worker process to consume. It is wired by the entrypoint against
+	// the configured RabbitMQ URL.
+	ExecutionTransportBackendRabbitMQ = "rabbitmq"
+
+	// EnvironmentProduction is the value of AUSTRO_ENV that enables the
+	// production-only configuration rules. It gates rules that would break
+	// offline development (notably: a production deployment may not run the
+	// deterministic stub adapters), so the name is a contract with deployment
+	// configuration rather than a free-form label.
+	EnvironmentProduction = "production"
+
+	// DefaultExecutionQueue is the default AUSTRO_EXECUTION_QUEUE, kept
+	// identical to infrastructure/rabbitmq.ExecutionQueue. The literal is
+	// repeated rather than imported so that the configuration layer never
+	// depends on an infrastructure implementation (rabbitmq imports config, so
+	// importing it here would be a cycle). The two are asserted equal by
+	// TestDefaultExecutionQueueMatchesConfigDefault in the rabbitmq package,
+	// which may import this one.
+	DefaultExecutionQueue = "austro.executions"
 )
 
 type Config struct {
@@ -148,6 +176,63 @@ type Config struct {
 	publishMaxAttemptsRaw string
 	publishBackoffBaseRaw string
 	publishBackoffMaxRaw  string
+
+	// AI execution runtime. These govern the dispatcher/worker loops that carry
+	// claimed retries from the admit board to the configured AI provider.
+	//
+	// ExecutionTransportBackend selects how the dispatcher delivers a claimed
+	// retry (ExecutionTransportBackendStub by default; a broker-backed backend
+	// is CONFIGURATION_REQUIRED through the entrypoint adapter).
+	ExecutionTransportBackend string
+	// ExecutionQueue is the durable broker queue the dispatcher publishes each
+	// claimed retry to and the worker consumes (AUSTRO_EXECUTION_QUEUE,
+	// default "austro.executions"). The two processes are separate binaries
+	// and never share memory, so this name is the only thing that makes them
+	// meet: it is deployment configuration, never a hardcoded constant at
+	// either end, because a rename on one side alone would produce a
+	// dispatcher publishing into a void while both processes report healthy.
+	ExecutionQueue string
+	// ExecutionLeaseTTL is the lease granted on each claim/reclaim and renewed
+	// by each heartbeat. It bounds how long a crashed worker's work blocks
+	// recovery.
+	ExecutionLeaseTTL time.Duration
+	// ExecutionHeartbeatInterval is how often a running worker renews its lease.
+	// It must be strictly under the lease so a healthy worker never looks stale.
+	ExecutionHeartbeatInterval time.Duration
+	// ExecutionWindow caps the non-heartbeat provider call budget inside a lease.
+	ExecutionWindow time.Duration
+	// ExecutionSweepInterval paces each workspace dispatch/recovery sweep.
+	ExecutionSweepInterval time.Duration
+	// ExecutionRetryBackoffBase/ExecutionRetryBackoffMax bound the retry backoff
+	// pacing (RetryDelay) for scheduled attempts.
+	ExecutionRetryBackoffBase time.Duration
+	ExecutionRetryBackoffMax  time.Duration
+	// ExecutionWorkspaceIDs names the workspaces the dispatcher sweep loop runs
+	// for (AUSTRO_EXECUTION_WORKSPACE_IDS, comma-separated UUIDs). When empty no
+	// dispatch loop is started.
+	ExecutionWorkspaceIDs []uuid.UUID
+
+	// AllowStubBackends (AUSTRO_ALLOW_STUB_BACKENDS) is the explicit opt-in that
+	// permits the deterministic stub adapters — AI, publishing and the
+	// execution transport — to run while AUSTRO_ENV declares production. It
+	// exists so a genuinely offline production-shaped stack (a demo, a
+	// rehearsal, a site with no egress) can be deployed without pretending the
+	// stubs are real, and so the refusal in production is a decision someone
+	// can find and undo in the environment file rather than a hardcoded rule
+	// nobody can see. Default false, and an unparseable value is rejected
+	// rather than read as consent.
+	AllowStubBackends    bool
+	allowStubBackendsRaw string
+
+	// Raw environment text for the settings above, kept for the same fail-fast
+	// discipline as the publishing settings.
+	executionLeaseTTLRaw            string
+	executionHeartbeatIntervalRaw   string
+	executionWindowRaw              string
+	executionSweepIntervalRaw       string
+	executionRetryBackoffBaseRaw    string
+	executionRetryBackoffMaxRaw     string
+	executionWorkspaceIDsRaw        string
 }
 
 // Minimum accepted lengths for credentials.
@@ -185,6 +270,13 @@ func defaults() *Config {
 	if preProvisionedRolesRaw != "" {
 		if b, err := strconv.ParseBool(preProvisionedRolesRaw); err == nil {
 			preProvisionedRoles = b
+		}
+	}
+	allowStubBackendsRaw := os.Getenv("AUSTRO_ALLOW_STUB_BACKENDS")
+	allowStubBackends := false
+	if allowStubBackendsRaw != "" {
+		if b, err := strconv.ParseBool(allowStubBackendsRaw); err == nil {
+			allowStubBackends = b
 		}
 	}
 	// In pre-provisioned mode the runtime DSN must be stated explicitly: the
@@ -238,6 +330,26 @@ func defaults() *Config {
 		publishMaxAttemptsRaw: os.Getenv("AUSTRO_PUBLISH_MAX_ATTEMPTS"),
 		publishBackoffBaseRaw: os.Getenv("AUSTRO_PUBLISH_RETRY_BACKOFF_BASE"),
 		publishBackoffMaxRaw:  os.Getenv("AUSTRO_PUBLISH_RETRY_BACKOFF_MAX"),
+
+		ExecutionTransportBackend:     getEnv("AUSTRO_EXECUTION_TRANSPORT_BACKEND", ExecutionTransportBackendStub),
+		ExecutionQueue:                getEnv("AUSTRO_EXECUTION_QUEUE", DefaultExecutionQueue),
+		ExecutionLeaseTTL:             envDuration("AUSTRO_EXECUTION_LEASE_TTL", 60*time.Second),
+		ExecutionHeartbeatInterval:    envDuration("AUSTRO_EXECUTION_HEARTBEAT_INTERVAL", 20*time.Second),
+		ExecutionWindow:               envDuration("AUSTRO_EXECUTION_WINDOW", 50*time.Second),
+		ExecutionSweepInterval:        envDuration("AUSTRO_EXECUTION_SWEEP_INTERVAL", 5*time.Second),
+		ExecutionRetryBackoffBase:     envDuration("AUSTRO_EXECUTION_RETRY_BACKOFF_BASE", 2*time.Second),
+		ExecutionRetryBackoffMax:      envDuration("AUSTRO_EXECUTION_RETRY_BACKOFF_MAX", 2*time.Minute),
+		ExecutionWorkspaceIDs:         envUUIDs("AUSTRO_EXECUTION_WORKSPACE_IDS"),
+		AllowStubBackends:             allowStubBackends,
+		allowStubBackendsRaw:          allowStubBackendsRaw,
+
+		executionLeaseTTLRaw:          os.Getenv("AUSTRO_EXECUTION_LEASE_TTL"),
+		executionHeartbeatIntervalRaw: os.Getenv("AUSTRO_EXECUTION_HEARTBEAT_INTERVAL"),
+		executionWindowRaw:            os.Getenv("AUSTRO_EXECUTION_WINDOW"),
+		executionSweepIntervalRaw:     os.Getenv("AUSTRO_EXECUTION_SWEEP_INTERVAL"),
+		executionRetryBackoffBaseRaw:  os.Getenv("AUSTRO_EXECUTION_RETRY_BACKOFF_BASE"),
+		executionRetryBackoffMaxRaw:   os.Getenv("AUSTRO_EXECUTION_RETRY_BACKOFF_MAX"),
+		executionWorkspaceIDsRaw:      os.Getenv("AUSTRO_EXECUTION_WORKSPACE_IDS"),
 	}
 }
 
@@ -375,6 +487,67 @@ func (c *Config) Validate() error {
 		missing = append(missing, "AUSTRO_PUBLISH_RETRY_BACKOFF")
 	}
 
+	// AI execution runtime settings. Supplied duration values must parse, the
+	// resolved durations must be positive (a zero lease or ticker interval would
+	// panic the dispatcher/worker loops), and the pacing relationships the
+	// runtime relies on must hold: the heartbeat and the provider call window
+	// must stay strictly under the lease so a healthy worker never looks stale
+	// and never lets the provider call outlive its fence; the backoff base must
+	// not exceed the cap.
+	for name, raw := range map[string]string{
+		"AUSTRO_EXECUTION_LEASE_TTL":          c.executionLeaseTTLRaw,
+		"AUSTRO_EXECUTION_HEARTBEAT_INTERVAL": c.executionHeartbeatIntervalRaw,
+		"AUSTRO_EXECUTION_WINDOW":             c.executionWindowRaw,
+		"AUSTRO_EXECUTION_SWEEP_INTERVAL":     c.executionSweepIntervalRaw,
+		"AUSTRO_EXECUTION_RETRY_BACKOFF_BASE": c.executionRetryBackoffBaseRaw,
+		"AUSTRO_EXECUTION_RETRY_BACKOFF_MAX":  c.executionRetryBackoffMaxRaw,
+	} {
+		if raw == "" {
+			continue
+		}
+		if _, err := time.ParseDuration(raw); err != nil {
+			missing = append(missing, name)
+		}
+	}
+	if c.executionWorkspaceIDsRaw != "" {
+		for _, token := range strings.Split(c.executionWorkspaceIDsRaw, ",") {
+			token = strings.TrimSpace(token)
+			if token == "" {
+				continue
+			}
+			if _, err := uuid.Parse(token); err != nil {
+				missing = append(missing, "AUSTRO_EXECUTION_WORKSPACE_IDS")
+			}
+		}
+	}
+	if c.ExecutionLeaseTTL <= 0 {
+		missing = append(missing, "AUSTRO_EXECUTION_LEASE_TTL")
+	}
+	if c.ExecutionHeartbeatInterval <= 0 {
+		missing = append(missing, "AUSTRO_EXECUTION_HEARTBEAT_INTERVAL")
+	}
+	if c.ExecutionWindow <= 0 {
+		missing = append(missing, "AUSTRO_EXECUTION_WINDOW")
+	}
+	if c.ExecutionSweepInterval <= 0 {
+		missing = append(missing, "AUSTRO_EXECUTION_SWEEP_INTERVAL")
+	}
+	if c.ExecutionRetryBackoffBase <= 0 {
+		missing = append(missing, "AUSTRO_EXECUTION_RETRY_BACKOFF_BASE")
+	}
+	if c.ExecutionRetryBackoffMax <= 0 {
+		missing = append(missing, "AUSTRO_EXECUTION_RETRY_BACKOFF_MAX")
+	}
+	if c.ExecutionHeartbeatInterval >= c.ExecutionLeaseTTL {
+		missing = append(missing, "AUSTRO_EXECUTION_HEARTBEAT_INTERVAL")
+	}
+	if c.ExecutionWindow >= c.ExecutionLeaseTTL {
+		missing = append(missing, "AUSTRO_EXECUTION_WINDOW")
+	}
+	if c.ExecutionRetryBackoffBase > c.ExecutionRetryBackoffMax {
+		missing = append(missing, "AUSTRO_EXECUTION_RETRY_BACKOFF")
+	}
+
 	// Founder bootstrap is optional, but both settings must be supplied
 	// together (a half-configured bootstrap would fail at runtime), and a
 	// configured password must never be a placeholder or shorter than the
@@ -483,7 +656,75 @@ func (c *Config) validateBackends() []string {
 		missing = append(missing, "AUSTRO_PUBLISH_BACKEND")
 	}
 
+	switch c.ExecutionTransportBackend {
+	case "", ExecutionTransportBackendStub:
+		// Offline transport: no broker configuration may be demanded at rest.
+	case ExecutionTransportBackendRabbitMQ:
+		// Broker-backed: the entrypoint dials the configured RabbitMQ URL; there
+		// is no resting placeholder that could be mistaken for a live broker.
+	default:
+		missing = append(missing, "AUSTRO_EXECUTION_TRANSPORT_BACKEND")
+	}
+
+	// The execution queue name is the only rendezvous between the dispatcher
+	// (in the API process) and the worker (in its own process). A blank or
+	// whitespace-only name would be declared by one side and never bound by the
+	// other, so it is rejected at startup rather than defaulted at the point of
+	// use where the two sides would each substitute a different value.
+	if strings.TrimSpace(c.ExecutionQueue) == "" {
+		missing = append(missing, "AUSTRO_EXECUTION_QUEUE")
+	}
+
+	// The opt-in must be readable. A typo that failed open would grant exactly
+	// the exemption the operator did not intend, so it fails closed.
+	if c.allowStubBackendsRaw != "" {
+		if _, err := strconv.ParseBool(c.allowStubBackendsRaw); err != nil {
+			missing = append(missing, "AUSTRO_ALLOW_STUB_BACKENDS")
+		}
+	}
+
+	// Production must not run a deterministic stub. Every stub adapter answers
+	// successfully without contacting a real service, so a deployment that
+	// reached production on the offline defaults would serve traffic, answer
+	// /health/ready, and perform no real work at all — the most expensive kind
+	// of misconfiguration, because nothing in the system reports it. The rule
+	// is scoped to the production environment so the offline development
+	// default is untouched, and it yields to the explicit, greppable opt-in.
+	if c.isProduction() && !c.AllowStubBackends {
+		switch c.AIBackend {
+		case "", AIBackendStub:
+			missing = append(missing, "AUSTRO_AI_BACKEND")
+		}
+		switch c.PublishBackend {
+		case "", PublishBackendStub:
+			missing = append(missing, "AUSTRO_PUBLISH_BACKEND")
+		}
+		switch c.ExecutionTransportBackend {
+		case "", ExecutionTransportBackendStub:
+			missing = append(missing, "AUSTRO_EXECUTION_TRANSPORT_BACKEND")
+		}
+	}
+
+	// A broker-backed transport with no workspaces to sweep is a dispatcher
+	// that connects, logs "execution-dispatch-started" and then never dispatches
+	// anything. In production that is a silently broken subsystem wearing the
+	// costume of a working one, so it is a startup failure. In development it
+	// stays a deliberate no-op: running the API without the execution pipeline
+	// is the normal way to work on anything else.
+	if c.isProduction() && c.ExecutionTransportBackend == ExecutionTransportBackendRabbitMQ && len(c.ExecutionWorkspaceIDs) == 0 {
+		missing = append(missing, "AUSTRO_EXECUTION_WORKSPACE_IDS")
+	}
+
 	return missing
+}
+
+// isProduction reports whether the configuration declares the production
+// environment. The comparison trims and folds case so that "Production" or a
+// stray trailing space cannot slip past a production-only rule: an
+// environment label that only half activates its safety rules is worse than
+// one that never activates them, because it looks configured.
+func (c *Config) isProduction() bool {
+	return strings.EqualFold(strings.TrimSpace(c.Environment), EnvironmentProduction)
 }
 
 // MustLoad is the runtime startup gate: it validates required configuration
@@ -570,4 +811,26 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return v
+}
+
+// envUUIDs reads a comma-separated list of UUIDs, dropping empty tokens. A
+// token that does not parse is dropped here and rejected by Validate, which
+// keeps the parsed field and the fail-fast rule from disagreeing about whether
+// a malformed value was configured.
+func envUUIDs(key string) []uuid.UUID {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return nil
+	}
+	var out []uuid.UUID
+	for _, token := range strings.Split(raw, ",") {
+		token = strings.TrimSpace(token)
+		if token == "" {
+			continue
+		}
+		if id, err := uuid.Parse(token); err == nil {
+			out = append(out, id)
+		}
+	}
+	return out
 }

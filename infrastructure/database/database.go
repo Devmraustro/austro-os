@@ -117,6 +117,7 @@ func Bootstrap(owner *sql.DB, topo *Topology) error {
 		{"migrate-publications", func() error { return migratePublications(owner) }},
 		{"migrate-pipelines", func() error { return migratePipelines(owner) }},
 		{"migrate-organization", func() error { return migrateOrganization(owner) }},
+		{"migrate-executions", func() error { return migrateExecutions(owner) }},
 		{"enable-rls", func() error { return enableRLS(owner) }},
 		// Roles before policies: CREATE POLICY ... TO <role> requires the role
 		// to exist, so provisioning them afterwards fails the policy step. In
@@ -405,6 +406,122 @@ func createTables(db *sql.DB) error {
 	CREATE UNIQUE INDEX IF NOT EXISTS idx_users_single_founder
 		ON users ((TRUE)) WHERE is_founder = TRUE;
 	CREATE INDEX IF NOT EXISTS idx_users_workspace ON users(workspace_id);
+
+	CREATE TABLE IF NOT EXISTS ai_executions (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+		ai_employee_id UUID NOT NULL REFERENCES ai_employees(id) ON DELETE RESTRICT,
+		task_id UUID REFERENCES tasks(id) ON DELETE SET NULL,
+		status TEXT NOT NULL DEFAULT 'pending',
+		attempt INTEGER NOT NULL DEFAULT 0,
+		max_attempts INTEGER NOT NULL DEFAULT 3,
+		idempotency_key TEXT,
+		request_hash TEXT NOT NULL,
+		lease_owner TEXT,
+		lease_generation BIGINT NOT NULL DEFAULT 0,
+		lease_expires_at TIMESTAMP,
+		next_retry_at TIMESTAMP,
+		last_error_code INTEGER,
+		retryable BOOLEAN,
+		error_detail TEXT,
+		result_json JSONB,
+		completed_at TIMESTAMP,
+		failed_at TIMESTAMP,
+		cancelled_at TIMESTAMP,
+		created_at TIMESTAMP DEFAULT NOW(),
+		updated_at TIMESTAMP DEFAULT NOW()
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_ai_executions_workspace ON ai_executions(workspace_id);
+	CREATE INDEX IF NOT EXISTS idx_ai_executions_workspace_status ON ai_executions(workspace_id, status);
+	CREATE INDEX IF NOT EXISTS idx_ai_executions_employee ON ai_executions(ai_employee_id, status);
+	CREATE INDEX IF NOT EXISTS idx_ai_executions_lease ON ai_executions(status, lease_expires_at);
+	CREATE INDEX IF NOT EXISTS idx_ai_executions_next_retry ON ai_executions(status, next_retry_at);
+	CREATE INDEX IF NOT EXISTS idx_ai_executions_task ON ai_executions(task_id);
+	CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_executions_workspace_idempotency
+		ON ai_executions(workspace_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
+
+	CREATE TABLE IF NOT EXISTS ai_execution_retries (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		execution_id UUID NOT NULL REFERENCES ai_executions(id) ON DELETE CASCADE,
+		workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+		retry_seq INTEGER NOT NULL,
+		state TEXT NOT NULL DEFAULT 'pending',
+		outcome TEXT,
+		worker_id TEXT,
+		generation BIGINT NOT NULL DEFAULT 0,
+		next_retry_at TIMESTAMP,
+		claimed_at TIMESTAMP,
+		dispatched_at TIMESTAMP,
+		completed_at TIMESTAMP,
+		created_at TIMESTAMP DEFAULT NOW()
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_ai_execution_retries_execution ON ai_execution_retries(execution_id);
+	CREATE INDEX IF NOT EXISTS idx_ai_execution_retries_workspace ON ai_execution_retries(workspace_id);
+	CREATE INDEX IF NOT EXISTS idx_ai_execution_retries_state ON ai_execution_retries(state, next_retry_at);
+
+	CREATE TABLE IF NOT EXISTS retry_dispatch_log (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+		retry_id UUID NOT NULL REFERENCES ai_execution_retries(id) ON DELETE CASCADE,
+		worker_id TEXT NOT NULL,
+		generation BIGINT NOT NULL,
+		outcome TEXT NOT NULL,
+		recorded_at TIMESTAMP DEFAULT NOW()
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_retry_dispatch_log_retry ON retry_dispatch_log(retry_id);
+	CREATE INDEX IF NOT EXISTS idx_retry_dispatch_log_workspace ON retry_dispatch_log(workspace_id);
+
+	CREATE TABLE IF NOT EXISTS ai_execution_dlq (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+		execution_id UUID NOT NULL REFERENCES ai_executions(id) ON DELETE CASCADE,
+		attempt INTEGER NOT NULL DEFAULT 0,
+		error_code INTEGER NOT NULL,
+		retryable BOOLEAN NOT NULL,
+		error_detail TEXT,
+		contexts_snapshot JSONB,
+		created_at TIMESTAMP DEFAULT NOW()
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_ai_execution_dlq_workspace ON ai_execution_dlq(workspace_id);
+	CREATE INDEX IF NOT EXISTS idx_ai_execution_dlq_execution ON ai_execution_dlq(execution_id);
+
+	CREATE TABLE IF NOT EXISTS ai_tool_calls (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+		execution_id UUID NOT NULL REFERENCES ai_executions(id) ON DELETE CASCADE,
+		tool_name TEXT NOT NULL,
+		arguments JSONB,
+		status TEXT NOT NULL,
+		result JSONB,
+		error_detail TEXT,
+		duration_ms BIGINT NOT NULL DEFAULT 0,
+		created_at TIMESTAMP DEFAULT NOW(),
+		completed_at TIMESTAMP
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_ai_tool_calls_execution ON ai_tool_calls(execution_id);
+	CREATE INDEX IF NOT EXISTS idx_ai_tool_calls_workspace ON ai_tool_calls(workspace_id);
+
+	CREATE TABLE IF NOT EXISTS execution_contexts (
+		id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+		execution_id UUID NOT NULL REFERENCES ai_executions(id) ON DELETE CASCADE,
+		task_title TEXT,
+		task_description TEXT,
+		ai_employee_name TEXT NOT NULL,
+		ai_employee_role TEXT NOT NULL,
+		team_name TEXT,
+		department_name TEXT,
+		capabilities TEXT[] NOT NULL DEFAULT '{}',
+		created_at TIMESTAMP DEFAULT NOW()
+	);
+
+	CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_contexts_execution ON execution_contexts(execution_id);
+	CREATE INDEX IF NOT EXISTS idx_execution_contexts_workspace ON execution_contexts(workspace_id);
 `
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("create tables: %w", err)
@@ -518,7 +635,8 @@ func migratePipelines(db *sql.DB) error {
 // whole chain is readable only by the administrative role, which is what
 // verification runs as.
 func rlsTables() []string {
-	return []string{"workspaces", "departments", "teams", "ai_employees", "ceos", "tasks", "knowledge_documents", "memory_embeddings", "publications", "pipelines", "users", "audit_events"}
+	return []string{"workspaces", "departments", "teams", "ai_employees", "ceos", "tasks", "knowledge_documents", "memory_embeddings", "publications", "pipelines", "users", "audit_events",
+		"ai_executions", "ai_execution_retries", "retry_dispatch_log", "ai_execution_dlq", "ai_tool_calls", "execution_contexts"}
 }
 
 // migrateAuditEvents upgrades audit_events for persistent, workspace-scoped
@@ -683,6 +801,91 @@ func migrateOrganization(db *sql.DB) error {
 	`
 	if _, err := db.Exec(migration); err != nil {
 		return fmt.Errorf("migrate organization: %w", err)
+	}
+	return nil
+}
+
+// migrateExecutions pins the AI execution lifecycle invariants the domain
+// (internal/execution) already validates, so a row written by any other path
+// cannot carry a status, attempt count or retry state the runtime cannot
+// interpret.
+//
+// attempt counts STARTED executions, so it can never exceed max_attempts and
+// its upper bound is enforced here. A processed retry row must have its lease
+// fingerprint cleared (worker_id NULL) so orchestrators never fence against a
+// row that is no longer outstanding; the partial unique index below is what
+// enforces at most one outstanding retry per execution, which keeps recovery
+// and scheduling decisions unambiguous.
+//
+// It also adds the concurrency cap the admission service reads: without a
+// numeric ceiling the capacity check could not be expressed in SQL at all.
+//
+// Idempotent and runs on every boot, so a database created before execution
+// support existed is upgraded rather than left without the constraints.
+func migrateExecutions(db *sql.DB) error {
+	migration := `
+	ALTER TABLE ai_employees ADD COLUMN IF NOT EXISTS max_concurrent_executions INTEGER NOT NULL DEFAULT 3;
+	DO $$
+	BEGIN
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ai_executions_status_valid') THEN
+			ALTER TABLE ai_executions ADD CONSTRAINT ai_executions_status_valid CHECK (status IN (
+				'pending', 'running', 'completed', 'failed', 'cancelled'));
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ai_executions_max_attempts_valid') THEN
+			ALTER TABLE ai_executions ADD CONSTRAINT ai_executions_max_attempts_valid CHECK (max_attempts > 0);
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ai_executions_attempt_nonneg') THEN
+			ALTER TABLE ai_executions ADD CONSTRAINT ai_executions_attempt_nonneg CHECK (attempt >= 0);
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ai_executions_attempt_leq') THEN
+			ALTER TABLE ai_executions ADD CONSTRAINT ai_executions_attempt_leq CHECK (attempt <= max_attempts);
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ai_executions_lease_locked') THEN
+			ALTER TABLE ai_executions ADD CONSTRAINT ai_executions_lease_locked CHECK (
+				(status <> 'running' AND lease_owner IS NULL AND lease_expires_at IS NULL)
+				OR
+				(status = 'running' AND lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL));
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ai_employees_max_concurrent_valid') THEN
+			ALTER TABLE ai_employees ADD CONSTRAINT ai_employees_max_concurrent_valid
+				CHECK (max_concurrent_executions >= 1);
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ai_execution_retries_retry_seq_valid') THEN
+			ALTER TABLE ai_execution_retries ADD CONSTRAINT ai_execution_retries_retry_seq_valid CHECK (retry_seq > 0);
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ai_execution_retries_state_valid') THEN
+			ALTER TABLE ai_execution_retries ADD CONSTRAINT ai_execution_retries_state_valid CHECK (state IN (
+				'pending', 'claimed', 'dispatched', 'processed'));
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ai_execution_retries_outcome_valid') THEN
+			ALTER TABLE ai_execution_retries ADD CONSTRAINT ai_execution_retries_outcome_valid
+				CHECK (outcome IS NULL OR outcome IN ('success', 'failed', 'cancelled'));
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ai_execution_retries_processed_clear') THEN
+			ALTER TABLE ai_execution_retries ADD CONSTRAINT ai_execution_retries_processed_clear
+				CHECK (state <> 'processed' OR worker_id IS NULL);
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'retry_dispatch_log_outcome_valid') THEN
+			ALTER TABLE retry_dispatch_log ADD CONSTRAINT retry_dispatch_log_outcome_valid
+				CHECK (outcome IN ('success', 'failed'));
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ai_execution_dlq_error_code_valid') THEN
+			ALTER TABLE ai_execution_dlq ADD CONSTRAINT ai_execution_dlq_error_code_valid CHECK (error_code >= 0);
+		END IF;
+		IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ai_tool_calls_status_valid') THEN
+			ALTER TABLE ai_tool_calls ADD CONSTRAINT ai_tool_calls_status_valid CHECK (status IN ('completed', 'failed'));
+		END IF;
+	END$$;
+
+	CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_execution_retries_one_outstanding
+		ON ai_execution_retries(execution_id, workspace_id)
+		WHERE state IN ('pending', 'claimed', 'dispatched');
+	`
+	if _, err := db.Exec(migration); err != nil {
+		// A constraint add can only fail if pre-existing rows already violate
+		// the invariant. Surface that loudly: silently skipping the constraint
+		// would leave the table accepting values the runtime cannot interpret.
+		return fmt.Errorf("migrate executions: %w", err)
 	}
 	return nil
 }
@@ -866,6 +1069,42 @@ func setupRLSPolicies(db *sql.DB, adminRole string) error {
 			       OR workspace_id = NULLIF(current_setting(''app.current_workspace'', true), '''')::UUID
 			       OR username = current_setting(''app.auth_principal'', true)
 			       OR id::text = current_setting(''app.auth_principal'', true))';
+
+		-- AI executions: direct match on workspace_id column
+		IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'workspace_isolation_policy' AND polrelid = 'ai_executions'::regclass) THEN
+			EXECUTE 'CREATE POLICY workspace_isolation_policy ON ai_executions
+				USING (workspace_id = NULLIF(current_setting(''app.current_workspace'', true), '''')::UUID)';
+		END IF;
+
+		-- AI execution retries: direct match on workspace_id column
+		IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'workspace_isolation_policy' AND polrelid = 'ai_execution_retries'::regclass) THEN
+			EXECUTE 'CREATE POLICY workspace_isolation_policy ON ai_execution_retries
+				USING (workspace_id = NULLIF(current_setting(''app.current_workspace'', true), '''')::UUID)';
+		END IF;
+
+		-- Retry dispatch log: direct match on workspace_id column
+		IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'workspace_isolation_policy' AND polrelid = 'retry_dispatch_log'::regclass) THEN
+			EXECUTE 'CREATE POLICY workspace_isolation_policy ON retry_dispatch_log
+				USING (workspace_id = NULLIF(current_setting(''app.current_workspace'', true), '''')::UUID)';
+		END IF;
+
+		-- AI execution dead-letter queue: direct match on workspace_id column
+		IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'workspace_isolation_policy' AND polrelid = 'ai_execution_dlq'::regclass) THEN
+			EXECUTE 'CREATE POLICY workspace_isolation_policy ON ai_execution_dlq
+				USING (workspace_id = NULLIF(current_setting(''app.current_workspace'', true), '''')::UUID)';
+		END IF;
+
+		-- AI tool calls: direct match on workspace_id column
+		IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'workspace_isolation_policy' AND polrelid = 'ai_tool_calls'::regclass) THEN
+			EXECUTE 'CREATE POLICY workspace_isolation_policy ON ai_tool_calls
+				USING (workspace_id = NULLIF(current_setting(''app.current_workspace'', true), '''')::UUID)';
+		END IF;
+
+		-- Execution contexts: direct match on workspace_id column
+		IF NOT EXISTS (SELECT 1 FROM pg_policy WHERE polname = 'workspace_isolation_policy' AND polrelid = 'execution_contexts'::regclass) THEN
+			EXECUTE 'CREATE POLICY workspace_isolation_policy ON execution_contexts
+				USING (workspace_id = NULLIF(current_setting(''app.current_workspace'', true), '''')::UUID)';
+		END IF;
 	END$$;
 	`, adminRole, adminRole)
 	if _, err := db.Exec(policies); err != nil {

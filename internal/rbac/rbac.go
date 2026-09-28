@@ -201,6 +201,42 @@ func Rules() []Rule {
 			Scope:           ScopeSelf,
 			Principle:       "Principle 11 - Human Oversight",
 		},
+		// AI execution (the Creator runtime). Executions are workspace-scoped
+		// tenant data, so every route is ScopeSelf for the same reason the task
+		// routes are: the caller must be bound to a workspace in its verified
+		// claims, and that workspace -- never anything in the request -- is what
+		// the store binds as app.current_workspace. There is no workspace
+		// segment in these paths to forge, and the {id} is the execution,
+		// resolved only inside the caller's own workspace.
+		//
+		// Admission is a workspace action that spends capacity, the read is
+		// observability, and cancellation is the named human oversight: it is a
+		// command route rather than a PATCH because a field update has no way to
+		// validate a lifecycle move.
+		//
+		// The founder is absent by design for the same reason as the task
+		// routes: no home workspace, so ScopeSelf denies.
+		{
+			Action:          "POST",
+			ResourcePattern: "/tasks/{id}/execute",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 1 - Vision First",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/executions/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 13 - Observability",
+		},
+		{
+			Action:          "POST",
+			ResourcePattern: "/executions/{id}/cancel",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 11 - Human Oversight",
+		},
 
 		// Knowledge management (ADR-007, routing completed by ADR-023). Knowledge
 		// documents are workspace-scoped tenant data with embeddings, so every
@@ -553,6 +589,42 @@ func ImplementedRules() []Rule {
 			Scope:           ScopeSelf,
 			Principle:       "Principle 11 - Human Oversight",
 		},
+		// AI execution (the Creator runtime). Executions are workspace-scoped
+		// tenant data, so every route is ScopeSelf for the same reason the task
+		// routes are: the caller must be bound to a workspace in its verified
+		// claims, and that workspace -- never anything in the request -- is what
+		// the store binds as app.current_workspace. There is no workspace
+		// segment in these paths to forge, and the {id} is the execution,
+		// resolved only inside the caller's own workspace.
+		//
+		// Admission is a workspace action that spends capacity, the read is
+		// observability, and cancellation is the named human oversight: it is a
+		// command route rather than a PATCH because a field update has no way to
+		// validate a lifecycle move.
+		//
+		// The founder is absent by design for the same reason as the task
+		// routes: no home workspace, so ScopeSelf denies.
+		{
+			Action:          "POST",
+			ResourcePattern: "/tasks/{id}/execute",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 1 - Vision First",
+		},
+		{
+			Action:          "GET",
+			ResourcePattern: "/executions/{id}",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 13 - Observability",
+		},
+		{
+			Action:          "POST",
+			ResourcePattern: "/executions/{id}/cancel",
+			Roles:           []Role{RoleWorkspaceAdmin, RoleWorkspaceMember},
+			Scope:           ScopeSelf,
+			Principle:       "Principle 11 - Human Oversight",
+		},
 
 		// Knowledge management (ADR-007, routing completed by ADR-023). Knowledge
 		// documents are workspace-scoped tenant data with embeddings, so every
@@ -760,10 +832,10 @@ func PermissionsForRole(r Role) map[string][]string {
 	case RoleWorkspaceAdmin:
 		return map[string][]string{
 			"GET": {"/api/me", "/workspaces/{id}", "/workspaces/{id}/audit/events",
-				"/tasks", "/tasks/{id}",
+				"/tasks", "/tasks/{id}", "/executions/{id}",
 				"/knowledge", "/knowledge/{id}", "/memory/{layer}/{key}", "/publications", "/publications/{id}", "/pipelines", "/pipelines/{id}",
 				"/departments", "/departments/{id}", "/teams", "/teams/{id}", "/ai-employees", "/ai-employees/{id}"},
-			"POST":   {"/tasks", "/tasks/{id}/transition", "/knowledge", "/knowledge/search", "/publications", "/publications/{id}/submit", "/publications/{id}/approve", "/publications/{id}/reject", "/publications/{id}/publish", "/publications/{id}/retry", "/pipelines", "/pipelines/{id}/approve", "/pipelines/{id}/retry", "/departments", "/teams", "/ai-employees"},
+			"POST":   {"/tasks", "/tasks/{id}/transition", "/tasks/{id}/execute", "/executions/{id}/cancel", "/knowledge", "/knowledge/search", "/publications", "/publications/{id}/submit", "/publications/{id}/approve", "/publications/{id}/reject", "/publications/{id}/publish", "/publications/{id}/retry", "/pipelines", "/pipelines/{id}/approve", "/pipelines/{id}/retry", "/departments", "/teams", "/ai-employees"},
 			"PATCH":  {"/tasks/{id}", "/knowledge/{id}", "/departments/{id}", "/teams/{id}", "/ai-employees/{id}"},
 			"PUT":    {"/memory/{layer}/{key}"},
 			"DELETE": {"/knowledge/{id}", "/departments/{id}", "/teams/{id}", "/ai-employees/{id}"},
@@ -771,10 +843,10 @@ func PermissionsForRole(r Role) map[string][]string {
 	case RoleWorkspaceMember:
 		return map[string][]string{
 			"GET": {"/api/me", "/workspaces/{id}/audit/events",
-				"/tasks", "/tasks/{id}",
+				"/tasks", "/tasks/{id}", "/executions/{id}",
 				"/knowledge", "/knowledge/{id}", "/memory/{layer}/{key}", "/publications", "/publications/{id}", "/pipelines", "/pipelines/{id}",
 				"/departments", "/departments/{id}", "/teams", "/teams/{id}", "/ai-employees", "/ai-employees/{id}"},
-			"POST":   {"/tasks", "/tasks/{id}/transition", "/knowledge", "/knowledge/search", "/publications", "/publications/{id}/submit", "/pipelines", "/pipelines/{id}/retry"},
+			"POST":   {"/tasks", "/tasks/{id}/transition", "/tasks/{id}/execute", "/executions/{id}/cancel", "/knowledge", "/knowledge/search", "/publications", "/publications/{id}/submit", "/pipelines", "/pipelines/{id}/retry"},
 			"PATCH":  {"/tasks/{id}", "/knowledge/{id}"},
 			"PUT":    {"/memory/{layer}/{key}"},
 			"DELETE": {"/knowledge/{id}"},

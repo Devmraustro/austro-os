@@ -8,6 +8,7 @@ import (
 
 	"austro-os/internal/composition"
 	"austro-os/internal/event"
+	"austro-os/internal/execution"
 	logger "austro-os/internal/log"
 	"austro-os/internal/orchestration"
 	"austro-os/internal/worker"
@@ -122,6 +123,45 @@ func newHandler(rt *composition.Runtime) func(*event.UniversalEnvelope) error {
 				Log()
 			return err
 		}
+		return nil
+	}
+}
+
+// newExecutionHandler returns the handler for the execution dispatch queue.
+// Each message is exactly one fenced retry: the worker runs the attempt and
+// persists the decision (completed, rescheduled, dead-lettered, or abandoned
+// when ownership has moved). The board is the source of truth, so every
+// terminal outcome — including abandoned, where recovery now owns the row and
+// will re-dispatch on lease expiry — is acknowledged. Only a store/materialize
+// failure requeues, and only a structurally invalid dispatch is a permanent
+// failure.
+func newExecutionHandler(w *execution.Worker) func(*event.UniversalEnvelope) error {
+	return func(env *event.UniversalEnvelope) error {
+		if env.TargetType != "execution" {
+			return worker.PermanentErrorf("execution queue carries non-execution target %q", env.TargetType)
+		}
+		var msg execution.PublishMessage
+		if err := json.Unmarshal(env.Details, &msg); err != nil {
+			return worker.PermanentErrorf("decode execution dispatch: %v", err)
+		}
+		if msg.WorkspaceID == uuid.Nil || msg.ExecutionID == uuid.Nil || msg.RetryID == uuid.Nil {
+			return worker.PermanentErrorf("execution dispatch carries a nil identity")
+		}
+		outcome, err := w.Run(context.Background(), msg)
+		if err != nil {
+			if errors.Is(err, execution.ErrInvalidInput) {
+				return worker.PermanentErrorf("execution dispatch is invalid: %v", err)
+			}
+			// Store or materializer failure: requeue for redelivery; the board
+			// is unchanged and the lease still fences the row.
+			return err
+		}
+		logger.NewEntry("execution-attempt").
+			With("execution_id", msg.ExecutionID).
+			With("retry_id", msg.RetryID).
+			With("attempt", msg.Attempt).
+			With("outcome", string(outcome)).
+			Log()
 		return nil
 	}
 }

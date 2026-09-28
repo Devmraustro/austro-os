@@ -132,7 +132,7 @@ negative control.
 | `AUSTRO_REDIS_PASSWORD` | **REQUIRED** | Read directly by `infrastructure/redis` at connect time. Note it is **not** checked by `Config.Validate`; a wrong value surfaces as `redis-connect-failed` at startup, which is still fail-fast, just later. |
 | `AUSTRO_RABBITMQ_URL` | **REQUIRED** | Derived in compose from `amqp://<user>:<password>@rabbitmq:5672/`. |
 | `AUSTRO_RABBITMQ_USER` | **REQUIRED** | `SAFE DEFAULT` `austro`. |
-| `AUSTRO_RABBITMQ_QUEUE` | **SAFE DEFAULT** `austro.events` | Declared durable and non-auto-delete by both processes. |
+| `AUSTRO_RABBITMQ_QUEUE` | **SAFE DEFAULT** `austro.events` | Declared durable and non-auto-delete by both processes. This is the **event** queue only — it is not the execution queue (see *Execution transport*). Setting it does not move AI executions. |
 
 ---
 
@@ -159,6 +159,81 @@ Two strictness rules worth knowing before you set anything here:
 2. The validator rejects any value containing `change-me`, `changeme`,
    `example`, or a loopback host (`localhost:5432`, `localhost:6379`,
    `localhost:5672`). These placeholders cannot be deployed by accident.
+3. In production, the `stub` AI, publishing and execution backends are refused
+   outright unless `AUSTRO_ALLOW_STUB_BACKENDS` is explicitly true. See below.
+
+---
+
+## Execution transport
+
+The AI execution subsystem is split across two processes: the **API** process
+owns the dispatcher that publishes claimed work, and `cmd/worker` owns the
+consumer that executes it. They are separate binaries sharing nothing but
+PostgreSQL and the broker, so the queue name is the only thing joining them — and
+it is configuration, not a constant, precisely so a rename can be applied to both
+sides.
+
+| Variable | Class | Notes |
+|---|---|---|
+| `AUSTRO_EXECUTION_TRANSPORT_BACKEND` | **SAFE DEFAULT** `stub`; **CONFIGURATION REQUIRED** in production | `stub` executes in-process and touches no broker. `rabbitmq` splits dispatch from execution across the two processes. |
+| `AUSTRO_EXECUTION_QUEUE` | **SAFE DEFAULT** `austro.executions` | **Must be identical for the API and the worker.** A blank or whitespace-only value is a startup failure, not a fallback — a per-process default would let the two sides silently use different queues. Not the same setting as `AUSTRO_RABBITMQ_QUEUE`. |
+| `AUSTRO_EXECUTION_WORKSPACE_IDS` | **CONFIGURATION REQUIRED** when the transport is `rabbitmq` in production | Comma-separated workspace UUIDs the dispatcher is permitted to serve. In production, a broker-backed dispatcher with this empty is a startup failure: it would connect, log `execution-dispatch-started`, and dispatch nothing. In development it is a deliberate no-op (`execution-dispatch-idle`), and it is not required for the `stub` transport. |
+| `AUSTRO_EXECUTION_LEASE_TTL` | **SAFE DEFAULT** `60s` | How long a claim survives a worker that dies without releasing it. |
+| `AUSTRO_EXECUTION_HEARTBEAT_INTERVAL` | **SAFE DEFAULT** `20s` | Renewal period for a live claim. Must be well under the TTL or healthy workers will lose their leases. |
+| `AUSTRO_EXECUTION_WINDOW` | **SAFE DEFAULT** `50s` | How far into the future work is claimed for. Should exceed execution time and the TTL, so a slow execution is not handed to a second worker. |
+| `AUSTRO_EXECUTION_SWEEP_INTERVAL` | **SAFE DEFAULT** `5s` | Cadence for reaping expired leases. |
+| `AUSTRO_EXECUTION_RETRY_BACKOFF_BASE`, `AUSTRO_EXECUTION_RETRY_BACKOFF_MAX` | **SAFE DEFAULT** `2s` / `2m` | Exponential retry ceiling. Base must not exceed max. |
+
+A duration that does not parse, is not positive, or breaks one of these
+relationships is rejected at startup by name:
+
+- `AUSTRO_EXECUTION_HEARTBEAT_INTERVAL` must be **less than** the lease TTL. A
+  heartbeat at or beyond the TTL lets a claim expire underneath a worker that is
+  still running, so a second worker picks up the same task.
+- `AUSTRO_EXECUTION_WINDOW` must be **less than** the lease TTL, for the same
+  reason: work claimed beyond the TTL can expire before anyone executes it.
+- `AUSTRO_EXECUTION_RETRY_BACKOFF_BASE` must not exceed the max.
+- Every entry in `AUSTRO_EXECUTION_WORKSPACE_IDS` must parse as a UUID.
+
+The reason these are startup failures rather than warnings is that they govern
+how quickly a crashed worker's task is retried and how often a *healthy* worker
+loses its claim. Both failure modes are duplicated or stalled work, and both are
+invisible from outside the two processes — everything keeps reporting healthy.
+
+### Seeing whether execution is actually running
+
+`execution-dispatch-started` logs the resolved queue, transport and workspace
+count. Confirming the deployment:
+
+```bash
+docker compose logs api | grep execution-dispatch-started
+# execution-dispatch-started component=execution transport=rabbitmq queue=austro.executions workspaces=2
+```
+
+`workspaces:0` with `transport:rabbitmq` means the dispatcher is up and sweeping
+nothing.
+
+---
+
+## The production stub refusal
+
+| Variable | Class | Notes |
+|---|---|---|
+| `AUSTRO_ALLOW_STUB_BACKENDS` | **SAFE DEFAULT** `false` | Set `true` only for a deliberately offline production-shaped stack — a demo, a rehearsal, or a no-egress site. An unparseable value is rejected rather than read as consent. |
+
+A stub adapter answers **successfully without contacting anything**. A production
+deployment left on the offline defaults would serve traffic, pass
+`/health/ready`, perform no real work, and never report a problem — the exact
+failure that a release gate exists to prevent. `AUSTRO_ENV=production`
+(case-insensitive, whitespace-trimmed) therefore refuses `stub` for the AI,
+publishing and execution backends together.
+
+The offline **development** default is deliberately untouched: a fresh clone still
+runs with no configuration, no account and no egress.
+
+This is a startup failure, not a log line. Refusing is the only outcome that gets
+noticed — a warning would scroll past, and the deployment would come up looking
+exactly like a working one.
 
 ---
 
@@ -218,6 +293,8 @@ stored credential — the bootstrap endpoint refuses once a founder exists.
 | Value | Where it comes from |
 |---|---|
 | `AUSTRO_ENV=development` | Local `.env`; the production compose forces `production`. |
+| `AUSTRO_AI_BACKEND=stub`, `AUSTRO_PUBLISH_BACKEND=stub`, `AUSTRO_EXECUTION_TRANSPORT_BACKEND=stub` | Offline defaults from `.env.example`. Refused at startup in production unless `AUSTRO_ALLOW_STUB_BACKENDS=true`. |
+| `AUSTRO_EXECUTION_TRANSPORT_BACKEND=rabbitmq` with empty `AUSTRO_EXECUTION_WORKSPACE_IDS` | A startup failure in production. |
 | Loopback DSNs (`localhost:5432`, `localhost:6379`, `localhost:5672`) | Rejected outright by the validator. |
 | `change-me*` placeholders | Rejected outright by the validator, and by `scripts/deploy.sh`. |
 | Comparing `docker-compose.yml` for production use | The dev compose publishes database, cache and broker on loopback and enables no auth on Redis' peer ports. It is a development file. Production is `docker-compose.production.yml`. |
