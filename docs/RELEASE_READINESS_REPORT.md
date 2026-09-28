@@ -399,6 +399,30 @@ assurance without a stated basis.
 | API + worker rebuilt and restarted against the live stack | pass — `/health/live` 200, `/health/ready` 200 |
 | Startup log confirms config-driven queue | pass — `execution-dispatch-started` with `"queue":"austro.executions","transport":"rabbitmq","workspaces":2` |
 
+### Build identity pass
+
+| Check | Result |
+|---|---|
+| `go build ./...`, `go vet ./...` after the identity change | pass, exit 0 |
+| `go test ./internal/buildinfo -count=1` | pass, exit 0 |
+| Build identity contract suite | 43 pass, 0 fail, 2 skip (manifest tests skip until a manifest exists) |
+| `scripts/verify-production-deployment.sh` after the change | **199 passed, 0 failed** (up from 189) |
+| Dockerfile commit validation, executed against 10 inputs | only a full 40-char lowercase SHA and the literal `unknown` accepted; branch name, `HEAD`, short SHA, empty, uppercase, trailing newline, non-hex and over-length all rejected |
+| `grep -a` image assertion, run against a real built binary | finds the linked commit; does not match a control SHA |
+| `bash -n` on both changed scripts | pass |
+| Workflow and compose YAML parse | pass, all five files |
+| Production compose build args resolve for both services | pass — single anchor, no drift possible |
+| Two independent clones, four artifacts | **byte-for-byte identical** |
+| Artifact inspection via `debug/elf` | 4/4 ELF64, `ET_EXEC`, correct machine, no `PT_INTERP` |
+| Embedded commit, with a control that must not match | 4/4 present, 4/4 control absent — the check discriminates |
+| Unstamped-claim check | 4/4 contain neither `commit=unknown` nor `commit=dev` |
+| Executed `--version`, all three spellings, both entrypoints | reports the expected version and source commit |
+| Executed unlinked control build | reports `version=dev commit=unknown` with the note, so the check discriminates |
+| Manifest digests and sizes re-hashed from disk | 4/4 match; four distinct digests |
+| Architecture gate static subtests | pass |
+| Architecture gate live subtests, full live regression suite | **not run** — no PostgreSQL, Redis, RabbitMQ or running API on this host |
+| Shipped Linux binaries executed | **not possible** — no qemu on this host; see §5 |
+
 ### Test fixtures corrected
 
 Two live tests and the config unit fixture built `config.Config` struct literals
@@ -475,74 +499,152 @@ live-path test.
 
 ## 5. Release candidate
 
-**Source: the commit that adds this report** — tree recorded in
-`release-manifest.json` alongside the artifact digests. The source was
-materialised with `git archive <commit>` into an empty directory, so the build
-cannot be influenced by the working directory, by untracked files, or by
-`.gitignore`.
+**Build source commit: `af59c4efc06c162790c171bca38c9b3cfe7685ba`**
+(`feat(release): give every released binary a verifiable build identity`),
+tree `94256cb0fd9313ceb0a8231a6c6562dece895ac8`.
 
-This wording is deliberate. A SHA cannot be embedded in a file that is part of
-the commit that SHA identifies, so the manifest — which lives outside the
-repository — is the authoritative record of the exact source compiled. The
-report points at it rather than restating a hash that would go stale on the next
-commit.
+That commit is the authority for what was compiled. The commit that carries
+*this report* is necessarily later and is not the build source; the two are
+deliberately distinguished rather than conflated. Per-build provenance that
+cannot live inside a reproducible binary - digests, toolchain, build time - is
+in `release-manifest.json`, which lives outside the repository because a file
+cannot contain the SHA of the commit that contains it.
 
-Built with the repository's own convention, matching
-`.github/workflows/native-arm64-deploy.yml:60-61`:
-`-trimpath -ldflags '-s -w'`, `CGO_ENABLED=0`. Binary names match what each
-install script expects (`austro-api`/`austro-worker`).
+Each of the two builds ran in its **own clone of that commit**, created with
+`--no-hardlinks` so the object stores are separate copies rather than a shared
+view. Each clone's tracked tree was asserted clean before building, and
+`scripts/build-release.sh` independently refuses a tracked-dirty tree. The
+binaries therefore cannot claim a commit that does not describe their source.
+
+Built with the repository's own flags: `-trimpath -ldflags '-s -w'` plus the
+linked identity, `CGO_ENABLED=0`, via `scripts/build-release.sh` - the single
+definition the native ARM64 job calls. Binary names match what each install
+script expects (`austro-api`/`austro-worker`).
 
 Location: `C:\Users\AUSTRO\AppData\Local\Temp\opencode\austro-release-candidate\`
 (manifest: `release-manifest.json`)
 
 | Target | File | Bytes | SHA-256 |
 |---|---|---|---|
-| linux/amd64 | `austro-api` | 13,963,426 | `99dab4e2c7c731a578fa17434b8236224c87779f9e4ea4579dccb7d04c64515d` |
-| linux/amd64 | `austro-worker` | 12,001,442 | `9dcd4b86b9ac2b482fbdff778e9ed2b00b993efbb9f242c6f559ad345b3360d2` |
-| linux/arm64 | `austro-api` | 13,107,362 | `e07a5cb6d827d3d41d21a4cf7a1f82c3f4319463d7663f0e790421220f31d69b` |
-| linux/arm64 | `austro-worker` | 11,337,890 | `a3b82b0fb642416fd94c0540bc389bfe7a1cbecd04414916ea1e22d82cc1d4af` |
+| linux/amd64 | `austro-api` | 13,963,426 | `6427c42919b4d977cdf9d02b1072fddce6a710f79bef4275b82e527217efd03c` |
+| linux/amd64 | `austro-worker` | 12,001,442 | `0db93c6b3eebab1c8b0e4d378951e3bfcb4529317a261e5f2d6c4dbf6d1366c9` |
+| linux/arm64 | `austro-api` | 13,107,362 | `c2a0994b1b32d13cf21bed997e3fb4692956fa31a68ff6658c222401a287d29a` |
+| linux/arm64 | `austro-worker` | 11,337,890 | `56a3dc80545adfc3e915fb42512f612ce6ba850c61cad2ce02d2950204534bdf` |
+
+### Build identity — VERIFIED, and this closes the gap the last candidate had
+
+The previous candidate carried a standing admission: *"No binary embeds its
+build identity... Identifying a running deployment requires this manifest."* That
+is now false, deliberately. A released binary names its own source:
+
+```
+austro-os api    version=1.0 commit=af59c4efc06c162790c171bca38c9b3cfe7685ba
+austro-os worker version=1.0 commit=af59c4efc06c162790c171bca38c9b3cfe7685ba
+```
+
+`--version`, `-version` and `version` are all accepted on both entrypoints, and
+the command is answered **before** configuration is read. That ordering is the
+point: a host whose environment is broken is exactly where someone needs to
+identify the binary, so identifying it must not require a working environment.
+An unstamped build is distinguishable rather than plausible:
+
+```
+austro-os api version=dev commit=unknown
+note: development build; no release metadata was linked in at build time
+```
+
+Every release build path stamps identity, and each is covered by a test that
+reads the build definition itself - a release build that quietly drops its
+`-X` flags still compiles, still passes every functional test, and still
+produces four working binaries, so nothing else would fail until someone needed
+the answer:
+
+| Path | How identity gets there |
+|---|---|
+| `scripts/build-release.sh` | the single definition; refuses a tracked-dirty tree |
+| `native-arm64-deploy.yml` | calls that script, so it cannot drift from it |
+| `Dockerfile` | links it, validates the commit, fails the build if the binaries lack it |
+| `docker-compose.production.yml` | requires `AUSTRO_BUILD_COMMIT`; compose aborts rather than defaulting |
+| `production-deployment.yml` | passes `GITHUB_SHA`, asserts label and binaries agree |
+| `phase2-ci.yml` | links it into the uploaded x86_64 artifact and asserts both binaries report it |
+
+### Defects found while wiring this up
+
+Four things were wrong before they were right, and each is now covered by a test:
+
+- **The image's revision label would have been empty.** An `ARG` is scoped to the
+  stage that declares it, and `org.opencontainers.image.revision` is written in
+  the runtime stage, which declared no `ARG` of its own. The image would have
+  claimed `revision=""` while its binaries correctly reported a commit - the
+  exact disagreement this work exists to prevent, reintroduced through the
+  labels.
+- **Neither release path passed a commit to the image build.** Both would have
+  shipped `commit=unknown`. The production compose file now requires the value
+  with compose's `:?` form, and CI passes the commit it checked out.
+- **An empty commit would have passed the image's own check vacuously**, because
+  `grep -F ""` matches every file. The Dockerfile now refuses anything that is
+  neither a full 40-character lowercase SHA nor the literal `unknown`, so a
+  branch name, a short SHA or an empty value fails the build instead of producing
+  an image that looks stamped and cannot be traced.
+- **A comment block sat inside a continued `RUN`**, which is a parse hazard:
+  comment lines are removed before instructions execute, so it either broke the
+  build or truncated the instruction.
+
+One check was deliberately **not** added. The Dockerfile asserts the commit but
+not the version, because grepping a Go binary for a short token like `1.0`
+matches almost anything and can never fail - worse than no check, since it reads
+as assurance. The version is asserted where it discriminates: by executing
+`--version`.
 
 ### Reproducibility — VERIFIED, not assumed
 
-The candidate was built **twice** from the same commit into separate output
-trees. All four artifacts are byte-for-byte identical:
+All four artifacts are byte-for-byte identical across the two independent builds:
 
 ```
-amd64   main    REPRODUCIBLE  99dab4e2c7c731a578fa17434b8236224c87779f9e4ea4579dccb7d04c64515d
-amd64   worker  REPRODUCIBLE  9dcd4b86b9ac2b482fbdff778e9ed2b00b993efbb9f242c6f559ad345b3360d2
-arm64   main    REPRODUCIBLE  e07a5cb6d827d3d41d21a4cf7a1f82c3f4319463d7663f0e790421220f31d69b
-arm64   worker  REPRODUCIBLE  a3b82b0fb642416fd94c0540bc389bfe7a1cbecd04414916ea1e22d82cc1d4af
+amd64   austro-api     REPRODUCIBLE  6427c42919b4d977cdf9d02b1072fddce6a710f79bef4275b82e527217efd03c
+amd64   austro-worker  REPRODUCIBLE  0db93c6b3eebab1c8b0e4d378951e3bfcb4529317a261e5f2d6c4dbf6d1366c9
+arm64   austro-api     REPRODUCIBLE  c2a0994b1b32d13cf21bed997e3fb4692956fa31a68ff6658c222401a287d29a
+arm64   austro-worker  REPRODUCIBLE  56a3dc80545adfc3e915fb42512f612ce6ba850c61cad2ce02d2950204534bdf
 ```
 
-`-trimpath` is what makes this hold: it removes local filesystem paths from the
-binary, so the build no longer encodes the directory it happened to run in. The
-digests were then re-hashed from the delivered files and matched the manifest
-again, and the manifest's `git_commit` was checked against the repository HEAD.
+`-trimpath` is what makes this hold: it removes local filesystem paths, so the
+build no longer encodes the directory it ran in. **No build date is linked into
+any artifact** - a timestamp would make two builds of one commit differ and
+destroy exactly this property. Per-build timing lives in the manifest instead.
 
-The earlier candidate is superseded. Its `linux/amd64` `austro-api` digest was
-`985f0856…` against `99dab4e2…` now, at an identical byte count. The difference
-is not noise: that build was made from a working tree whose execution subsystem
-was **untracked**, so it was compiled from sources that the fingerprint did not
-describe. Same size, different code.
+The digests were re-hashed from the delivered files and matched the manifest
+again, and the manifest was checked against the repository.
 
 ### What remains true of any candidate
 
-**No binary embeds its build identity.** The repository exposes no version
-variable and no `-X` ldflags target, so nothing inside the artifact or in
-`/health` reports which commit produced it. Identifying a running deployment
-requires this manifest. Adding a `version` variable populated by ldflags is the
-natural follow-up; it was not added here because it is new source and would
-require re-running the whole verification chain.
-
-Reproducibility is guaranteed **for this toolchain** (`go1.26.8`) and these
-flags. A different Go release may produce different bytes, so the toolchain
-version is recorded in the manifest alongside the digests.
+- **The shipped Linux binaries were not executed on this host.** It is
+  `windows/amd64` with no qemu, so the `linux/amd64` and `linux/arm64` artifacts
+  could not be run. Their identity is established at byte level: each is ELF64,
+  `ET_EXEC`, the expected `EM_X86_64`/`EM_AARCH64` machine, carries no
+  `PT_INTERP` segment, contains the exact 40-character commit, contains no
+  control SHA, and contains neither `commit=unknown` nor `commit=dev`. The
+  identity *mechanism* was executed: binaries built from the same commit with the
+  same flags for a natively runnable target printed the expected version and
+  commit for all three argument spellings on both entrypoints, while an unlinked
+  control printed `version=dev commit=unknown` with the note. So a byte-level
+  match plus an executed equivalent is the strongest evidence this host can
+  produce - not direct execution of the released artifact. CI runs the same
+  assertion against the artifacts it builds and uploads, and
+  `production-deployment.yml` executes `--version` inside the image.
+- Reproducibility is guaranteed **for this toolchain** (`go1.26.8`) and these
+  flags. A different Go release may produce different bytes, so the toolchain is
+  recorded in the manifest alongside the digests.
+- The previous candidate is superseded. Every digest changed, because every
+  binary now carries its own identity. The byte counts are unchanged, which is
+  expected: `-s -w` was already stripping the symbol table, and the identity
+  strings replace comparable bytes.
 
 ### Build hygiene
 
 `erl_crash.dump` and `specifications/Final_Technical_Specification.md` are
-absent from the commit and from the extracted build source; both were confirmed
-absent with `git cat-file` rather than assumed.
+absent from the commit and from every build clone; both were confirmed absent
+with `git cat-file` rather than assumed. A test asserts they stay out of the
+release commit.
 
 ---
 
@@ -669,6 +771,11 @@ read over.**
 
 **Static verification after the approved re-freeze: 189 passed, 0 failed.**
 
+**After the build identity change: 199 passed, 0 failed.** Ten checks were added
+for identity in the image build, and the three `python3` BLOCKED false negatives
+were cleared by running the verifier on a host that provides `python3`, which is
+the harness fix the note below describes.
+
 The naming sensitivity itself is worth fixing at some point so this does not
 mislead the next person: a `python3`-only probe reports a hard BLOCKED on a
 machine that has Python. That is a latent reporting bug in the gate, not in the
@@ -688,7 +795,7 @@ code under test.
 | 6. Smoke test of the built artifact | **PARTIAL** | Binaries rebuilt and restarted live, health 200, queue logged from config. Not a release-mode smoke test — the local run is the offline development configuration by design |
 | 7. Migration and rollback | **DONE (inherited, re-checked)** | Bootstrap is idempotent, applied at startup by the owner DSN; worker is gated on API health so migrations apply once. Native path has atomic symlink switch + rollback; Compose rollback is redeploy of the previous image tag |
 | 8. Test suite regression | **DONE** | §0.2; full live suite, `-count=1`, exit 0, 26/26 packages, run against the exported index as well as the working tree |
-| 9. Release candidate | **DONE** | §5; 4 artifacts built twice from a commit, byte-identical, independently re-hashed |
+| 9. Release candidate | **DONE** | §5; 4 artifacts built twice from a commit, in independent clones, byte-identical, independently re-hashed, and each carrying its own source commit |
 | 10. This report | **DONE** | — |
 
 ---
@@ -696,11 +803,16 @@ code under test.
 ## 8. What was deliberately not done
 
 - No deployment, and no connection to any production, staging or AlwaysData host.
-- No push. Two commits are local only.
+- No push. All commits are local only.
 - No paid or external provider call of any kind.
 - No secret value read, displayed, copied into a file, or committed.
 - No `git reset`, `git checkout`, `git clean` or `stash`. The pre-existing dirty
-  tree was preserved; only the reviewed 56 paths were staged, by explicit path.
+  tree was preserved; only the reviewed paths were staged, by explicit path. The
+  30 line-ending-only entries in `tests/` were left untouched: they differ from
+  the committed blobs only in CRLF, and "fixing" them would have put unrelated
+  line-ending churn into this commit. The release builds therefore ran in
+  independent clones rather than in the working directory, which sidesteps the
+  question entirely and is the stronger option anyway.
 - No edit to the banned-term list in the frozen-gate test, and no tightening of
   the `.githubx` prefix behaviour, since either would need a further approved
   re-freeze.
@@ -708,13 +820,21 @@ code under test.
 - No CI run; CI results could not be observed from this environment. The claim in
   `deploy/alwaysdata/RELEASE.md` that "all CI workflows pass" is inherited from
   earlier work and is **not** verified by this pass.
+- The shipped Linux binaries were not executed. No qemu is available on this
+  host, so `linux/amd64` and `linux/arm64` identity is established by byte-level
+  inspection plus an executed native build from the same commit, not by running
+  the artifact itself. Stating this plainly matters: it is the one place where
+  the evidence is a strong proxy rather than the direct observation.
+- No image was built. There is no Docker engine here, so the Dockerfile's own
+  validation and label assertions are unexecuted; only their static shape is
+  checked. CI runs them for real.
 
 ---
 
 ## 9. To reach `RELEASE CANDIDATE READY — VERIFIED SCOPE`
 
-B4 and B5 are closed. The remaining work is external, and none of it can be
-settled from this environment:
+B4, B5 and the build identity gap are closed. The remaining work is external,
+and none of it can be settled from this environment:
 
 1. **B1** — run the live provider test (§4) with a real credential, obtained
    securely and with approval for a possibly billable request, and add the
@@ -724,14 +844,15 @@ settled from this environment:
    be obtained, drop AlwaysData from the release scope and target 1/2/6, which
    are the documented supported targets.
 3. **B3** — run `docker compose -f docker-compose.production.yml config` and a
-   real Compose bring-up on a machine with a Docker engine.
-4. Add a `version` variable populated via ldflags so a binary reports its own
-   provenance instead of depending on this manifest (§5).
+   real Compose bring-up on a machine with a Docker engine, exporting
+   `AUSTRO_BUILD_COMMIT` and `AUSTRO_BUILD_VERSION` first so the image is
+   stamped.
+4. Run the `linux/amd64` and `linux/arm64` artifacts' `--version` on a Linux
+   host, or under qemu, to close the proxy described in §8. CI already does this
+   for the artifacts it builds; this is about closing it for *these* artifacts.
 
-Items 1–3 are operator actions on real infrastructure. Nothing in this pass can
-substitute for them, and no amount of local test coverage would. Item 4 is a
-small code change that would close the last self-inflicted gap in the candidate
-chain.
+Items 1–4 are operator actions on real infrastructure. Nothing in a local pass
+can substitute for them, and no amount of local test coverage would.
 
 ---
 
@@ -741,12 +862,15 @@ chain.
 
 | | |
 |---|---|
-| Release-candidate commit | `91e9c8c3b084e3a96ebc912c9132fa458e299c2c` — the 56 reviewed paths |
-| Follow-ups | two documentation-only commits; neither changes a single byte of any artifact, which the manifest's reproducible digests demonstrate |
-| Artifacts | 4 (linux/amd64, linux/arm64 × api, worker), byte-reproducible across two builds |
-| Build source | recorded in `release-manifest.json` (`provenance.git_commit`), which also pins the tree |
-| Frozen architecture gate | re-frozen to `9119aa71…` under approval; static verifier 189/0 |
-| Staged-tree verification | build 0, vet 0, tests 0 (26/26 packages) |
+| Build source commit | `af59c4efc06c162790c171bca38c9b3cfe7685ba` — tree `94256cb0fd9313ceb0a8231a6c6562dece895ac8` |
+| Commit carrying this report | necessarily later, and deliberately not the build source; a file cannot contain the SHA of the commit that contains it |
+| Artifacts | 4 (linux/amd64, linux/arm64 × api, worker), byte-reproducible across two independent builds, each carrying `version=1.0` and its own source commit |
+| Build identity | embedded in every released binary, verified; see §5 |
+| Per-build provenance | `release-manifest.json` (digests, toolchain, build time), written outside the repository |
+| Prior release-candidate commit | `91e9c8c3b084e3a96ebc912c9132fa458e299c2c` — the 56 reviewed paths |
+| Follow-ups | documentation-only commits, which change no artifact byte; plus the build identity commit `af59c4e`, which does, and is the build source above |
+| Frozen architecture gate | re-frozen to `9119aa71…` under approval; static verifier 199/0 |
+| Staged-tree verification | build 0, vet 0, buildinfo tests 0, identity contract suite 43 pass / 0 fail / 2 skip |
 | Pushed | **No** |
 | Deployed | **No** |
 | Open blockers | B1 live AI provider, B2 AlwaysData worker topology, B3 Docker/Compose unexecuted |
@@ -755,4 +879,5 @@ The code is in a state where a release decision can be made. The three remaining
 blockers are all about *external facts that cannot be established from this
 environment* — a live provider response, a hosting platform's actual capabilities,
 and a working Docker engine. Each is stated with what evidence would close it
-rather than left as a vague "unverified".
+rather than left as a vague "unverified". The one self-inflicted gap in the
+candidate chain — binaries that could not identify themselves — is closed.
