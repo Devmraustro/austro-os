@@ -36,6 +36,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	// This binary is the worker and nothing else. Asserting the role here rather
+	// than overriding it is deliberate: on a platform where one environment file
+	// can feed several units, a shared AUSTRO_PROCESS_ROLE is the most likely
+	// way this process gets configured wrongly, and silently correcting it would
+	// leave the API's role in the file looking intentional while the worker ran
+	// under a different one. Refusing names the file to fix.
+	if err := assertWorkerRole(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+
 	// The worker publishes its cascade events through a self-supervised sink:
 	// when the broker force-closes the connection, the sink redials instead of
 	// silently dropping pipeline-advance events.
@@ -56,6 +67,12 @@ func main() {
 	db := handles.Runtime
 	defer db.Close()
 	defer handles.Admin.Close()
+
+	// Liveness evidence for the API process. This worker is the only consumer of
+	// the execution queue, so an API in a split deployment has no other way to
+	// tell a draining queue from an abandoned one; see startHeartbeat.
+	stopHeartbeat := startHeartbeat(cfg, db)
+	defer stopHeartbeat()
 
 	// Pipeline and publishing decisions the worker processes are audited to the
 	// same persistent chain the API writes, so a restart of either process
@@ -132,17 +149,54 @@ func main() {
 	}
 
 	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(stop, shutdownSignals()...)
 
 	go func() {
 		<-stop
 		logger.NewEntry("worker-shutting-down").Log()
+		// Stop() cancels the consumers and closes the broker connection. A
+		// message still in flight at that point is unacknowledged, so the broker
+		// requeues it for whoever consumes next rather than dropping it; the
+		// execution's lease is left to expire and the dispatcher's stale-lease
+		// recovery reschedules it. Both halves of that are why a restart here is
+		// safe rather than merely survivable.
 		wp.Stop()
 		execWP.Stop()
 		os.Exit(0)
 	}()
 
 	select {}
+}
+
+// assertWorkerRole refuses any role this binary cannot serve.
+//
+// The alternative — overriding the role to "worker" — was rejected because the
+// configuration would then describe something different from what is running.
+// On a hosting platform where one environment file can feed several units, that
+// is the more likely failure mode than a genuinely mislabelled binary, and
+// quietly correcting it leaves the file's AUSTRO_PROCESS_ROLE looking deliberate
+// while the process does something else. An error naming the setting is the only
+// response that sends the reader to the file.
+func assertWorkerRole(cfg *config.Config) error {
+	if cfg.ProcessRoleName() != config.ProcessRoleWorker {
+		return fmt.Errorf(
+			"AUSTRO_PROCESS_ROLE is %q but this binary is the worker; set AUSTRO_PROCESS_ROLE=worker in this unit's environment",
+			cfg.ProcessRole)
+	}
+	return nil
+}
+
+// shutdownSignals is the set of signals that begin a graceful shutdown.
+//
+// SIGHUP is included because AlwaysData restarts a background Service by
+// sending SIGHUP to its foreground process
+// (https://help.alwaysdata.com/en/docs/web-hosting/services). SIGHUP is not
+// handled by the Go runtime by default, so without it here a platform restart
+// would kill this process outright and the shutdown path above — which closes
+// the broker connection rather than dropping it — would never run. SIGINT and
+// SIGTERM cover systemd, containers and an operator's kill.
+func shutdownSignals() []os.Signal {
+	return []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP}
 }
 
 // queueFor mirrors rabbitmq.Initialize and the API entrypoint: the configured

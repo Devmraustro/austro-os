@@ -28,6 +28,8 @@ func secureCore() *Config {
 		ExecutionSweepInterval:     5 * time.Second,
 		ExecutionRetryBackoffBase:  2 * time.Second,
 		ExecutionRetryBackoffMax:   2 * time.Minute,
+		HeartbeatInterval:          15 * time.Second,
+		HeartbeatStaleAfter:        60 * time.Second,
 	}
 }
 

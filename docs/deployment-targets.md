@@ -4,7 +4,7 @@ Which deployment models this repository supports today, which it deliberately
 does not, and what each requires from the host.
 
 The authoritative baseline for this document is `main` at
-`64c72ba102c570241c9ec594d466a8e4bbc0ff6d`.
+`4a41a902b47c38c0c0fac111ba978ab7d5af9f2a`.
 
 ---
 
@@ -46,6 +46,45 @@ The authoritative baseline for this document is `main` at
   compose network, which is the only ingress it needs.
 
 `docker-compose.production.yml` is that topology, executable.
+
+### The dispatch loop has exactly one owner
+
+A third long-running role exists in every topology: the loop that sweeps due AI
+retries out of PostgreSQL and publishes them to the execution queue. Which
+process owns it is decided by two settings that have to agree —
+`AUSTRO_PROCESS_ROLE` names what the process *is*, and
+`AUSTRO_EXECUTION_DISPATCH_MODE` says what that process does with the sweep.
+
+Hosts that need the API to sit behind a managed TLS front end — where the API
+process cannot also be the supervised long-running one — can run that loop
+separately, using the same `austro-api` binary under the `dispatcher` role. It
+sweeps, opens **no** listener, and needs no port:
+
+| `AUSTRO_PROCESS_ROLE` | `AUSTRO_EXECUTION_DISPATCH_MODE` | Sweeps? | Serves HTTP? | Opens a port? |
+|---|---|---|---|---|
+| `api` (default) | `api` (default) | yes | yes | yes |
+| `api` | `off` | no | yes | yes |
+| `dispatcher` | `service` | yes | no | no |
+| `worker` | `off` | no | no | no |
+
+Every other pairing is refused at startup. The role is the statement about what
+the process is; the mode is one of its properties, and a combination that lets a
+process do work it did not declare is a configuration error rather than a
+topology to be tolerated.
+
+`AUSTRO_EXECUTION_DISPATCH_MODE=off` on the API is a legitimate production
+configuration — it is how a site runs while its dispatcher is a separately
+supervised Service. It is not silent, though: the site must name the companion
+in `AUSTRO_EXPECT_COMPANION_PROCESSES`, and `/health/ready` then answers `503`
+when that companion stops reporting. A site that delegates the sweep and does
+not say so is refused at startup, so "the API stopped dispatching" cannot be
+introduced by a typo.
+
+An unrecognised mode or role is rejected at startup rather than treated as
+`api`. That matters more than it looks: silently falling back would put the
+sweep loop back in the HTTP process — the exact placement the setting exists to
+move away from — while reporting a healthy start. Exactly one process must run
+the loop; two owners would claim the same retries.
 
 ---
 
@@ -148,6 +187,57 @@ datastores, scram on loopback, a non-superuser runtime role without
   distributed scheduler workload, the Compose path is still the deployment
   unit — see *Not supported* below.
 
+### 7. AlwaysData shared hosting — **SUPPORTED with conditions**
+
+A managed-PaaS path in `deploy/alwaysdata/`, using AlwaysData's managed
+PostgreSQL and RabbitMQ. It exists because some AlwaysData plans cannot run
+containers, and because a TLS front end is provided by the platform rather than
+by a process on the host.
+
+Three long-running processes, from two binaries:
+
+| Unit | Platform type | Binary | Dispatch mode | Port |
+|---|---|---|---|---|
+| `austro-api` | User Program **site** | `austro-api` | `off` | the site's `$IP:$PORT`, behind platform TLS |
+| `austro-dispatcher` | **Service** | `austro-api` | `service` | none |
+| `austro-worker` | **Service** | `austro-worker` | — | none |
+
+Conditions, all of which are requirements of the platform rather than
+preferences:
+
+- The plan must be **Small or above**. A Free plan cannot run Services at all.
+  Scheduled Tasks are not a substitute: a Task whose previous run has not
+  finished is skipped, so a Task cannot be a durable consumer.
+- **The API must be a site, not a Service.** A Service port (`8300-8499`) is
+  reachable from the internet with no network filtering, so publishing the API
+  there would expose it in plaintext and bypass the site's TLS. This is the
+  reason the dispatcher is a separate process, and the reason the dispatch mode
+  setting above exists.
+- On **Public Cloud**, Services are IPv6-only and run on hosts separate from the
+  HTTP and SSH servers, so outbound reachability to the managed PostgreSQL and
+  RabbitMQ has to hold from the site *and* from both Services. On **Private
+  Cloud** the `8300-8499` range is not externally reachable at all.
+- **Redis is unresolved on Public Cloud.** AlwaysData offers managed Redis on
+  Private Cloud only, and the self-hosted alternative is a Service port, i.e.
+  internet-reachable. This is called out in
+  [alwaysdata/RUNBOOK.md](../deploy/alwaysdata/RUNBOOK.md) and must be decided
+  explicitly before deploying.
+- Platform resource limits are only visible in the panel on Private Cloud, so
+  host sizing is not verifiable in advance on Public Cloud.
+
+Restart semantics are part of the contract, not an implementation detail: the
+platform restarts a Service by sending `SIGHUP`, and a Service that fails
+repeatedly in a short period is **automatically disabled** and stops being
+restarted. Both binaries handle `SIGHUP` as a graceful shutdown, so in-flight
+requests and unacknowledged broker messages are settled rather than dropped,
+and monitoring commands are left unset — a flaky monitor on this platform
+converts a blip into a restart loop and then into a disabled service.
+
+Full runbook, including the platform capability table and the account checks
+that must be completed first:
+[alwaysdata/RUNBOOK.md](../deploy/alwaysdata/RUNBOOK.md). **The topology is
+documented; no part of it has been exercised on a real AlwaysData account.**
+
 ---
 
 ## Not supported
@@ -157,7 +247,8 @@ datastores, scram on loopback, a non-superuser runtime role without
 | Container-orchestration platforms | **NOT SUPPORTED** | No manifests, no Helm chart, no operator. `docker-compose.production.yml` is the deployment unit. Nothing here is designed to run as a distributed scheduler workload. |
 | Serverless / PaaS function hosts | **NOT SUPPORTED** | The API and worker are long-running processes with in-process connection pools, a RabbitMQ consumer and a graceful drain. Vercel in particular is **NOT SUPPORTED as a backend**; adding `vercel.json` is explicitly out of scope. |
 | Kafka-based event transport | **NOT SUPPORTED** | The transport is RabbitMQ (`github.com/rabbitmq/amqp091-go`). No Kafka client exists in the dependency graph and no compatibility shim is provided. |
-| Microservice split | **NOT SUPPORTED** | This is a Go modular monolith. Splitting the API and worker into independently versioned services is not a supported deployment. |
+| Microservice split | **NOT SUPPORTED** | This is a Go modular monolith. Splitting the API and worker into independently versioned services is not a supported deployment. Running one binary in two process roles is not this: see *The dispatch loop has exactly one owner* above. |
+| Shared hosting without managed long-running processes | **NOT SUPPORTED** | A host that offers no Service equivalent and only scheduled tasks cannot run the RabbitMQ consumer or the dispatch loop: a Task whose previous run is unfinished is skipped. A platform that terminates TLS and supervises foreground processes is required. |
 | Docker Swarm | **NOT SUPPORTED** | Not tested, and the compose file uses no Swarm-only keys. |
 | Multi-region active-active | **NOT SUPPORTED** | There is one PostgreSQL primary. The audit chain is a linear hash chain, so more than one writer against separate databases would produce two chains, not one. |
 | Read replicas / connection pooler in front of PostgreSQL | **NOT SUPPORTED as shipped** | No PgBouncer or equivalent is configured, and transaction-scoped session state (`SET LOCAL`, RLS workspace binding) makes a statement-level pooler a correctness risk rather than a tuning knob. |
@@ -232,3 +323,12 @@ direction: its release is **build-verified** (AArch64 ELF, static) in CI, but
 no line of it has run on a real VM. Per-capability statuses are recorded in
 [FREE_DEPLOYMENT_CERTIFICATION.md](FREE_DEPLOYMENT_CERTIFICATION.md); every VM
 stage is `OPERATOR CONFIGURATION REQUIRED` until an operator executes it.
+
+The AlwaysData path (target 7) has the strongest boundary of the three, and it
+is a different kind of gap. Its platform facts are cited from AlwaysData's own
+documentation, and its process topology is the one the code actually supports
+— but **no part of it has been run on a real account**. There is no target
+account whose plan, cloud type, Service entitlement, outbound routing from
+either the site or the Services, or resource ceiling has been confirmed, and the
+Redis question above is genuinely open. Treat target 7 as an architecture that is
+ready to be tried and not as a deployment that works.

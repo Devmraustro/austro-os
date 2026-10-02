@@ -657,29 +657,92 @@ Ordered by what most blocks a release decision.
 Offline coverage is strong; no live call has been made. Needs a credential and
 approval for a billed call, then the command in §4.
 
-### B2 — AlwaysData deployment feasibility unverified
-**Severity: high for that target**
-`deploy/alwaysdata/RUNBOOK.md` assumes AlwaysData's Service Manager can run the
-API *and* a separate `austro-worker` process with auto-restart. The worker is a
-RabbitMQ consumer that serves no HTTP.
+### B2 — AlwaysData platform capability resolved; target account still unverified
+**Severity: low for release scope, high for that target**
 
-This is an unverified assumption about a third-party platform, and it runs against
-the repository's own documented position. `docs/deployment-targets.md` lists
-supported targets 1–6 (Docker Compose, cloud VM, air-gapped, behind a load
-balancer, external managed PostgreSQL, native ARM64 systemd) and **AlwaysData is
-not among them**. It states that "Serverless / PaaS function hosts" are **NOT
-SUPPORTED**, because "the API and worker are long-running processes with
-in-process connection pools, a RabbitMQ consumer and a graceful drain."
+**Status: platform facts and process topology resolved. Account validation
+outstanding.** Infrastructure-gate status, verbatim:
+`INFRASTRUCTURE CONFIGURATION INCOMPLETE — BLOCKERS REMAIN` (see §10 — the
+three units have not been run against live services, so the configuration is not
+verified in the sense the status string requires).
 
-The PostgreSQL side of the AlwaysData path is sound and is a genuine capability:
-pre-provisioned roles (`AUSTRO_POSTGRES_PREPROVISIONED_ROLES=true`) let the
-application run where it cannot `CREATE ROLE`. The unresolved question is
-specifically whether the platform will host a non-HTTP long-running consumer.
+This blocker was raised because the runbook assumed AlwaysData's Service Manager
+could run the API and a separate `austro-worker` process, and the worker is a
+RabbitMQ consumer that serves no HTTP. That was an unverified assumption about a
+third-party platform, and it also contradicted the repository's own
+`docs/deployment-targets.md`, which listed targets 1–6 and excluded AlwaysData
+while declaring PaaS hosts NOT SUPPORTED.
 
-**Needs:** confirmation from AlwaysData's current documentation or a real account
-that a supervised, non-HTTP, always-on worker process is permitted. Until then,
-AlwaysData should be treated as an **undocumented, unproven target**, and targets
-1/2/6 are the supported ones.
+**What has since been established, from AlwaysData's own documentation** (all
+links are in `deploy/alwaysdata/RUNBOOK.md`, which cites each one):
+
+- **Services are exactly the right primitive.** They are long-running custom
+  programs, supervised and automatically restarted, on all paid plans from
+  **Small** up. The non-HTTP, always-on consumer this blocker asked about is a
+  documented capability, not a question.
+- **Scheduled Tasks are not an alternative.** A Task whose previous run has not
+  finished is skipped, so a Task cannot be a durable consumer.
+- **Restart is by `SIGHUP`,** and repeated failures in a short period
+  **automatically disable** a Service. Both binaries now handle `SIGHUP` as a
+  graceful shutdown, so restarts settle in-flight requests and unacknowledged
+  broker messages instead of dropping them.
+- **Service ports are not private.** Ports `8300-8499` are reachable from the
+  internet with **no network filtering**, and on Public Cloud they are IPv6-only
+  on hosts separate from the HTTP and SSH servers.
+
+**The last point changed the architecture, and it is worth stating plainly: the
+previous runbook had the API on a public Service port behind a reverse proxy,
+which exposed the API in plaintext and let anyone bypass the site's TLS.** The
+API is now specified as a User Program **site** (the documented way to run a Go
+HTTP app on AlwaysData, behind platform TLS termination), with the dispatch
+sweep loop moved to its own Service using the **same `austro-api` binary** under
+`AUSTRO_PROCESS_ROLE=dispatcher` and `AUSTRO_EXECUTION_DISPATCH_MODE=service`.
+The dispatcher opens no listener and needs no port, so there is nothing left to
+expose. The site runs `AUSTRO_PROCESS_ROLE=api` with
+`AUSTRO_EXECUTION_DISPATCH_MODE=off`, which is a legitimate production
+configuration — but only if it names the companion in
+`AUSTRO_EXPECT_COMPANION_PROCESSES`, so that "the sweep lives in another
+process" is a checked statement rather than an absence nobody notices. The site
+cannot observe a companion on another host, so the dispatcher and worker each
+write a heartbeat row to PostgreSQL and `/health/ready` answers `503` with
+`companion-absent` when a declared companion stops reporting.
+
+That replaces an earlier, stricter rule which refused `off` in production
+outright. The blanket refusal was safe and also useless: it made the split
+topology — the only topology that satisfies the port constraint above —
+impossible to express, so the runbook had to describe a deployment the
+configuration could not represent. A required declaration plus an observable
+readiness verdict enforces the same invariant while letting the intended
+topology be written down.
+
+An unrecognised role or mode is rejected rather than silently treated as `api`;
+a fallback there would have put the sweep loop back in the HTTP process while
+reporting a healthy start. The role/mode matrix is enforced in one place
+(`config.Validate`) and the entrypoints branch on the same normalised role, so
+a deployment cannot pass validation and then be misread by the binary it
+starts.
+
+`docs/deployment-targets.md` now lists AlwaysData as supported target 7 **with
+conditions**, and the PaaS exclusion is narrowed to what is actually true: a host
+that offers neither supervised foreground processes nor TLS termination cannot
+run this application.
+
+**What is still open — none of it answerable from this repository:**
+
+- the account's plan (Services need **Small** or above) and whether it is Public
+  or Private Cloud;
+- whether outbound access to the managed PostgreSQL and RabbitMQ works from the
+  site *and* from both Services, which run on different hosts;
+- whether a Redis option is acceptable at all. **Managed Redis is Private Cloud
+  only**, and the alternative — self-hosting it on a Service port — publishes
+  workspace memory on an internet-reachable, unfiltered port. This is a security
+  decision for the account owner, and it is the one item that could still change
+  the recommended topology.
+
+**Needs:** an AlwaysData account on which the checklist in the runbook is
+completed. Until then AlwaysData remains **documented but unexercised** — which
+is a different and much smaller claim than the one this blocker used to make.
+Targets 1/2/6 remain the supported deployment units for the release itself.
 
 ### B3 — Docker never available: Compose is statically verified only
 **Severity: medium**
@@ -790,7 +853,7 @@ code under test.
 | 1. Baseline: transport, providers, deployment | **DONE** | §0, §1; the deployment-layer gap and the untracked-subsystem finding were the headline results |
 | 2. Explicit RabbitMQ transport configuration | **DONE** | §2.1–§2.4, §0.2; staged tree builds, vets and tests clean on its own |
 | 3. Real AI provider configuration and smoke test | **PARTIAL** | Offline path verified; live path implemented but not run — B1 |
-| 4. Target deployment environment verification | **PARTIAL** | Native Windows stack re-verified; Compose never executed (B3); AlwaysData feasibility unresolved (B2) |
+| 4. Target deployment environment verification | **PARTIAL** | Native Windows stack re-verified; Compose never executed (B3); AlwaysData platform capability and topology now resolved and documented, account still unvalidated (B2) |
 | 5. Secrets handling | **DONE** | §0; no secret printed, copied or committed; no new secret introduced; validation never echoes values |
 | 6. Smoke test of the built artifact | **PARTIAL** | Binaries rebuilt and restarted live, health 200, queue logged from config. Not a release-mode smoke test — the local run is the offline development configuration by design |
 | 7. Migration and rollback | **DONE (inherited, re-checked)** | Bootstrap is idempotent, applied at startup by the owner DSN; worker is gated on API health so migrations apply once. Native path has atomic symlink switch + rollback; Compose rollback is redeploy of the previous image tag |
@@ -839,10 +902,15 @@ and none of it can be settled from this environment:
 1. **B1** — run the live provider test (§4) with a real credential, obtained
    securely and with approval for a possibly billable request, and add the
    equivalent for the `generic-http` publishing backend.
-2. **B2** — obtain authoritative AlwaysData documentation or account evidence
-   that a supervised, persistent, non-HTTP worker is supported. If that cannot
-   be obtained, drop AlwaysData from the release scope and target 1/2/6, which
-   are the documented supported targets.
+2. **B2** — no longer needs documentation; the platform capability is settled and
+   cited. What it needs is the account checklist in
+   `deploy/alwaysdata/RUNBOOK.md`: confirm the plan allows Services, confirm
+   outbound reachability to the managed PostgreSQL and RabbitMQ from the site and
+   from both Services, and **decide the Redis question** — managed Redis is
+   Private Cloud only, and the alternative publishes workspace memory on an
+   internet-reachable port. If no account can be made to satisfy those, drop
+   AlwaysData from the release scope and target 1/2/6, which are the documented
+   supported targets.
 3. **B3** — run `docker compose -f docker-compose.production.yml config` and a
    real Compose bring-up on a machine with a Docker engine, exporting
    `AUSTRO_BUILD_COMMIT` and `AUSTRO_BUILD_VERSION` first so the image is
@@ -860,10 +928,23 @@ can substitute for them, and no amount of local test coverage would.
 
 **Status: RELEASE READINESS INCOMPLETE — BLOCKERS REMAIN**
 
+**Infrastructure-gate status (B2, verbatim):**
+`INFRASTRUCTURE CONFIGURATION INCOMPLETE — BLOCKERS REMAIN`
+
+That second line is deliberately not the more flattering
+`INFRASTRUCTURE CONFIGURATION VERIFIED — ACCOUNT VALIDATION PENDING`. The
+difference between them is whether the three-unit topology has actually been run
+against live services, and it has not: there is no PostgreSQL, Redis, RabbitMQ
+or AlwaysData host reachable from this environment. What is verified is the
+*configuration contract* — see the table below — not the running system. Claiming
+account-validation-pending would imply everything except the account check had
+been exercised, and it has not.
+
 | | |
 |---|---|
 | Build source commit | `af59c4efc06c162790c171bca38c9b3cfe7685ba` — tree `94256cb0fd9313ceb0a8231a6c6562dece895ac8` |
 | Commit carrying this report | necessarily later, and deliberately not the build source; a file cannot contain the SHA of the commit that contains it |
+| Working tree at this pass | `main` @ `4a41a902b47c38c0c0fac111ba978ab7d5af9f2a`, the baseline this pass started from; the role/heartbeat work below was reviewed in that working tree and is not in any earlier commit, and is not in the artifacts above. It is not contained in a release-candidate SHA — see the row above |
 | Artifacts | 4 (linux/amd64, linux/arm64 × api, worker), byte-reproducible across two independent builds, each carrying `version=1.0` and its own source commit |
 | Build identity | embedded in every released binary, verified; see §5 |
 | Per-build provenance | `release-manifest.json` (digests, toolchain, build time), written outside the repository |
@@ -873,7 +954,45 @@ can substitute for them, and no amount of local test coverage would.
 | Staged-tree verification | build 0, vet 0, buildinfo tests 0, identity contract suite 43 pass / 0 fail / 2 skip |
 | Pushed | **No** |
 | Deployed | **No** |
-| Open blockers | B1 live AI provider, B2 AlwaysData worker topology, B3 Docker/Compose unexecuted |
+| Open blockers | B1 live AI provider, B2 AlwaysData account unvalidated, B3 Docker/Compose unexecuted |
+
+### 10.1 Verified in this pass (no live infrastructure required)
+
+These are static and unit-level properties. Each has a regression test, so a
+later change that reintroduces the defect fails the suite rather than quietly
+restoring it.
+
+| Property | How it is held |
+|---|---|
+| Role/mode matrix enforced in one place | `config.Validate`; every other pairing refused at startup |
+| The API binary cannot be started as a worker | `assertServableRole`, tested across case and padding variants |
+| The worker binary cannot be started as another role | `assertWorkerRole`, tested both directions |
+| The entrypoints and the validator cannot disagree about the role | one `ProcessRoleName()` accessor; `isDispatcherRole` branches on role, not mode |
+| Dispatcher and worker open no listener and dial no Redis | no `net.Listen`/`http.Server`/`redis.` reference in `cmd/worker`; the dispatcher returns before the HTTP path |
+| Redis is an API-only dependency | `UsesRedis()` keyed on role; the other two roles validate without a Redis credential |
+| Readiness checks exactly the declared companions | `readinessDeps`; an undeclared role is never queried, so a single-process deployment gains no database dependency |
+| A declared-but-unreadable companion fails closed | `503` with `liveness-unavailable`, full documented body |
+| The 503 body satisfies the documented schema | `ready`, `status`, `reason`, `requires` all present; asserted against `api/openapi.yaml` |
+| Route parity between server and published contract | `TestOpenAPIMatchesRegisteredRoutes` |
+
+Local suite result: `gofmt` clean, `go build ./...` clean, `go vet ./...` clean,
+every unit-test package passing. The only failing package is `austro-os/tests`,
+and all 134 of its failures are `lookup postgres|redis|rabbitmq|api: no such
+host` — the live-infrastructure suite, which needs a running Compose stack. None
+is a code regression; `TestConfigValidPasses` and
+`TestOpenAPIMatchesRegisteredRoutes`, which *were* real regressions earlier in
+this pass, now pass.
+
+### 10.2 Still unverified, and what would close it
+
+- The three units have never run together against live PostgreSQL, RabbitMQ and
+  Redis. Heartbeat freshness, the 503 transition, and lease/ack behaviour are
+  unit-tested against scripted readers only.
+- The AlwaysData account facts in §6 remain unknown: plan tier, Public vs
+  Private Cloud, Service entitlement, egress, DNS/IPv6, limits, Redis.
+- The Redis TLS gap is real and unaddressed: the client exposes no TLS setting,
+  so a Private Cloud managed Redis requiring TLS cannot be configured as written.
+- Compose bring-up (B3) has never been executed; no Docker engine here.
 
 The code is in a state where a release decision can be made. The three remaining
 blockers are all about *external facts that cannot be established from this

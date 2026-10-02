@@ -48,6 +48,38 @@ const (
 	// the configured RabbitMQ URL.
 	ExecutionTransportBackendRabbitMQ = "rabbitmq"
 
+	// ExecutionDispatchModeAPI runs the dispatch sweep loop inside the API
+	// process. This is the historical behaviour and the default, so every
+	// existing deployment keeps working unchanged.
+	ExecutionDispatchModeAPI = "api"
+	// ExecutionDispatchModeService runs the sweep loop and nothing else: the
+	// process starts no HTTP listener and opens no inbound port. It exists for
+	// hosting models where the HTTP process is not the one with dependable
+	// process supervision — see the AlwaysData topology, where the API is a
+	// supervised site but the dispatcher needs to be a supervised service in
+	// its own right to survive independently of request traffic.
+	ExecutionDispatchModeService = "service"
+	// ExecutionDispatchModeOff starts no sweep loop in this process. It is
+	// refused in production on a broker-backed transport *unless* the process
+	// is a role that is not supposed to sweep and the deployment has declared
+	// that a companion process owns the sweep — see ProcessRole and
+	// ExpectCompanionDispatcher.
+	ExecutionDispatchModeOff = "off"
+
+	// ProcessRoleAPI is the HTTP-facing process. It may sweep (when the
+	// deployment is a single process) or delegate the sweep to a companion.
+	ProcessRoleAPI = "api"
+	// ProcessRoleDispatcher is the sweep-only process: it runs the dispatch
+	// loop and opens no listener. It exists for hosting models where the HTTP
+	// process cannot also be the supervised long-running one — see the
+	// AlwaysData topology, where a Service port is reachable from the internet
+	// with no network filtering, so the API must be a TLS-terminating site
+	// rather than a Service.
+	ProcessRoleDispatcher = "dispatcher"
+	// ProcessRoleWorker is the RabbitMQ consumer process. It never sweeps and
+	// never serves HTTP.
+	ProcessRoleWorker = "worker"
+
 	// EnvironmentProduction is the value of AUSTRO_ENV that enables the
 	// production-only configuration rules. It gates rules that would break
 	// offline development (notably: a production deployment may not run the
@@ -211,6 +243,65 @@ type Config struct {
 	// for (AUSTRO_EXECUTION_WORKSPACE_IDS, comma-separated UUIDs). When empty no
 	// dispatch loop is started.
 	ExecutionWorkspaceIDs []uuid.UUID
+	// ExecutionDispatchMode names which process runs the sweep loop
+	// (AUSTRO_EXECUTION_DISPATCH_MODE, default "api"). The sweep loop is the
+	// only thing that turns a due execution into a published message, so on a
+	// hosting model with more than one process this setting is what decides
+	// which one owns it. It is a single explicit value rather than an
+	// emergent property of the topology because the failure it guards is
+	// silent: if no process sweeps, every execution sits "due" in PostgreSQL
+	// forever while the API serves traffic and reports itself healthy.
+	ExecutionDispatchMode string
+
+	// ProcessRole (AUSTRO_PROCESS_ROLE, default "api") declares what this
+	// process is, so the sweep mode can be validated against it instead of in
+	// isolation. Without it "off" is ambiguous: it means the same thing for an
+	// API that has delegated the sweep to a companion and for a deployment
+	// where nothing sweeps at all, and only the first of those is healthy.
+	// Those two cases cannot be told apart from one process's configuration
+	// alone — the difference is what some *other* process is doing — so the role
+	// states the intent and ExpectCompanionDispatcher below makes the missing
+	// companion an explicit, greppable deployment fact rather than an
+	// assumption.
+	ProcessRole    string
+	processRoleRaw string
+
+	// ExpectCompanionProcesses (AUSTRO_EXPECT_COMPANION_PROCESSES) is the
+	// deployment-level contract naming the roles that are supposed to be
+	// running as separate, supervised processes that this one does not start.
+	// It is what makes "this API does not sweep" a deliberate statement about
+	// the topology rather than a silent gap.
+	//
+	// It is deliberately an assertion the operator makes, not something the
+	// process can verify: a companion on another host of a hosting provider is
+	// not observable from inside this one. The runtime therefore never claims
+	// the companion is healthy — it only refuses to start while claiming it
+	// exists at all, and reports the sweep's observed liveness on the health
+	// surface (see internal/health), so a declared companion that is not
+	// actually running is still visible.
+	//
+	// A list rather than a single boolean because the split topology has the
+	// same blind spot in more than one place: a dispatcher with no worker
+	// publishes into a queue nobody consumes, which is the identical silent
+	// failure with the roles swapped. One variable keeps the whole contract
+	// greppable in a single line of the environment.
+	//
+	// The raw text is retained rather than a parsed slice because the blank and
+	// whitespace-only cases have to stay distinguishable: "  " is an operator
+	// who said something, and it is rejected, while an absent variable is not.
+	// Parse on demand through DeclaredCompanions and ExpectsCompanion, so there
+	// is exactly one parser and no second copy of the answer to drift from it.
+	expectCompanionProcessesRaw string
+
+	// HeartbeatInterval is how often a dispatcher or worker refreshes its row
+	// in process_heartbeats (AUSTRO_HEARTBEAT_INTERVAL, default 15s).
+	HeartbeatInterval time.Duration
+	// HeartbeatStaleAfter is how long a heartbeat stays evidence of a running
+	// process (AUSTRO_HEARTBEAT_STALE_AFTER, default 60s). Readiness uses it to
+	// decide whether a declared companion is actually there.
+	HeartbeatStaleAfter    time.Duration
+	heartbeatIntervalRaw   string
+	heartbeatStaleAfterRaw string
 
 	// AllowStubBackends (AUSTRO_ALLOW_STUB_BACKENDS) is the explicit opt-in that
 	// permits the deterministic stub adapters — AI, publishing and the
@@ -226,13 +317,14 @@ type Config struct {
 
 	// Raw environment text for the settings above, kept for the same fail-fast
 	// discipline as the publishing settings.
-	executionLeaseTTLRaw            string
-	executionHeartbeatIntervalRaw   string
-	executionWindowRaw              string
-	executionSweepIntervalRaw       string
-	executionRetryBackoffBaseRaw    string
-	executionRetryBackoffMaxRaw     string
-	executionWorkspaceIDsRaw        string
+	executionLeaseTTLRaw          string
+	executionHeartbeatIntervalRaw string
+	executionWindowRaw            string
+	executionSweepIntervalRaw     string
+	executionRetryBackoffBaseRaw  string
+	executionRetryBackoffMaxRaw   string
+	executionWorkspaceIDsRaw      string
+	executionDispatchModeRaw      string
 }
 
 // Minimum accepted lengths for credentials.
@@ -331,17 +423,22 @@ func defaults() *Config {
 		publishBackoffBaseRaw: os.Getenv("AUSTRO_PUBLISH_RETRY_BACKOFF_BASE"),
 		publishBackoffMaxRaw:  os.Getenv("AUSTRO_PUBLISH_RETRY_BACKOFF_MAX"),
 
-		ExecutionTransportBackend:     getEnv("AUSTRO_EXECUTION_TRANSPORT_BACKEND", ExecutionTransportBackendStub),
-		ExecutionQueue:                getEnv("AUSTRO_EXECUTION_QUEUE", DefaultExecutionQueue),
-		ExecutionLeaseTTL:             envDuration("AUSTRO_EXECUTION_LEASE_TTL", 60*time.Second),
-		ExecutionHeartbeatInterval:    envDuration("AUSTRO_EXECUTION_HEARTBEAT_INTERVAL", 20*time.Second),
-		ExecutionWindow:               envDuration("AUSTRO_EXECUTION_WINDOW", 50*time.Second),
-		ExecutionSweepInterval:        envDuration("AUSTRO_EXECUTION_SWEEP_INTERVAL", 5*time.Second),
-		ExecutionRetryBackoffBase:     envDuration("AUSTRO_EXECUTION_RETRY_BACKOFF_BASE", 2*time.Second),
-		ExecutionRetryBackoffMax:      envDuration("AUSTRO_EXECUTION_RETRY_BACKOFF_MAX", 2*time.Minute),
-		ExecutionWorkspaceIDs:         envUUIDs("AUSTRO_EXECUTION_WORKSPACE_IDS"),
-		AllowStubBackends:             allowStubBackends,
-		allowStubBackendsRaw:          allowStubBackendsRaw,
+		ExecutionTransportBackend:  getEnv("AUSTRO_EXECUTION_TRANSPORT_BACKEND", ExecutionTransportBackendStub),
+		ExecutionQueue:             getEnv("AUSTRO_EXECUTION_QUEUE", DefaultExecutionQueue),
+		ExecutionLeaseTTL:          envDuration("AUSTRO_EXECUTION_LEASE_TTL", 60*time.Second),
+		ExecutionHeartbeatInterval: envDuration("AUSTRO_EXECUTION_HEARTBEAT_INTERVAL", 20*time.Second),
+		ExecutionWindow:            envDuration("AUSTRO_EXECUTION_WINDOW", 50*time.Second),
+		ExecutionSweepInterval:     envDuration("AUSTRO_EXECUTION_SWEEP_INTERVAL", 5*time.Second),
+		ExecutionRetryBackoffBase:  envDuration("AUSTRO_EXECUTION_RETRY_BACKOFF_BASE", 2*time.Second),
+		ExecutionRetryBackoffMax:   envDuration("AUSTRO_EXECUTION_RETRY_BACKOFF_MAX", 2*time.Minute),
+		ExecutionWorkspaceIDs:      envUUIDs("AUSTRO_EXECUTION_WORKSPACE_IDS"),
+		ExecutionDispatchMode:      getEnv("AUSTRO_EXECUTION_DISPATCH_MODE", ExecutionDispatchModeAPI),
+		ProcessRole:                getEnv("AUSTRO_PROCESS_ROLE", ProcessRoleAPI),
+		processRoleRaw:             os.Getenv("AUSTRO_PROCESS_ROLE"),
+		HeartbeatInterval:          envDuration("AUSTRO_HEARTBEAT_INTERVAL", 15*time.Second),
+		HeartbeatStaleAfter:        envDuration("AUSTRO_HEARTBEAT_STALE_AFTER", 60*time.Second),
+		AllowStubBackends:          allowStubBackends,
+		allowStubBackendsRaw:       allowStubBackendsRaw,
 
 		executionLeaseTTLRaw:          os.Getenv("AUSTRO_EXECUTION_LEASE_TTL"),
 		executionHeartbeatIntervalRaw: os.Getenv("AUSTRO_EXECUTION_HEARTBEAT_INTERVAL"),
@@ -350,6 +447,10 @@ func defaults() *Config {
 		executionRetryBackoffBaseRaw:  os.Getenv("AUSTRO_EXECUTION_RETRY_BACKOFF_BASE"),
 		executionRetryBackoffMaxRaw:   os.Getenv("AUSTRO_EXECUTION_RETRY_BACKOFF_MAX"),
 		executionWorkspaceIDsRaw:      os.Getenv("AUSTRO_EXECUTION_WORKSPACE_IDS"),
+		executionDispatchModeRaw:      os.Getenv("AUSTRO_EXECUTION_DISPATCH_MODE"),
+		expectCompanionProcessesRaw:   os.Getenv("AUSTRO_EXPECT_COMPANION_PROCESSES"),
+		heartbeatIntervalRaw:          os.Getenv("AUSTRO_HEARTBEAT_INTERVAL"),
+		heartbeatStaleAfterRaw:        os.Getenv("AUSTRO_HEARTBEAT_STALE_AFTER"),
 	}
 }
 
@@ -382,12 +483,23 @@ func (c *Config) Validate() error {
 	var missing []string
 	for name, value := range map[string]string{
 		"AUSTRO_POSTGRES_DSN": c.PostgresDSN,
-		"AUSTRO_REDIS_ADDR":   c.RedisAddr,
 		"AUSTRO_RABBITMQ_URL": c.RabbitMQURL,
 	} {
 		if isInsecure(value) {
 			missing = append(missing, name)
 		}
+	}
+
+	// Redis is required only by the roles that actually use it, which today is
+	// the API alone: it is the memory-bank persistence port, and neither the
+	// dispatcher nor the worker opens a Redis connection. Scoping the rule to
+	// the roles that need it is what lets those two units run against a
+	// deployment that has no Redis at all — and it is the honest statement of
+	// the dependency, since demanding a datastore credential from a process
+	// that never dials it is how a least-privilege split quietly stops being
+	// one. The API's own use is real and stays required there.
+	if c.UsesRedis() && isInsecure(c.RedisAddr) {
+		missing = append(missing, "AUSTRO_REDIS_ADDR")
 	}
 
 	// The runtime DSN is optional (it is derived from the owner DSN when
@@ -683,6 +795,38 @@ func (c *Config) validateBackends() []string {
 		}
 	}
 
+	// A boolean written into the companion list means the operator reached for
+	// the old single-purpose form, or for a flag-shaped default, and got a list
+	// that is silently empty. Empty is caught below wherever a companion is
+	// actually required, so this only needs to catch the case where it is not:
+	// a single-process deployment that also mistypes this variable should not
+	// carry a broken line through to production.
+	if c.expectCompanionProcessesRaw != "" {
+		for _, token := range strings.Split(c.expectCompanionProcessesRaw, ",") {
+			if _, err := strconv.ParseBool(strings.TrimSpace(token)); err == nil {
+				missing = append(missing, "AUSTRO_EXPECT_COMPANION_PROCESSES")
+			}
+		}
+	}
+
+	// Which process sweeps must be a value this build understands. An
+	// unrecognised mode is not treated as "api": the sweep loop is the only
+	// producer of dispatch messages, so a typo that quietly disabled it would
+	// leave every execution due forever behind a healthy-looking API.
+	switch c.dispatchModeState() {
+	case dispatchModeOK, dispatchModeUnset:
+		// dispatchModeUnset resolves to the historical default, which is the
+		// API process sweeping — see effectiveDispatchMode.
+	case dispatchModeBlank:
+		// Explicitly set to whitespace. getEnv substitutes the default only when
+		// the variable is absent, so reaching here means an operator cleared the
+		// value and expected it to mean something. "Unset" is the way to take the
+		// default.
+		missing = append(missing, "AUSTRO_EXECUTION_DISPATCH_MODE")
+	default:
+		missing = append(missing, "AUSTRO_EXECUTION_DISPATCH_MODE")
+	}
+
 	// Production must not run a deterministic stub. Every stub adapter answers
 	// successfully without contacting a real service, so a deployment that
 	// reached production on the offline defaults would serve traffic, answer
@@ -711,11 +855,335 @@ func (c *Config) validateBackends() []string {
 	// costume of a working one, so it is a startup failure. In development it
 	// stays a deliberate no-op: running the API without the execution pipeline
 	// is the normal way to work on anything else.
-	if c.isProduction() && c.ExecutionTransportBackend == ExecutionTransportBackendRabbitMQ && len(c.ExecutionWorkspaceIDs) == 0 {
+	//
+	// Scoped to the roles that sweep, because the other two legitimately hold no
+	// workspace list. The API in a split deployment delegates the sweep and the
+	// worker never had it, so requiring workspaces of them would force a
+	// meaningless setting on processes that do not dispatch — and a list nobody
+	// reads is exactly the kind of configuration that later gets "fixed" by
+	// someone who assumes it is load-bearing.
+	if c.isProduction() &&
+		c.ExecutionTransportBackend == ExecutionTransportBackendRabbitMQ &&
+		c.DispatchesHere() &&
+		len(c.ExecutionWorkspaceIDs) == 0 {
+		missing = append(missing, "AUSTRO_EXECUTION_WORKSPACE_IDS")
+	}
+
+	// The role must be a value this build understands, and it must be
+	// internally consistent with the sweep mode. A role is what makes "off"
+	// meaningful: the same mode is correct for an API that has delegated the
+	// sweep and a defect in a deployment that has not, so validating the mode
+	// alone cannot distinguish a healthy split topology from a silent hole.
+	role := c.effectiveProcessRole()
+	switch role {
+	case ProcessRoleAPI, ProcessRoleDispatcher, ProcessRoleWorker:
+	case "":
+		// Explicitly blanked; see the dispatch-mode comment above.
+		missing = append(missing, "AUSTRO_PROCESS_ROLE")
+	default:
+		missing = append(missing, "AUSTRO_PROCESS_ROLE")
+	}
+
+	// Every declared companion must be a role this build understands, and none
+	// of them may be a role this process already is: declaring yourself a
+	// companion is a contradiction, and declaring an unknown role would let a
+	// typo satisfy a requirement the validator believes it enforced.
+	for _, companion := range c.companionRoles() {
+		if companion == role {
+			missing = append(missing, "AUSTRO_EXPECT_COMPANION_PROCESSES")
+			continue
+		}
+		switch companion {
+		case ProcessRoleAPI, ProcessRoleDispatcher, ProcessRoleWorker:
+		default:
+			missing = append(missing, "AUSTRO_EXPECT_COMPANION_PROCESSES")
+		}
+	}
+
+	// Role and mode must agree. Each pairing below describes a process that
+	// cannot work as configured, and each is refused rather than repaired:
+	//
+	//   api         + api         HTTP and the sweep, one process (supported)
+	//   api         + off         HTTP only, a companion sweeps (supported)
+	//   api         + service     INVALID: would run as a dispatcher yet serve
+	//                             HTTP, i.e. hold a port the dispatcher must
+	//                             never hold
+	//   dispatcher  + service     the sweep only, no listener (supported)
+	//   dispatcher  + api         INVALID: would serve HTTP, holding a port
+	//   dispatcher  + off         INVALID: a dispatcher that dispatches nothing
+	//   worker      + off         consumes the queue, never sweeps (supported)
+	//   worker      + api/service INVALID: a consumer that would also sweep
+	//                             (two owners) or hold a listener
+	//
+	// A worker that swept would not merely be redundant: two sweepers claim the
+	// same due retries, and while the claim fence makes that safe to run, it
+	// makes the ownership contract a fiction.
+	if !c.roleAndModeAgree() {
+		missing = append(missing, "AUSTRO_EXECUTION_DISPATCH_MODE")
+	}
+
+	// On a broker-backed transport in production, somebody must sweep. This is
+	// the API's problem to state and not the worker's: the API is the process
+	// whose readiness is what an operator or a platform supervisor looks at, and
+	// it is the only role that can be told "you do not dispatch, so say who
+	// does". A worker declining to sweep is the definition of a worker, not a
+	// gap.
+	//
+	// The failure this prevents is specific and total: with no process sweeping,
+	// nothing ever publishes to the execution queue, executions accumulate in
+	// "due" state in PostgreSQL, the worker sits idle with an empty queue, and
+	// the API keeps answering 200 on both health endpoints.
+	//
+	// ExpectsCompanion is an operator assertion, not a measurement. A companion
+	// on another host of a hosting provider cannot be observed from inside this
+	// process, so requiring the declaration moves the claim from "silently
+	// absent" to "explicitly stated and greppable" — and the health surface
+	// reports the sweep's observed liveness, so a declared dispatcher that is
+	// not actually running is still visible.
+	if c.isProduction() &&
+		c.ExecutionTransportBackend == ExecutionTransportBackendRabbitMQ &&
+		role == ProcessRoleAPI &&
+		!c.DispatchesHere() &&
+		!c.ExpectsCompanion(ProcessRoleDispatcher) {
+		missing = append(missing, "AUSTRO_EXPECT_COMPANION_PROCESSES")
+	}
+
+	// The heartbeat durations must parse, and the staleness window must be
+	// positive and strictly longer than the period.
+	//
+	// The relationship is the load-bearing part. A window at or below the period
+	// makes the two settings race: a reader can check between a writer's beats,
+	// see a companion as stale, and report the deployment down while it is
+	// running. A readiness check that cries wolf is one operators learn to
+	// ignore, which loses the alarm this whole mechanism exists to raise. The
+	// window also has to cover more than one beat, so a single slow write does
+	// not flap readiness on its own.
+	for name, raw := range map[string]string{
+		"AUSTRO_HEARTBEAT_INTERVAL":    c.heartbeatIntervalRaw,
+		"AUSTRO_HEARTBEAT_STALE_AFTER": c.heartbeatStaleAfterRaw,
+	} {
+		if raw == "" {
+			continue
+		}
+		if _, err := time.ParseDuration(raw); err != nil {
+			missing = append(missing, name)
+		}
+	}
+	if c.HeartbeatInterval <= 0 {
+		missing = append(missing, "AUSTRO_HEARTBEAT_INTERVAL")
+	}
+	if c.HeartbeatStaleAfter <= 0 {
+		missing = append(missing, "AUSTRO_HEARTBEAT_STALE_AFTER")
+	}
+	if c.HeartbeatInterval > 0 && c.HeartbeatStaleAfter > 0 && c.HeartbeatStaleAfter <= c.HeartbeatInterval {
+		missing = append(missing, "AUSTRO_HEARTBEAT_STALE_AFTER")
+	}
+
+	// A process told not to sweep must not also be configured with workspaces
+	// to sweep: it carries the configuration of a dispatcher while behaving as
+	// a bystander, and the mismatch hides a missing assignment. In development
+	// that is a legitimate way to work on admission with dispatch parked, so
+	// only production refuses it.
+	if c.isProduction() &&
+		!c.DispatchesHere() &&
+		len(c.ExecutionWorkspaceIDs) > 0 {
 		missing = append(missing, "AUSTRO_EXECUTION_WORKSPACE_IDS")
 	}
 
 	return missing
+}
+
+// dispatchModeState classifies the configured sweep-loop owner. It exists
+// because the zero value of Config.ExecutionDispatchMode and a deliberately
+// blanked environment variable are different things that look identical after
+// the fact, and only one of them should silently get the default.
+type dispatchModeState int
+
+const (
+	// dispatchModeOK is a value this build understands.
+	dispatchModeOK dispatchModeState = iota
+	// dispatchModeBlank is an environment value of only whitespace.
+	dispatchModeBlank
+	// dispatchModeUnset is a value nobody configured: the loader substituted
+	// the default, and a hand-built Config in a test has simply not been asked.
+	dispatchModeUnset
+	// dispatchModeInvalid is a value this build does not understand.
+	dispatchModeInvalid
+)
+
+// dispatchModeState classifies ExecutionDispatchMode.
+//
+// The default and the never-set case are deliberately the same outcome. A
+// hand-built Config — which is how most of this package's tests construct one —
+// has no environment behind it, and a test that cares about, say, JWT length
+// should not also have to know about the dispatch mode to get a valid
+// configuration. The loader, meanwhile, always fills the field, so on a real
+// deployment "unset" cannot reach here at all.
+func (c *Config) dispatchModeState() dispatchModeState {
+	mode := strings.ToLower(strings.TrimSpace(c.ExecutionDispatchMode))
+	raw := c.executionDispatchModeRaw
+	switch mode {
+	case ExecutionDispatchModeAPI, ExecutionDispatchModeService, ExecutionDispatchModeOff:
+		return dispatchModeOK
+	case "":
+		if raw != "" {
+			return dispatchModeBlank
+		}
+		return dispatchModeUnset
+	default:
+		return dispatchModeInvalid
+	}
+}
+
+// DispatchesHere reports whether this process starts the dispatch sweep loop,
+// given the effective mode. It is the single definition both the validator and
+// the entrypoints consult, so a value cannot be accepted by one and acted on
+// differently by the other.
+func (c *Config) DispatchesHere() bool {
+	switch c.effectiveDispatchMode() {
+	case ExecutionDispatchModeAPI, ExecutionDispatchModeService:
+		return true
+	default:
+		return false
+	}
+}
+
+// ServesHTTP reports whether this process opens an HTTP listener. It is false
+// for the dispatcher and the worker, which is the property that keeps those two
+// units off the platform's public port range: neither needs a port, so neither
+// can be reached, so neither needs a network rule.
+func (c *Config) ServesHTTP() bool {
+	return c.effectiveProcessRole() == ProcessRoleAPI
+}
+
+// ConsumesExecutionQueue reports whether this process consumes the execution
+// queue. Only the worker does.
+func (c *Config) ConsumesExecutionQueue() bool {
+	return c.effectiveProcessRole() == ProcessRoleWorker
+}
+
+// companionRoles is the declared companion list, normalised. Tokens that do
+// not name a role this build understands are dropped here and rejected by
+// Validate, so a partially-typed list cannot half-satisfy a requirement while
+// looking complete.
+func (c *Config) companionRoles() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, token := range strings.Split(strings.TrimSpace(c.expectCompanionProcessesRaw), ",") {
+		role := strings.ToLower(strings.TrimSpace(token))
+		if role == "" || seen[role] {
+			continue
+		}
+		seen[role] = true
+		out = append(out, role)
+	}
+	return out
+}
+
+// ExpectsCompanion reports whether the deployment declared that the given role
+// runs as a separate supervised process that this one does not start.
+//
+// This is a claim about the topology, never about liveness. The distinction is
+// the whole point: a process cannot observe a companion on another host, so
+// this may only answer "the deployment says so" — never "it is running". Liveness
+// is reported separately, from the heartbeat table, by internal/health.
+func (c *Config) ExpectsCompanion(role string) bool {
+	for _, companion := range c.companionRoles() {
+		if companion == strings.ToLower(strings.TrimSpace(role)) {
+			return true
+		}
+	}
+	return false
+}
+
+// DeclaredCompanions returns the declared companion roles, in configuration
+// order. The health surface reports it so a readiness response distinguishes
+// "no companion was declared, so none is required" from "one was declared and
+// is not answering".
+func (c *Config) DeclaredCompanions() []string {
+	return c.companionRoles()
+}
+
+// UsesRedis reports whether this process opens a Redis connection.
+// Redis backs the memory bank, which is composed into the API runtime and
+// nowhere else: the dispatcher reads and writes PostgreSQL directly, and the
+// worker consumes the broker. So only the API role needs the credential, and
+// making that explicit is what allows the other two roles to run on a host with
+// no Redis — and, more usefully, means an operator reading the environment file
+// can see which unit actually depends on the datastore.
+func (c *Config) UsesRedis() bool {
+	return c.effectiveProcessRole() == ProcessRoleAPI
+}
+
+// effectiveProcessRole is the normalised role, with the never-configured case
+// resolved to the historical single-binary behaviour (the API process, which
+// also sweeps).
+//
+// It reads the raw environment text to tell "nobody configured a role" from
+// "somebody configured whitespace". Both normalise to the empty string, and only
+// one of them should silently get the default: a deployment that wrote
+// AUSTRO_PROCESS_ROLE=" " has said something, and it is not "use the default".
+// A blanked-out role therefore arrives here as "" and is rejected by Validate,
+// while an absent one arrives as ProcessRoleAPI and is not.
+//
+// The raw comparison is deliberately untrimmed. Trimming it would collapse
+// "  " back to "" and reintroduce exactly the confusion this is here to resolve.
+func (c *Config) effectiveProcessRole() string {
+	role := strings.ToLower(strings.TrimSpace(c.ProcessRole))
+	if role == "" && c.processRoleRaw == "" {
+		return ProcessRoleAPI
+	}
+	return role
+}
+
+// ProcessRoleName is the exported view of effectiveProcessRole, for the
+// entrypoints.
+//
+// Entrypoints must branch on this and never on the raw ProcessRole field.
+// Validate deliberately tolerates case and padding in the operator-supplied
+// value, but the field keeps the text exactly as it was typed, so a
+// hand-to-hand comparison against ProcessRoleWorker in the API binary would
+// fail to match "WORKER": validation would accept role=worker, the entrypoint
+// would see an unrecognised role, and the process would open an HTTP listener
+// despite having declared itself a process that holds no port. One accessor
+// means the validator and the entrypoint cannot disagree about which process
+// this is.
+func (c *Config) ProcessRoleName() string {
+	return c.effectiveProcessRole()
+}
+
+// roleAndModeAgree reports whether the configured role and sweep mode describe
+// a process that can do the work it claims. It is the matrix in Validate,
+// expressed once so the validator and any future caller cannot disagree about
+// which pairings exist.
+func (c *Config) roleAndModeAgree() bool {
+	mode := c.effectiveDispatchMode()
+	switch c.effectiveProcessRole() {
+	case ProcessRoleAPI:
+		// The API may sweep or delegate, but it must not become the
+		// headless dispatcher: that would serve HTTP from a unit whose whole
+		// purpose is to hold no port.
+		return mode == ExecutionDispatchModeAPI || mode == ExecutionDispatchModeOff
+	case ProcessRoleDispatcher:
+		// A dispatcher sweeps and does nothing else, ever.
+		return mode == ExecutionDispatchModeService
+	case ProcessRoleWorker:
+		// A consumer never sweeps. A second sweeper would make ownership
+		// nominal, and a worker with a listener would expose a port nothing
+		// needs.
+		return mode == ExecutionDispatchModeOff
+	default:
+		return false
+	}
+}
+
+// effectiveDispatchMode is the normalised mode a process acts on, with the
+// never-configured case resolved to the historical default.
+func (c *Config) effectiveDispatchMode() string {
+	if c.dispatchModeState() == dispatchModeUnset {
+		return ExecutionDispatchModeAPI
+	}
+	return strings.ToLower(strings.TrimSpace(c.ExecutionDispatchMode))
 }
 
 // isProduction reports whether the configuration declares the production

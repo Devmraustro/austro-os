@@ -28,7 +28,15 @@ paths:
   /health/ready:
     get:
       summary: Readiness probe
-      description: Checks if the application is ready to serve traffic
+      description: |
+        Checks if the application is ready to serve traffic.
+
+        A deployment split across several processes (an API that delegates the
+        dispatch sweep to a supervised companion, for example) declares which
+        companions it needs. This endpoint reports that declaration and the
+        companions' observed liveness, and answers 503 when a required companion
+        is not running. A single-process deployment declares no companions and
+        always answers 200.
       operationId: healthReady
       responses:
         '200':
@@ -36,10 +44,9 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  ready:
-                    type: boolean
+                $ref: '#/components/schemas/HealthReadyBody'
+        '503':
+          $ref: '#/components/responses/HealthReadyNotReady'
   /api/auth/bootstrap:
     post:
       summary: Initialize the founder identity
@@ -3576,7 +3583,74 @@ components:
         current_task_id:
           type: string
           format: uuid
+    HealthCompanion:
+      type: object
+      required: [role, instances]
+      properties:
+        role:
+          type: string
+          enum: ["dispatcher", "worker"]
+        instances:
+          type: integer
+          description: |
+            Instances of this role that reported in recently. Zero means the
+            role is not running.
+        last_seen:
+          type: string
+          format: date-time
+          description: |
+            Most recent report, in UTC. Absent when the role has never run.
+    HealthReadyBody:
+      type: object
+      required: [ready, status, requires]
+      properties:
+        ready:
+          type: boolean
+        status:
+          type: string
+          enum: ["ok", "degraded"]
+        reason:
+          type: string
+          description: |
+            Why the deployment is not ready. Absent when ready.
+            `companion-absent` means a required companion is not running;
+            `liveness-unavailable` means the check itself could not be
+            completed, which is not the same as the companion being absent.
+          enum: ["companion-absent", "liveness-unavailable"]
+        requires:
+          type: array
+          description: |
+            Process roles this deployment declared it needs to run as separate
+            processes. Always present, and empty when the deployment needs none.
+          items:
+            type: string
+            enum: ["dispatcher", "worker"]
+        companions:
+          type: array
+          description: Observed state of each declared companion.
+          items:
+            $ref: '#/components/schemas/HealthCompanion'
+    HealthReadyNotReadyBody:
+      allOf:
+        - $ref: '#/components/schemas/HealthReadyBody'
+        - type: object
+          required: [ready, status, requires]
+          properties:
+            ready:
+              type: boolean
+              enum: [false]
+            status:
+              type: string
+              enum: ["degraded"]
   responses:
+    HealthReadyNotReady:
+      description: |
+        The deployment is not ready. Either a required companion is not running,
+        or the liveness check could not be completed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/HealthReadyNotReadyBody'
     BadRequest:
       description: Bad request
       content:

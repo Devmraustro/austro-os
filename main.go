@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -26,6 +29,7 @@ import (
 	"austro-os/internal/config"
 	"austro-os/internal/department"
 	"austro-os/internal/execution"
+	"austro-os/internal/health"
 	"austro-os/internal/knowledge"
 	logger "austro-os/internal/log"
 	"austro-os/internal/memory"
@@ -61,6 +65,31 @@ func main() {
 		os.Exit(1)
 	}
 
+	// This binary is either the API or the dispatcher, never the worker. A
+	// worker role here would otherwise pass configuration validation and then
+	// fall through to the HTTP path, opening a listener for a role that was
+	// explicitly declared as holding none — and the declaration would be the
+	// only evidence that it went wrong.
+	if err := assertServableRole(cfg); err != nil {
+		logger.NewEntry("invalid-process-role").SetLevel("error").WithError(err).Log()
+		os.Exit(1)
+	}
+
+	// Dispatcher-only process. On a hosting model where the HTTP process is not
+	// the one with dependable supervision, the sweep loop runs here as its own
+	// supervised process and this binary starts no listener at all, so it holds
+	// no port and is unreachable from the network. It is the same binary, the
+	// same release, and the same code path for building the transport; only the
+	// supervision boundary moves.
+	//
+	// The branch is on the validated role/mode pair, not on the mode alone, so a
+	// role that is not the API can never fall through into the HTTP path and
+	// open a listener it was configured not to have.
+	if isDispatcherRole(cfg) {
+		runDispatchService(cfg)
+		return
+	}
+
 	// Bootstrap the schema as the owner principal, then serve on the
 	// unprivileged runtime pool. MustInitializeTopology verifies that pool
 	// against the live database before returning, so a process that reaches
@@ -69,6 +98,13 @@ func main() {
 	db := handles.Runtime
 	defer db.Close()
 	defer handles.Admin.Close()
+
+	// Readiness is built here, over the runtime handle, so the health endpoint
+	// can answer with the deployment's real shape: which companions it declared
+	// and which of them are actually beating. A single-process deployment has no
+	// declared companions, so the endpoint keeps its historical unconditional
+	// verdict and nothing changes for it.
+	readiness := newReadinessEvaluator(cfg, db)
 
 	// Persistent audit writer. It runs on the administrative handle because
 	// the runtime role is deliberately append-only on audit_events and cannot
@@ -144,51 +180,39 @@ func main() {
 
 	// AI execution dispatch. The dispatcher is the only consumer of the claim
 	// and stale-reclaim paths (fenced in SQL by lease owner and generation), and
-	// one sweep loop per configured workspace runs alongside the API. Each
-	// claimed retry is handed to the configured transport: the deterministic
-	// stub by default, a broker-backed publisher once one is selected. The loop
+	// one sweep loop per configured workspace runs alongside the API. The loop
 	// is deliberately not started when no workspace ids are configured, which is
 	// the off switch for deployments that want admission without a local
-	// dispatcher.
-	dispatchCtx, stopDispatch := context.WithCancel(context.Background())
-	if len(cfg.ExecutionWorkspaceIDs) > 0 {
-		var dispatchPub execution.Publisher
-		switch cfg.ExecutionTransportBackend {
-		case "", config.ExecutionTransportBackendStub:
-			dispatchPub = execution.NewStubPublisher()
-		case config.ExecutionTransportBackendRabbitMQ:
-			// The queue name comes from configuration (AUSTRO_EXECUTION_QUEUE,
-			// default config.DefaultExecutionQueue) for the same reason the
-			// worker resolves it from configuration: the two sides are separate
-			// processes and a name pinned on only one of them silently splits
-			// the pipeline in half.
-			execSink, serr := rabbitmq.NewReconnectingSink(cfg.RabbitMQURL, cfg.ExecutionQueue)
-			if serr != nil {
-				logger.NewEntry("execution-transport-sink-failed").SetLevel("error").WithError(serr).Log()
-				os.Exit(1)
-			}
-			defer execSink.Close()
-			dispatchPub = rabbitmq.NewExecutionPublisher(execSink)
-		default:
-			logger.NewEntry("execution-transport-unknown").SetLevel("error").
-				With("backend", cfg.ExecutionTransportBackend).Log()
-			os.Exit(1)
-		}
-		execDispatcher := execution.NewDispatcher(
-			executionStore, dispatchPub, execution.NewWorkerID(),
-			cfg.ExecutionLeaseTTL, cfg.ExecutionRetryBackoffBase, cfg.ExecutionRetryBackoffMax,
-		)
-		for _, ws := range cfg.ExecutionWorkspaceIDs {
-			go execDispatcher.Run(dispatchCtx, ws, cfg.ExecutionSweepInterval)
-		}
-		logger.NewEntry("execution-dispatch-started").
-			With("workspaces", len(cfg.ExecutionWorkspaceIDs)).
-			With("transport", cfg.ExecutionTransportBackend).
-			With("queue", cfg.ExecutionQueue).Log()
-	} else {
-		stopDispatch()
+	// dispatcher, and it is not started at all when AUSTRO_EXECUTION_DISPATCH_MODE
+	// moves it to another process.
+	var stopDispatch func()
+	switch {
+	case isDispatcherRole(cfg):
+		// Unreachable: the dispatcher-only process returned above. Kept so that
+		// the mode check and the mode that is honoured cannot drift apart.
+		stopDispatch = func() {}
+	case !sweepsHere(cfg):
+		// This API process is not the dispatcher. The deployment said who is, so
+		// the claim is checked against observed liveness rather than assumed:
+		// declaring a companion is not evidence that it is running, and the
+		// readiness endpoint reports its heartbeat either way.
+		logger.NewEntry("execution-dispatch-idle").
+			With("reason", "AUSTRO_EXECUTION_DISPATCH_MODE is "+dispatchMode(cfg)).
+			With("declared_companions", cfg.DeclaredCompanions()).
+			With("note", "a separate process owns the dispatch sweep").
+			Log()
+	case len(cfg.ExecutionWorkspaceIDs) == 0:
 		logger.NewEntry("execution-dispatch-idle").
 			With("reason", "no AUSTRO_EXECUTION_WORKSPACE_IDS configured").Log()
+	default:
+		stopDispatch, err = startDispatchSweep(cfg, executionStore)
+		if err != nil {
+			logger.NewEntry("execution-transport-sink-failed").SetLevel("error").WithError(err).Log()
+			os.Exit(1)
+		}
+	}
+	if stopDispatch != nil {
+		defer stopDispatch()
 	}
 
 	// Workspaces are organization-level records, so the store runs on the admin
@@ -296,10 +320,23 @@ func main() {
 			}
 		},
 		{Method: http.MethodGet, Pattern: "/health/ready"}: func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusOK)
-			if _, err := w.Write([]byte(`{"ready":true}`)); err != nil {
-				return
+			report, err := readiness.Evaluate(r.Context())
+			if err != nil {
+				// The check could not be completed, so the answer is unknown.
+				// Reporting ready here would be the exact defect this endpoint
+				// was changed to remove: a process that cannot see its
+				// dependencies is not thereby known to have them.
+				logger.NewEntry("readiness-unavailable").
+					SetLevel("warn").
+					WithError(err).
+					Log()
 			}
+			// The evaluator fills in the same report on failure, including the
+			// reason and whatever it did manage to observe, so the response is
+			// rendered through one path. A 503 body that omitted status and
+			// requires would contradict the documented schema for exactly the
+			// response an operator most needs to trust.
+			writeReadiness(w, report)
 		},
 
 		// Authentication endpoints. Login/refresh/logout/bootstrap are explicit
@@ -436,7 +473,7 @@ func main() {
 	idleClosed := make(chan struct{})
 	go func() {
 		sig := make(chan os.Signal, 1)
-		signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+		signal.Notify(sig, shutdownSignals()...)
 		<-sig
 		logger.NewEntry("austro-os-shutting-down").Log()
 		ctx, cancel := context.WithTimeout(context.Background(), shutdownDrainTimeout)
@@ -444,7 +481,9 @@ func main() {
 		if err := srv.Shutdown(ctx); err != nil {
 			logger.NewEntry("austro-os-shutdown-drain-incomplete").SetLevel("error").WithError(err).Log()
 		}
-		stopDispatch()
+		if stopDispatch != nil {
+			stopDispatch()
+		}
 		close(idleClosed)
 	}()
 
@@ -463,6 +502,293 @@ func queueFor(cfg *config.Config) string {
 		return cfg.RabbitMQQueue
 	}
 	return "austro.events"
+}
+
+// shutdownSignals is the set of signals that begin a graceful shutdown.
+//
+// SIGHUP is here deliberately, and it is not a Unix-only courtesy. AlwaysData
+// restarts a background Service by sending SIGHUP to its foreground process
+// (https://help.alwaysdata.com/en/docs/web-hosting/services). SIGHUP is not in
+// Go's default-handled set, so without this line the runtime's default action
+// applies and the process dies where it stands: no request drain, no deferred
+// connection close, no log line explaining why. That is survivable for this
+// system — the dispatch and consumption protocols are fenced and at-least-once,
+// so a hard kill loses only work that the next sweep reclaims — but paying for
+// it on every platform restart is a choice, not a necessity.
+// SIGINT and SIGTERM cover systemd, containers and an operator's kill.
+func shutdownSignals() []os.Signal {
+	return []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP}
+}
+
+// dispatchMode is the configured sweep-loop owner, normalised the same way the
+// configuration validator normalises it.
+func dispatchMode(cfg *config.Config) string {
+	return strings.ToLower(strings.TrimSpace(cfg.ExecutionDispatchMode))
+}
+
+// sweepsHere reports whether this process starts the dispatch sweep loop.
+func sweepsHere(cfg *config.Config) bool {
+	return cfg.DispatchesHere()
+}
+
+// isDispatcherRole reports whether this process is the dedicated dispatcher:
+// sweep loop, no HTTP listener, no inbound port. The entrypoint branches on the
+// role rather than on the mode, because the role is the statement about what
+// this process is and the mode is only one of its properties.
+func isDispatcherRole(cfg *config.Config) bool {
+	return cfg.ProcessRoleName() == config.ProcessRoleDispatcher
+}
+
+// assertServableRole refuses a role this binary cannot serve.
+//
+// The worker is the only rejection, and it is a real one: role=worker with
+// mode=off is a valid configuration, so Validate accepts it, and without this
+// check the API binary would fall through the dispatcher branch and open an HTTP
+// listener for a process that was explicitly declared to hold none. The declared
+// role would be the only evidence that anything went wrong, and it would be
+// evidence nobody reads.
+func assertServableRole(cfg *config.Config) error {
+	if cfg.ProcessRoleName() == config.ProcessRoleWorker {
+		return errors.New("AUSTRO_PROCESS_ROLE is " + config.ProcessRoleWorker +
+			" but this binary serves the api and dispatcher roles; the worker is cmd/worker")
+	}
+	return nil
+}
+
+// newExecutionPublisher builds the dispatch transport for whichever process is
+// sweeping, and returns the cleanup for it. Both processes call this, so the
+// API and the standalone dispatcher cannot drift onto different transports or
+// different queue names — a drift there is invisible from inside either
+// process, because the failure lands on the other side of the broker.
+func newExecutionPublisher(cfg *config.Config) (execution.Publisher, func(), error) {
+	switch cfg.ExecutionTransportBackend {
+	case "", config.ExecutionTransportBackendStub:
+		return execution.NewStubPublisher(), func() {}, nil
+	case config.ExecutionTransportBackendRabbitMQ:
+		// The queue name comes from configuration (AUSTRO_EXECUTION_QUEUE,
+		// default config.DefaultExecutionQueue) for the same reason the worker
+		// resolves it from configuration: the publisher and the consumer are
+		// separate processes and a name pinned on only one of them silently
+		// splits the pipeline in half.
+		execSink, err := rabbitmq.NewReconnectingSink(cfg.RabbitMQURL, cfg.ExecutionQueue)
+		if err != nil {
+			return nil, nil, err
+		}
+		return rabbitmq.NewExecutionPublisher(execSink), func() { execSink.Close() }, nil
+	default:
+		return nil, nil, fmt.Errorf("unknown execution transport backend %q", cfg.ExecutionTransportBackend)
+	}
+}
+
+// startDispatchSweep runs one sweep goroutine per configured workspace and
+// returns a stop function that cancels them and closes the transport. It is
+// shared by the API and the standalone dispatcher for the same reason the
+// publisher factory is: the dispatch topology must be one definition, not two
+// that agree today.
+func startDispatchSweep(cfg *config.Config, store execution.ExecutionStore) (func(), error) {
+	pub, cleanup, err := newExecutionPublisher(cfg)
+	if err != nil {
+		return nil, err
+	}
+	dispatcher := execution.NewDispatcher(
+		store, pub, execution.NewWorkerID(),
+		cfg.ExecutionLeaseTTL, cfg.ExecutionRetryBackoffBase, cfg.ExecutionRetryBackoffMax,
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	for _, ws := range cfg.ExecutionWorkspaceIDs {
+		go dispatcher.Run(ctx, ws, cfg.ExecutionSweepInterval)
+	}
+	logger.NewEntry("execution-dispatch-started").
+		With("workspaces", len(cfg.ExecutionWorkspaceIDs)).
+		With("transport", cfg.ExecutionTransportBackend).
+		With("queue", cfg.ExecutionQueue).
+		With("owner", dispatchMode(cfg)).
+		Log()
+	return func() {
+		cancel()
+		cleanup()
+	}, nil
+}
+
+// runDispatchService is the dedicated dispatcher process: sweep loop only.
+//
+// It opens no listening socket, so it needs no port in the platform's reserved
+// range and is not reachable from the network. It also composes no HTTP
+// handlers and opens no Redis connection, so the credentials it requires are
+// the database and the broker and nothing else — the dispatcher has no reason
+// to hold a signing key, and not asking for one keeps the blast radius of this
+// process equal to the execution queue.
+func runDispatchService(cfg *config.Config) {
+	handles := database.MustInitializeTopology(cfg)
+	defer handles.Runtime.Close()
+	defer handles.Admin.Close()
+
+	// The dispatcher is the process an API configured with
+	// AUSTRO_PROCESS_ROLE=api and AUSTRO_EXECUTION_DISPATCH_MODE=off is relying
+	// on. Registering here is the only way that API can find out whether this
+	// process is alive: it cannot see the Service, and this cannot see the API,
+	// so the shared table is the whole of the mutual awareness.
+	stopHeartbeat := startHeartbeat(cfg, handles.Runtime, config.ProcessRoleDispatcher)
+	defer stopHeartbeat()
+
+	if len(cfg.ExecutionWorkspaceIDs) == 0 {
+		logger.NewEntry("execution-dispatch-idle").
+			With("reason", "no AUSTRO_EXECUTION_WORKSPACE_IDS configured").
+			With("note", "this process has no other work to do").
+			Log()
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, shutdownSignals()...)
+		<-sig
+		return
+	}
+
+	stop, err := startDispatchSweep(cfg, postgres.NewExecutionStore(handles.Runtime))
+	if err != nil {
+		logger.NewEntry("execution-transport-sink-failed").SetLevel("error").WithError(err).Log()
+		os.Exit(1)
+	}
+	defer stop()
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, shutdownSignals()...)
+	<-sig
+	logger.NewEntry("dispatch-service-stopped").Log()
+}
+
+// writeReadiness renders a health.Report as the readiness response.
+//
+// The "ready" field stays the first key and keeps its old boolean shape, so the
+// existing deployment scripts that match on the body keep working. Everything
+// after it is new: the status code and the declared/observed companion state
+// are what make the split deployment checkable, and a 503 is what makes a
+// missing dispatcher visible to a platform supervisor that only ever looks at
+// the code.
+func writeReadiness(w http.ResponseWriter, report health.Report) {
+	type companionView struct {
+		Role      string `json:"role"`
+		Instances int    `json:"instances"`
+		LastSeen  string `json:"last_seen,omitempty"`
+	}
+	companions := make([]companionView, 0, len(report.Companions))
+	for _, c := range report.Companions {
+		view := companionView{Role: c.Role, Instances: c.Instances}
+		if !c.LastSeen.IsZero() {
+			// RFC 3339 in UTC: the timestamp is compared against a
+			// database-side clock, so a reader in another timezone must not be
+			// left interpreting it.
+			view.LastSeen = c.LastSeen.UTC().Format(time.RFC3339)
+		}
+		companions = append(companions, view)
+	}
+
+	body := struct {
+		Ready  bool   `json:"ready"`
+		Status string `json:"status"`
+		Reason string `json:"reason,omitempty"`
+		// Required is never omitted. An empty list is a meaningful answer —
+		// "this deployment needs no companion" — and dropping the key would
+		// leave a reader unable to tell that apart from a response that never
+		// evaluated the question.
+		Required []string        `json:"requires"`
+		Roles    []companionView `json:"companions,omitempty"`
+	}{
+		Ready:    report.Ready,
+		Status:   readinessStatus(report.Ready),
+		Reason:   report.Reason,
+		Required: report.Required,
+		Roles:    companions,
+	}
+	if body.Required == nil {
+		body.Required = []string{}
+	}
+
+	payload, err := json.Marshal(body)
+	if err != nil {
+		// The body is built from strings, ints and a bool, so this cannot
+		// happen; reporting not-ready is the only honest response if it does.
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if !report.Ready {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+	if _, err := w.Write(payload); err != nil {
+		return
+	}
+}
+
+func readinessStatus(ready bool) string {
+	if ready {
+		return "ok"
+	}
+	return "degraded"
+}
+
+// newReadinessEvaluator builds the readiness check for this process.
+//
+// Dependencies come from the roles this deployment declared, not from a fixed
+// list. Two reasons, and the second is the one that bites:
+//
+// First, a process must not be able to configure its way out of checking for
+// the companions it declared, so the declared set drives the check.
+//
+// Second, an undeclared role must not be queried at all. Listing both roles
+// unconditionally would make a single-process deployment — which declares
+// nothing — depend on a database round trip it has no reason to make. If that
+// query fails, the endpoint answers 503 for a deployment that has no companion
+// to be missing, which is a worse failure than the stub it replaced: a host
+// that loses its database for an unrelated reason would take every single-process
+// site out of rotation, and the only evidence would be a warning nobody reads.
+//
+// Every declared companion is required. There is no "declared but optional" state:
+// naming a role in AUSTRO_EXPECT_COMPANION_PROCESSES is a claim that this process
+// cannot serve traffic without it, and the operator who believes otherwise has
+// not declared it yet.
+func newReadinessEvaluator(cfg *config.Config, db *sql.DB) *health.Evaluator {
+	return health.NewEvaluator(heartbeatReader{db: db}, readinessDeps(cfg), cfg.HeartbeatStaleAfter)
+}
+
+// readinessDeps turns the deployment's declaration into the dependencies the
+// evaluator will check.
+//
+// It is a separate function because the decision is worth testing on its own:
+// the entrypoint needs a *sql.DB to build an evaluator, but whether a
+// configuration produces zero queries or two is a property of the
+// configuration, and testing it through a live database would make the one
+// property that must never regress the hardest one to observe.
+//
+// Every declared companion is required. There is no "declared but optional"
+// state: naming a role in AUSTRO_EXPECT_COMPANION_PROCESSES is a claim that
+// this process cannot serve traffic without it, and the operator who believes
+// otherwise has not declared it yet.
+func readinessDeps(cfg *config.Config) []health.Dependency {
+	declared := cfg.DeclaredCompanions()
+	deps := make([]health.Dependency, 0, len(declared))
+	for _, role := range declared {
+		deps = append(deps, health.Dependency{Role: role, Required: true})
+	}
+	return deps
+}
+
+// heartbeatReader adapts the PostgreSQL store to the health package's interface.
+// It exists so main.go does not depend on the store's concrete type, and so the
+// readiness logic can be exercised against a scripted reader instead of a live
+// database.
+type heartbeatReader struct {
+	db *sql.DB
+}
+
+func (h heartbeatReader) Liveness(ctx context.Context, role string, staleAfter time.Duration) (health.RoleStatus, error) {
+	status, err := postgres.NewHeartbeatStore(h.db).Liveness(ctx, role, staleAfter)
+	if err != nil {
+		return health.RoleStatus{Role: role}, err
+	}
+	return health.RoleStatus{
+		Role:      status.Role,
+		Instances: status.FreshInstances,
+		LastSeen:  status.LastSeen,
+	}, nil
 }
 
 // isPublicEndpoint enumerates the explicit public exemptions. They are the

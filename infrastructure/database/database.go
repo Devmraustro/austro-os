@@ -522,6 +522,36 @@ func createTables(db *sql.DB) error {
 
 	CREATE UNIQUE INDEX IF NOT EXISTS uq_execution_contexts_execution ON execution_contexts(execution_id);
 	CREATE INDEX IF NOT EXISTS idx_execution_contexts_workspace ON execution_contexts(workspace_id);
+
+	-- Process liveness, written by the dispatcher and the worker.
+	--
+	-- This exists because a split deployment creates a failure one process
+	-- cannot see: when the API delegates the sweep to a companion on another
+	-- host, the API can start, serve traffic, and answer its own readiness
+	-- check while no dispatcher exists anywhere. Nothing inside the API
+	-- process can observe that. The only way for the dependency to become
+	-- visible is for the companion to leave evidence that it is running, in
+	-- the one datastore all units already share.
+	--
+	-- Deliberately NOT row level security. The invariant "is this process
+	-- alive" is infrastructure state, not workspace tenant data: it has no
+	-- workspace owner, and the API must be able to read the dispatcher's row
+	-- regardless of which workspace is being served. RLS would require a
+	-- fictitious owner and a policy that can only be bypassed, so the
+	-- privilege is granted explicitly and the table holds no tenant content.
+	-- It carries no payload beyond a role name, an opaque instance id, and a
+	-- timestamp.
+	CREATE TABLE IF NOT EXISTS process_heartbeats (
+		role TEXT NOT NULL,
+		instance_id TEXT NOT NULL,
+		started_at TIMESTAMP NOT NULL DEFAULT NOW(),
+		last_seen_at TIMESTAMP NOT NULL DEFAULT NOW(),
+		PRIMARY KEY (role, instance_id)
+	);
+
+	-- Readiness reads "the freshest row for this role" and nothing else, so the
+	-- index is on the ordering that query uses.
+	CREATE INDEX IF NOT EXISTS idx_process_heartbeats_role_seen ON process_heartbeats(role, last_seen_at DESC);
 `
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("create tables: %w", err)

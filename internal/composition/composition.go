@@ -196,19 +196,19 @@ func Compose(cfg *config.Config, stores Stores, sinks Sinks) (*Runtime, error) {
 	}
 
 	return &Runtime{
-		Config:                     cfg,
-		AI:                         gw,
-		AIProvider:                 provider,
-		AIBackend:                  aiBackend,
-		UsageGuard:                 guard,
-		Publish:                    publishSvc,
-		Publisher:                  publisher,
-		PublishBackend:             publishBackend,
-		Orchestration:              orchSvc,
-		Handler:                    orchestration.NewHandler(orchSvc),
-		Execution:                  execSvc,
-		ExecutionWorker:            execWorker,
-		ExecutionTransportBackend:  executionTransportBackend,
+		Config:                    cfg,
+		AI:                        gw,
+		AIProvider:                provider,
+		AIBackend:                 aiBackend,
+		UsageGuard:                guard,
+		Publish:                   publishSvc,
+		Publisher:                 publisher,
+		PublishBackend:            publishBackend,
+		Orchestration:             orchSvc,
+		Handler:                   orchestration.NewHandler(orchSvc),
+		Execution:                 execSvc,
+		ExecutionWorker:           execWorker,
+		ExecutionTransportBackend: executionTransportBackend,
 	}, nil
 }
 
