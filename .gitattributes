@@ -1,0 +1,46 @@
+# Repository line-ending policy.
+#
+# There were no attributes here before, so the line endings of every tracked file
+# were decided by whichever machine happened to check it out. Two concrete
+# failures came out of that, both reproduced on a Windows clone of this
+# repository, and they are the reason this file exists.
+#
+# 1. Shell scripts were checked out with CRLF, which bash will not execute. The
+#    release build (scripts/build-release.sh) and the deployment verifier
+#    (scripts/verify-production-deployment.sh) are both shell scripts, so a fresh
+#    clone could not build or verify itself without a manual autocrlf override.
+#
+# 2. 126 tracked .go files were permanently reported as modified while
+#    `git diff` showed no content difference at all. The index had cached the
+#    size of an older copy of each file that mixed CRLF and LF endings; autocrlf
+#    made that mixed form the expected on-disk form, so the recorded size never
+#    matched the file again and `git status` could not settle. The files were
+#    byte-identical to their blobs, and `git add` cleared the entries without
+#    changing a single blob hash, which is the proof that the content had never
+#    differed and the report was purely a stale stat.
+#
+# The policy is one line: every tracked file is text, stored with LF, and checked
+# out with LF on every platform. Both halves are needed. `text` normalises on
+# commit, so the bytes that get stored do not depend on who committed them.
+# `eol=lf` fixes the working tree, so the bytes a tool reads do not depend on who
+# cloned it. `text` alone would still let core.autocrlf rewrite the checkout,
+# which is failure 1 above.
+#
+# LF everywhere is safe for this repository because nothing tracked needs CRLF:
+# there is no .bat, .cmd or .ps1 file, and every tracked file is text - no image,
+# archive, font, executable or object file appears in the index. `text=auto`
+# keeps that true by itself if a binary file is added later, because Git detects
+# it and leaves it alone, so no explicit binary rule is listed here.
+#
+# One consequence is deliberate and load-bearing. The frozen architecture gate
+# hashes tests/phase1_exit_criteria_test.go *as it sits in the working tree*, not
+# as it is stored in the object database. Without this file, a Windows checkout
+# would hash a CRLF copy of that file and report the gate as modified even though
+# the committed bytes were untouched - a false positive that looks exactly like a
+# tampered architecture gate. With this file the gate hashes identical bytes on
+# every platform, so a FAIL there means the content really changed.
+#
+# The pattern below is deliberately a single wildcard rather than a list per file
+# type. A list would be longer and would leave every type not named in it back on
+# the machine-specific behaviour that caused both failures.
+* text=auto eol=lf
