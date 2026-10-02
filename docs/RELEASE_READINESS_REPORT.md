@@ -477,6 +477,14 @@ assurance without a stated basis.
 | `TestPhase1ExitCriteria` subtests | 45 result lines (33 numbered criteria, criterion 22 nests twelve), **34 pass / 11 fail**; every failure is an infrastructure criterion, every static criterion passes |
 | `TestConfigValidPasses`, `TestOpenAPIMatchesRegisteredRoutes` | pass, absent from the failure list |
 | `Should NOT be empty` occurrences in the suite log | 0 |
+| Deployment-contract tests that read the edited CI, env and deploy files | 7/7 pass, including all four subtests of `TestDeploymentArtifactsDeclareTheExecutionTransportContract` |
+| `scripts/verify-production-deployment.sh` | **199 passed, 0 failed** — unchanged, after supplying the temporary `python3` shim described in §6/B6; without it three checks report BLOCKED |
+| `tests/build_identity_contract_test.go` | 22 passed, 0 failed, 2 skipped (the two manifest tests, which skip while the manifest lives outside the repository) |
+| Two independent clones, four artifacts | **byte-for-byte identical** |
+| Artifact inspection via `debug/elf` | 4/4 ELF64, `ET_EXEC`, correct machine, no `PT_INTERP` |
+| Embedded commit, with a discriminating control | 4/4 present, 4/4 control absent — see §5 for why the first control was rejected |
+| Manifest digests re-hashed from the assembled directory | 4/4 match, 4/4 distinct |
+| Previous candidate after this pass | 6/6 files unchanged |
 | Modified workflow YAML parse | pass, both files |
 | TLS handshake against a live managed endpoint | **not run** — no TLS endpoint is reachable from here |
 | `bash -n` on `deploy/native/generate-env.sh` | **not available** — the `bash` on this host is the WSL shim and no distribution is installed; the heredoc placement was checked by reading, not by a parser |
@@ -797,9 +805,10 @@ live-path test.
 
 ## 5. Release candidate
 
-**Build source commit: `af59c4efc06c162790c171bca38c9b3cfe7685ba`**
-(`feat(release): give every released binary a verifiable build identity`),
-tree `94256cb0fd9313ceb0a8231a6c6562dece895ac8`.
+**Current build source commit: `69d7fa726215c4099d824747686a400aafcf16ef`**
+(`feat(redis): verified TLS from AUSTRO_REDIS_ADDR, and a real loopback guard`),
+tree `e74b2f1f2c06bd019b88212ec72f3860f26eef83`. It supersedes the candidate
+described below, which was built from `af59c4e` and is preserved untouched.
 
 That commit is the authority for what was compiled. The commit that carries
 *this report* is necessarily later and is not the build source; the two are
@@ -814,20 +823,56 @@ view. Each clone's tracked tree was asserted clean before building, and
 `scripts/build-release.sh` independently refuses a tracked-dirty tree. The
 binaries therefore cannot claim a commit that does not describe their source.
 
+The clones were made with `-c core.autocrlf=false`. This repository has no
+`.gitattributes` and this host has `core.autocrlf=true`, so a default clone
+checks the tree out with CRLF, which makes `scripts/build-release.sh`
+unrunnable and leaves the working tree dirty for reasons that have nothing to do
+with the source. Pinning the conversion at clone time is what makes "clean
+tracked tree" mean the same thing here as it does on a Linux builder. The
+working tree of the primary checkout is *not* a candidate source for the same
+reason: it carries ~117 line-ending-only entries that `git status` reports as
+modified and `git diff` reports as unchanged.
+
 Built with the repository's own flags: `-trimpath -ldflags '-s -w'` plus the
 linked identity, `CGO_ENABLED=0`, via `scripts/build-release.sh` - the single
 definition the native ARM64 job calls. Binary names match what each install
 script expects (`austro-api`/`austro-worker`).
 
-Location: `C:\Users\AUSTRO\AppData\Local\Temp\opencode\austro-release-candidate\`
+Location: `C:\Users\AUSTRO\AppData\Local\Temp\opencode\austro-release-candidate-redistls\`
 (manifest: `release-manifest.json`)
 
 | Target | File | Bytes | SHA-256 |
 |---|---|---|---|
-| linux/amd64 | `austro-api` | 13,963,426 | `6427c42919b4d977cdf9d02b1072fddce6a710f79bef4275b82e527217efd03c` |
-| linux/amd64 | `austro-worker` | 12,001,442 | `0db93c6b3eebab1c8b0e4d378951e3bfcb4529317a261e5f2d6c4dbf6d1366c9` |
-| linux/arm64 | `austro-api` | 13,107,362 | `c2a0994b1b32d13cf21bed997e3fb4692956fa31a68ff6658c222401a287d29a` |
-| linux/arm64 | `austro-worker` | 11,337,890 | `56a3dc80545adfc3e915fb42512f612ce6ba850c61cad2ce02d2950204534bdf` |
+| linux/amd64 | `austro-api` | 14,008,482 | `e5e7f3604edcdd6c50205f308680c69c0191c9371857fcd2110d3c560058f30b` |
+| linux/amd64 | `austro-worker` | 12,026,018 | `2b0e9596a517d753511aea4d5dd3fd889ab32f6bc55ff101888859c0ba55712f` |
+| linux/arm64 | `austro-api` | 13,172,898 | `aec8a84a9d2d6268553c1c761f391ab61ac86a33c47cbf2c1b7531eb78fd5b46` |
+| linux/arm64 | `austro-worker` | 11,337,890 | `e82a448be7873c92e238eaf0246aa2bf7475a832a7ff710f9e421663718e5608` |
+
+All four are byte-for-byte identical across the two independent clones, four
+distinct digests, each ELF64 `ET_EXEC` with the expected machine and no
+`PT_INTERP`, each carrying `commit=69d7fa72…` and none carrying
+`commit=unknown` or `commit=dev`. Digests were recomputed from the assembled
+candidate directory rather than copied from the build tree, so the manifest
+describes the files that were actually shipped.
+
+One control in that inspection was wrong at first and is worth recording. The
+search for the linked commit originally used 40 ASCII zeros as its negative
+control, and it matched all four binaries - which looks like a failure of the
+stamp. It is not: the binary genuinely contains 40 consecutive zeros inside an
+embedded HTTP response example. A control that occurs naturally in the artifact
+proves nothing. The control was replaced with the previous candidate's commit
+`91e9c8c3b084e3a96ebc912c9132fa458e299c2c`, which is absent from all four, so
+the check now discriminates.
+
+### Previous candidate — preserved, superseded
+
+`C:\Users\AUSTRO\AppData\Local\Temp\opencode\austro-release-candidate\`, built
+from `af59c4efc06c162790c171bca38c9b3cfe7685ba`. Its six files were fingerprinted
+before this pass began and re-hashed after it finished, and all six are
+unchanged. It is kept because it is the only artifact set whose full
+verification, including an executed `--version` on a natively runnable
+equivalent, was recorded; the Redis candidate is verified at byte level only,
+for the reason given under *What remains true of any candidate* below.
 
 ### Build identity — VERIFIED, and this closes the gap the last candidate had
 
@@ -836,8 +881,8 @@ build identity... Identifying a running deployment requires this manifest."* Tha
 is now false, deliberately. A released binary names its own source:
 
 ```
-austro-os api    version=1.0 commit=af59c4efc06c162790c171bca38c9b3cfe7685ba
-austro-os worker version=1.0 commit=af59c4efc06c162790c171bca38c9b3cfe7685ba
+austro-os api    version=1.0 commit=69d7fa726215c4099d824747686a400aafcf16ef
+austro-os worker version=1.0 commit=69d7fa726215c4099d824747686a400aafcf16ef
 ```
 
 `--version`, `-version` and `version` are all accepted on both entrypoints, and
@@ -899,10 +944,10 @@ as assurance. The version is asserted where it discriminates: by executing
 All four artifacts are byte-for-byte identical across the two independent builds:
 
 ```
-amd64   austro-api     REPRODUCIBLE  6427c42919b4d977cdf9d02b1072fddce6a710f79bef4275b82e527217efd03c
-amd64   austro-worker  REPRODUCIBLE  0db93c6b3eebab1c8b0e4d378951e3bfcb4529317a261e5f2d6c4dbf6d1366c9
-arm64   austro-api     REPRODUCIBLE  c2a0994b1b32d13cf21bed997e3fb4692956fa31a68ff6658c222401a287d29a
-arm64   austro-worker  REPRODUCIBLE  56a3dc80545adfc3e915fb42512f612ce6ba850c61cad2ce02d2950204534bdf
+amd64   austro-api     REPRODUCIBLE  e5e7f3604edcdd6c50205f308680c69c0191c9371857fcd2110d3c560058f30b
+amd64   austro-worker  REPRODUCIBLE  2b0e9596a517d753511aea4d5dd3fd889ab32f6bc55ff101888859c0ba55712f
+arm64   austro-api     REPRODUCIBLE  aec8a84a9d2d6268553c1c761f391ab61ac86a33c47cbf2c1b7531eb78fd5b46
+arm64   austro-worker  REPRODUCIBLE  e82a448be7873c92e238eaf0246aa2bf7475a832a7ff710f9e421663718e5608
 ```
 
 `-trimpath` is what makes this hold: it removes local filesystem paths, so the
@@ -932,10 +977,15 @@ again, and the manifest was checked against the repository.
 - Reproducibility is guaranteed **for this toolchain** (`go1.26.8`) and these
   flags. A different Go release may produce different bytes, so the toolchain is
   recorded in the manifest alongside the digests.
-- The previous candidate is superseded. Every digest changed, because every
-  binary now carries its own identity. The byte counts are unchanged, which is
-  expected: `-s -w` was already stripping the symbol table, and the identity
-  strings replace comparable bytes.
+- The `af59c4e` candidate is superseded. Every digest changed, because every
+  binary carries a different linked commit. Three of the four artifacts also grew:
+  `austro-api` by 45,056 bytes on amd64 and 65,536 on arm64, and `austro-worker`
+  by 24,576 on amd64, which is the endpoint-parsing and loopback-detection code
+  entering the linked configuration package. `austro-worker` on arm64 is the same
+  size to the byte, because the worker links configuration but never dials Redis,
+  so for that one artifact the only change is the commit string it carries - same
+  length, different content. A digest difference with an identical size is a
+  useful reminder that size is not evidence of anything.
 
 ### Build hygiene
 
@@ -1245,14 +1295,15 @@ been exercised, and it has not.
 
 | | |
 |---|---|
-| Build source commit | `af59c4efc06c162790c171bca38c9b3cfe7685ba` — tree `94256cb0fd9313ceb0a8231a6c6562dece895ac8` |
+| Build source commit | `69d7fa726215c4099d824747686a400aafcf16ef` — tree `e74b2f1f2c06bd019b88212ec72f3860f26eef83`, 401 source files |
 | Commit carrying this report | necessarily later, and deliberately not the build source; a file cannot contain the SHA of the commit that contains it |
-| Working tree at this pass | `main` @ `4a41a902b47c38c0c0fac111ba978ab7d5af9f2a`, the baseline this pass started from; the role/heartbeat work below was reviewed in that working tree and is not in any earlier commit, and is not in the artifacts above. It is not contained in a release-candidate SHA — see the row above |
+| Working tree at this pass | `main` @ `69d7fa7`, the commit this pass produced; the Redis TLS and loopback work is in it and therefore in the artifacts above. After it, the tree carries only line-ending-only entries that `git status` reports as modified and `git diff` does not, plus the untracked `specifications/Final_Technical_Specification.md` |
 | Artifacts | 4 (linux/amd64, linux/arm64 × api, worker), byte-reproducible across two independent builds, each carrying `version=1.0` and its own source commit |
 | Build identity | embedded in every released binary, verified; see §5 |
 | Per-build provenance | `release-manifest.json` (digests, toolchain, build time), written outside the repository |
 | Prior release-candidate commit | `91e9c8c3b084e3a96ebc912c9132fa458e299c2c` — the 56 reviewed paths |
-| Follow-ups | documentation-only commits, which change no artifact byte; plus the build identity commit `af59c4e`, which does, and is the build source above |
+| Superseded candidate | `af59c4e`, preserved unmodified at `austro-release-candidate\`; verified as unchanged by re-hashing all six of its files after this pass |
+| Follow-ups | documentation-only commits, which change no artifact byte; plus the build identity commit `af59c4e` and the Redis TLS commit `69d7fa7`, which do |
 | Frozen architecture gate | re-frozen to `9119aa71…` under approval; static verifier 199/0 |
 | Staged-tree verification | build 0, vet 0, buildinfo tests 0, identity contract suite 43 pass / 0 fail / 2 skip |
 | Pushed | **No** |
