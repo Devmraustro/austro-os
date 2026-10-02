@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -65,6 +66,15 @@ var withheldFields = []string{
 // session is established once for the package, and the workspace identities are
 // minted rather than logged in, which is the pattern rbac_authorization_test.go
 // already uses.
+//
+// The bodies below the sync.Once are deliberately free of *testing.T. They used
+// to call t-dependent helpers, so a Fatal inside the once body unwound the
+// goroutine with runtime.Goexit while sync.Once -- which marks itself done from
+// a defer -- recorded success. The error variable was never assigned, so
+// require.NoError saw nil and passed, and every later caller in the package
+// failed on `Should NOT be empty` against a token that no test ever received.
+// An initializer now returns (value, error); requireSharedToken is the single
+// place a failure is surfaced, so each caller reports the real cause.
 var (
 	auditFounderOnce sync.Once
 	auditFounderTok  string
@@ -89,28 +99,49 @@ type rbacSessions struct {
 func auditFounderToken(t *testing.T) string {
 	t.Helper()
 	auditFounderOnce.Do(func() {
-		if status, body := authJSON(t, http.MethodPost, "/api/auth/bootstrap", map[string]string{}, ""); status >= http.StatusInternalServerError {
-			auditFounderErr = fmt.Errorf("bootstrap failed (%d): %s", status, body)
-			return
-		}
-		status, body := authJSON(t, http.MethodPost, "/api/auth/login", map[string]string{
-			"username": envOrDefault("AUSTRO_FOUNDER_USERNAME", "founder"),
-			"password": envOrDefault("AUSTRO_FOUNDER_PASSWORD", ""),
-		}, "")
-		if status != http.StatusOK {
-			auditFounderErr = fmt.Errorf("founder login failed (%d): %s", status, body)
-			return
-		}
-		var tok authTokenResponse
-		if err := json.Unmarshal(body, &tok); err != nil {
-			auditFounderErr = err
-			return
-		}
-		auditFounderTok = tok.AccessToken
+		auditFounderTok, auditFounderErr = initAuditFounderSession(
+			getEnv().apiURL,
+			envOrDefault("AUSTRO_FOUNDER_USERNAME", "founder"),
+			envOrDefault("AUSTRO_FOUNDER_PASSWORD", ""),
+		)
 	})
-	require.NoError(t, auditFounderErr, "the shared founder session could not be established")
-	require.NotEmpty(t, auditFounderTok)
+	requireSharedToken(t, "founder", auditFounderErr, map[string]string{
+		"adminA": auditFounderTok,
+	})
 	return auditFounderTok
+}
+
+// initAuditFounderSession performs the one bootstrap and login and reports every
+// failure as an error. It never asserts and never returns an empty token without
+// also returning an error, so a cached failure cannot masquerade as a session.
+func initAuditFounderSession(apiBase, username, password string) (string, error) {
+	status, body, err := callAuthJSON(apiBase, http.MethodPost, "/api/auth/bootstrap", map[string]string{}, "")
+	if err != nil {
+		return "", fmt.Errorf("bootstrapping the founder session: %w", err)
+	}
+	if status >= http.StatusInternalServerError {
+		return "", fmt.Errorf("bootstrap failed (%d): %s", status, body)
+	}
+
+	status, body, err = callAuthJSON(apiBase, http.MethodPost, "/api/auth/login", map[string]string{
+		"username": username,
+		"password": password,
+	}, "")
+	if err != nil {
+		return "", fmt.Errorf("logging the founder in: %w", err)
+	}
+	if status != http.StatusOK {
+		return "", fmt.Errorf("founder login failed (%d): %s", status, body)
+	}
+
+	var tok authTokenResponse
+	if err := json.Unmarshal(body, &tok); err != nil {
+		return "", fmt.Errorf("decoding the founder login response: %w", err)
+	}
+	if tok.AccessToken == "" {
+		return "", fmt.Errorf("founder login returned no access_token: %s", body)
+	}
+	return tok.AccessToken, nil
 }
 
 // auditWorkspaceTokens returns one token per workspace identity. They are
@@ -121,35 +152,91 @@ func auditFounderToken(t *testing.T) string {
 func auditWorkspaceTokens(t *testing.T) rbacSessions {
 	t.Helper()
 	auditRBACOnce.Do(func() {
-		adminA, memberA, adminB := ensureRbacUsers(t)
-		svc := rbacJWT(&config.Config{
-			JWTSecret:        envOrDefault("AUSTRO_JWT_SECRET", "change-me-in-production"),
-			JWTRefreshSecret: envOrDefault("AUSTRO_JWT_REFRESH_SECRET", "change-me-in-production"),
-		})
-		mint := func(u *auth.UserRecord) string {
-			if auditRBACErr != nil {
-				return ""
-			}
-			role := auth.RoleFor(u)
-			tok, err := svc.GenerateAccessTokenWithPermissions(
-				u.ID, u.WorkspaceID, role, rbac.PermissionsForRole(role))
-			if err != nil {
-				auditRBACErr = err
-				return ""
-			}
-			return tok
-		}
-		auditRBACTok = rbacSessions{
-			adminA:  mint(adminA),
-			memberA: mint(memberA),
-			adminB:  mint(adminB),
-		}
+		auditRBACTok, auditRBACErr = initAuditWorkspaceTokens(getEnv().postgresDSN)
 	})
-	require.NoError(t, auditRBACErr, "workspace access tokens could not be minted")
-	require.NotEmpty(t, auditRBACTok.adminA)
-	require.NotEmpty(t, auditRBACTok.memberA)
-	require.NotEmpty(t, auditRBACTok.adminB)
+	requireSharedToken(t, "workspace", auditRBACErr, map[string]string{
+		"adminA":  auditRBACTok.adminA,
+		"memberA": auditRBACTok.memberA,
+		"adminB":  auditRBACTok.adminB,
+	})
 	return auditRBACTok
+}
+
+// initAuditWorkspaceTokens provisions the three workspace identities and mints
+// one access token each, returning errors instead of asserting. Like
+// initAuditFounderSession it cannot leave an empty token without an error.
+func initAuditWorkspaceTokens(dsn string) (rbacSessions, error) {
+	adminA, memberA, adminB, err := provisionRbacUsers(dsn)
+	if err != nil {
+		return rbacSessions{}, err
+	}
+	svc := rbacJWT(&config.Config{
+		JWTSecret:        envOrDefault("AUSTRO_JWT_SECRET", "change-me-in-production"),
+		JWTRefreshSecret: envOrDefault("AUSTRO_JWT_REFRESH_SECRET", "change-me-in-production"),
+	})
+	mint := func(u *auth.UserRecord) (string, error) {
+		role := auth.RoleFor(u)
+		tok, err := svc.GenerateAccessTokenWithPermissions(
+			u.ID, u.WorkspaceID, role, rbac.PermissionsForRole(role))
+		if err != nil {
+			return "", fmt.Errorf("minting a token for %s: %w", u.Username, err)
+		}
+		if tok == "" {
+			return "", fmt.Errorf("minting a token for %s produced an empty token", u.Username)
+		}
+		return tok, nil
+	}
+
+	var out rbacSessions
+	if out.adminA, err = mint(adminA); err != nil {
+		return rbacSessions{}, err
+	}
+	if out.memberA, err = mint(memberA); err != nil {
+		return rbacSessions{}, err
+	}
+	if out.adminB, err = mint(adminB); err != nil {
+		return rbacSessions{}, err
+	}
+	return out, nil
+}
+
+// requireSharedToken is the only place a shared-session failure is surfaced.
+// It reports the initializer's error, so an unreachable service or a rejected
+// credential is named instead of showing up later as an empty token.
+func requireSharedToken(t *testing.T, kind string, err error, tokens map[string]string) {
+	t.Helper()
+	if msg := sharedTokenFailure(kind, err, tokens); msg != "" {
+		t.Fatal(msg)
+	}
+}
+
+// sharedTokenFailure returns the diagnostic for a shared session that could not
+// be handed to a caller, or "" when the session is usable. It is separate from
+// requireSharedToken so the wording is directly testable: the original defect
+// hid the real cause behind "Should NOT be empty", so the message is now part
+// of the contract under test rather than an incidental string.
+func sharedTokenFailure(kind string, err error, tokens map[string]string) string {
+	if err != nil {
+		return fmt.Sprintf("shared %s session could not be established: %v", kind, err)
+	}
+	// An empty token with no error should be unreachable: the initializers
+	// refuse to return one. The check stays so that a future initializer
+	// cannot reintroduce the silent-empty-token failure mode, and it is
+	// worded as a harness fault because that is what it would be.
+	names := make([]string, 0, len(tokens))
+	for name, tok := range tokens {
+		if tok == "" {
+			names = append(names, name)
+		}
+	}
+	if len(names) > 0 {
+		sort.Strings(names)
+		return fmt.Sprintf(
+			"shared %s session initializer returned empty tokens (%s) with no error: "+
+				"this is a test-harness fault, not a product failure",
+			kind, strings.Join(names, ", "))
+	}
+	return ""
 }
 
 // TestAuditVisibilityFounderOrgRead is the happy path plus the two properties

@@ -3,6 +3,7 @@ package austro_os_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"testing"
@@ -35,23 +36,44 @@ type authMeResponse struct {
 // used here are the ones bootstrapped by the API.
 func authJSON(t *testing.T, method, path string, body map[string]string, token string) (int, []byte) {
 	t.Helper()
+	status, out, err := callAuthJSON(getEnv().apiURL, method, path, body, token)
+	require.NoError(t, err)
+	return status, out
+}
+
+// callAuthJSON is authJSON without *testing.T, so it can be called from a
+// shared initializer that must not terminate the caller's goroutine. Every
+// failure is returned with the method, path and endpoint named, because a
+// shared session initializer cannot call t.Fatal: doing so unwinds the
+// goroutine through runtime.Goexit, and sync.Once still marks itself done from
+// a defer. The half-initialized state was then cached for the whole package and
+// every later caller failed on an empty token instead of on the real cause.
+func callAuthJSON(apiBase, method, path string, body map[string]string, token string) (int, []byte, error) {
 	var buf bytes.Buffer
 	if body != nil {
-		require.NoError(t, json.NewEncoder(&buf).Encode(body))
+		if err := json.NewEncoder(&buf).Encode(body); err != nil {
+			return 0, nil, fmt.Errorf("encoding the %s %s request body: %w", method, path, err)
+		}
 	}
-	req, err := http.NewRequest(method, getEnv().apiURL+path, &buf)
-	require.NoError(t, err)
+	req, err := http.NewRequest(method, apiBase+path, &buf)
+	if err != nil {
+		return 0, nil, fmt.Errorf("building the %s %s request for %s: %w", method, path, apiBase, err)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
-	require.NoError(t, err)
+	if err != nil {
+		return 0, nil, fmt.Errorf("%s %s against %s: %w", method, path, apiBase, err)
+	}
 	defer resp.Body.Close()
 	out, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
-	return resp.StatusCode, out
+	if err != nil {
+		return 0, nil, fmt.Errorf("reading the %s %s response body from %s: %w", method, path, apiBase, err)
+	}
+	return resp.StatusCode, out, nil
 }
 
 // TestAuthLiveEndToEnd exercises the real running API: bootstrap (idempotent),

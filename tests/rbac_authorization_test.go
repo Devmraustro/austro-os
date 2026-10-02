@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -34,58 +36,85 @@ const (
 // bcrypt primitive the service uses, so the live API can authenticate them.
 func ensureRbacUsers(t *testing.T) (*auth.UserRecord, *auth.UserRecord, *auth.UserRecord) {
 	t.Helper()
-	admin, err := getEnv().AdminDB()
-	require.NoError(t, err)
-	t.Cleanup(func() { admin.Close() })
-	require.NoError(t, ensureIsolationRoles(admin, "Workspace A", "Workspace B"))
+	adminA, memberA, adminB, err := provisionRbacUsers(getEnv().postgresDSN)
+	require.NoError(t, err, "provisioning the shared RBAC users failed")
+	return adminA, memberA, adminB
+}
+
+// provisionRbacUsers is ensureRbacUsers without *testing.T so it can run
+// inside a sync.Once body without unwinding the caller's goroutine. Every
+// failure is returned so the shared initializer can cache and re-report it to
+// each caller. The database handle is closed before returning: callers only
+// need the user records, and the original t.Cleanup tied the connection's
+// lifetime to whichever test happened to run the once body first.
+func provisionRbacUsers(dsn string) (adminA, memberA, adminB *auth.UserRecord, err error) {
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("opening the admin database connection for %s: %w", redactDSN(dsn), err)
+	}
+	defer db.Close()
+	if err := ensureIsolationRoles(db, "Workspace A", "Workspace B"); err != nil {
+		return nil, nil, nil, fmt.Errorf("provisioning the isolated workspace roles in %s: %w", redactDSN(dsn), err)
+	}
 
 	wsA := uuid.MustParse(workspaceA)
 	wsB := uuid.MustParse(workspaceB)
 
 	for _, u := range []string{adminAUser, memberAUser, adminBUser} {
-		if _, err := admin.Exec(`DELETE FROM users WHERE username = $1`, u); err != nil {
-			require.NoError(t, err)
+		if _, err := db.Exec(`DELETE FROM users WHERE username = $1`, u); err != nil {
+			return nil, nil, nil, fmt.Errorf("clearing the pre-existing %s user: %w", u, err)
 		}
 	}
 
-	store := postgres.NewUserStore(admin)
+	store := postgres.NewUserStore(db)
 	hash, err := auth.HashPassword(rbacPassword)
-	require.NoError(t, err)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("hashing the shared RBAC password: %w", err)
+	}
 
-	adminA, err := store.Create(context.Background(), &auth.UserRecord{
-		Username:     adminAUser,
-		DisplayName:  "RBAC Admin A",
-		Role:         rbac.RoleWorkspaceAdmin,
-		WorkspaceID:  wsA.String(),
-		PasswordHash: hash,
-	})
-	require.NoError(t, err)
+	create := func(username, displayName string, role rbac.Role, wsID string) (*auth.UserRecord, error) {
+		rec, err := store.Create(context.Background(), &auth.UserRecord{
+			Username:     username,
+			DisplayName:  displayName,
+			Role:         role,
+			WorkspaceID:  wsID,
+			PasswordHash: hash,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("creating the %s user: %w", username, err)
+		}
+		return rec, nil
+	}
 
-	memberA, err := store.Create(context.Background(), &auth.UserRecord{
-		Username:     memberAUser,
-		DisplayName:  "RBAC Member A",
-		Role:         rbac.RoleWorkspaceMember,
-		WorkspaceID:  wsA.String(),
-		PasswordHash: hash,
-	})
-	require.NoError(t, err)
-
-	adminB, err := store.Create(context.Background(), &auth.UserRecord{
-		Username:     adminBUser,
-		DisplayName:  "RBAC Admin B",
-		Role:         rbac.RoleWorkspaceAdmin,
-		WorkspaceID:  wsB.String(),
-		PasswordHash: hash,
-	})
-	require.NoError(t, err)
+	if adminA, err = create(adminAUser, "RBAC Admin A", rbac.RoleWorkspaceAdmin, wsA.String()); err != nil {
+		return nil, nil, nil, err
+	}
+	if memberA, err = create(memberAUser, "RBAC Member A", rbac.RoleWorkspaceMember, wsA.String()); err != nil {
+		return nil, nil, nil, err
+	}
+	if adminB, err = create(adminBUser, "RBAC Admin B", rbac.RoleWorkspaceAdmin, wsB.String()); err != nil {
+		return nil, nil, nil, err
+	}
 
 	// The workspace-scoped restricted roles need read access to the users
 	// table for the RLS test; the RLS policy, not SQL grants, is what scopes
 	// the rows those roles can see.
-	_, err = admin.Exec(`GRANT SELECT ON users TO ` + workspaceARole + `, ` + workspaceBRole)
-	require.NoError(t, err)
+	if _, err := db.Exec(`GRANT SELECT ON users TO ` + workspaceARole + `, ` + workspaceBRole); err != nil {
+		return nil, nil, nil, fmt.Errorf("granting the isolated roles read access to users: %w", err)
+	}
 
-	return adminA, memberA, adminB
+	return adminA, memberA, adminB, nil
+}
+
+// redactDSN keeps credentials out of failure messages while still naming the
+// host and port, which is the part that identifies an unreachable service.
+func redactDSN(dsn string) string {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return "the configured postgres DSN"
+	}
+	u.User = nil
+	return u.String()
 }
 
 func rbacJWT(cfg *config.Config) *auth.JWTService {

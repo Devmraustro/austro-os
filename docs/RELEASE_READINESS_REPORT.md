@@ -441,6 +441,102 @@ preserved: selecting a stub while supplying an AI/publish credential is rejected
 production test now clears the credentials as well as selecting the stubs, which
 is the procedure an operator actually follows.
 
+### The shared-session cascade, and a correction to §10.1
+
+An earlier pass in this report stated that all 134 failures in `austro-os/tests`
+were `lookup postgres|redis|rabbitmq|api: no such host`. That was an over-claim.
+22 of the 134 were not a service-unreachable diagnostic at all — they were
+`Should NOT be empty`, raised against an access token in a test that had nothing
+to do with the service being absent. Classifying each failure individually, as
+this section now does, is what exposed why.
+
+The cause was a test-harness defect, not a product defect:
+
+- `tests/audit_visibility_live_test.go` established two package-wide sessions
+  through `sync.Once`: `auditFounderOnce` and `auditRBACOnce`.
+- Both once bodies called `testing.T`-dependent helpers. When the stack was
+  unreachable, `require.NoError` inside `authJSON` (via
+  `client.Do`) or inside `ensureRbacUsers` (via `ensureIsolationRoles`) called
+  `FailNow`, which unwinds the goroutine with `runtime.Goexit`.
+- `sync.Once` marks itself done from a `defer` in `doSlow`, so a body that never
+  returned normally was still recorded as complete and was never retried.
+- The error variables were therefore never assigned. `require.NoError(t,
+  auditFounderErr)` saw `nil` and **passed silently**, and the only surviving
+  symptom was `require.NotEmpty(t, auditFounderTok)` in a later, unrelated test.
+
+The `nil` error passing `require.NoError` is the damaging part: the guard that
+was supposed to distinguish "setup failed" from "setup succeeded" could not fail,
+so the suite reported 22 assertion failures about an empty string instead of one
+root cause per missing service.
+
+Two of the four `sync.Once` bodies in the package were affected. The other two
+were already correct and were left alone: `getEnv`'s `envOnce` cannot fail, and
+`buildIdentityBinaries` keeps its `compileIdentityBinaries()` call free of
+`*testing.T` and assigns `identityBuildErr` — that helper is the model the fix
+follows.
+
+The correction:
+
+- `authJSON` is now a thin `testing.T` wrapper over `callAuthJSON`, which
+  returns `(status, body, error)` and names the method, path and endpoint in
+  every failure. The 65 existing call sites are unchanged.
+- `ensureRbacUsers` is now a wrapper over `provisionRbacUsers(dsn)`, which
+  returns errors instead of asserting. The 15 existing call sites are unchanged.
+  The database handle is closed when provisioning returns rather than by a
+  `t.Cleanup` registered on whichever test happened to run the once body first.
+- `initAuditFounderSession` and `initAuditWorkspaceTokens` are plain functions
+  returning `(value, error)`. Neither can return an empty token alongside a nil
+  error.
+- `sharedTokenFailure` is the single place a failure is surfaced, and an empty
+  token with no error is reported as a harness fault rather than a product one.
+
+No test was skipped, relaxed or removed, and no assertion was deleted to obtain a
+green result. An unreachable stack still fails the suite, because this package
+verifies running services and a skip would hide a broken deployment.
+
+Evidence, from `go test ./tests/ -count=1 -v` on a machine with no stack:
+
+| | Before | After |
+|---|---|---|
+| Failing tests | 134 | 134 |
+| `Should NOT be empty` | 22 | **0** |
+| Failures naming an unreachable service | 112 | **134** |
+
+Every one of the 113 failing test functions is now classified, and every failure
+names a missing endpoint rather than an empty value:
+
+| Cause | Failing test functions |
+|---|---|
+| `lookup postgres` | 97 |
+| `lookup api` | 8 |
+| `lookup redis` | 2 |
+| `lookup rabbitmq` | 5 |
+
+A representative before/after for the same test:
+
+```
+before:  Error: Should NOT be empty
+after:   shared founder session could not be established: bootstrapping the
+         founder session: POST /api/auth/bootstrap against http://api:8080:
+         Post "http://api:8080/api/auth/bootstrap": dial tcp: lookup api: no such host
+```
+
+`tests/shared_session_harness_test.go` holds the regression. It needs no live
+infrastructure — it uses the reserved `.invalid` TLD (RFC 6761) and fixed local
+responses — so a machine with no stack still catches the defect. It covers the
+once-abort semantics, repeated callers receiving the original error, the
+diagnostic wording, the fatal path (in a subprocess, since a failed subtest
+cannot be observed from the inside), unreachable API and Postgres, a `200`
+without an `access_token`, a malformed body, and DSN redaction. Verified offline
+in 1.1s, and under `-race`.
+
+This closes the harness defect. It does not close lifecycle verification: the
+RabbitMQ ack/nack/requeue settlement, lease expiry and stale reclaim, heartbeat
+cancellation, duplicate delivery, recovery, stale-generation fencing, worker-crash
+recovery and a real SIGHUP shutdown are still unproven against running services,
+because no stack is available here. Those are recorded in §10.2 as they were,
+and no lifecycle result is claimed here.
+
 ---
 
 ## 4. AI provider boundary
@@ -974,25 +1070,44 @@ restoring it.
 | A declared-but-unreadable companion fails closed | `503` with `liveness-unavailable`, full documented body |
 | The 503 body satisfies the documented schema | `ready`, `status`, `reason`, `requires` all present; asserted against `api/openapi.yaml` |
 | Route parity between server and published contract | `TestOpenAPIMatchesRegisteredRoutes` |
+| A shared session initializer cannot lose its error | `sync.Once` bodies are free of `*testing.T`; `tests/shared_session_harness_test.go` |
+| An unreachable service is named, never reported as an empty token | `sharedTokenFailure`; every failure in `austro-os/tests` now names its endpoint |
 
-Local suite result: `gofmt` clean, `go build ./...` clean, `go vet ./...` clean,
-every unit-test package passing. The only failing package is `austro-os/tests`,
-and all 134 of its failures are `lookup postgres|redis|rabbitmq|api: no such
-host` — the live-infrastructure suite, which needs a running Compose stack. None
-is a code regression; `TestConfigValidPasses` and
-`TestOpenAPIMatchesRegisteredRoutes`, which *were* real regressions earlier in
-this pass, now pass.
+Local suite result: `gofmt` clean on the changed files, `go build ./...` clean,
+`go vet ./...` clean, and every unit-test package passing — 38 packages, all green
+under `-race` with zero data races. The only failing package is `austro-os/tests`,
+which needs a running Compose stack.
+
+That package's 134 failures are now individually classified rather than assumed,
+and all 134 name an unreachable service: 97 `lookup postgres`, 8 `lookup api`,
+2 `lookup redis`, 5 `lookup rabbitmq` across 113 failing test functions. An
+earlier statement in this report called all 134 `no such host`; 22 of them were
+actually `Should NOT be empty`, a secondary symptom of the harness defect
+described in §3, which is fixed — that count is now 0. None of the 134 is a code
+regression; `TestConfigValidPasses` and `TestOpenAPIMatchesRegisteredRoutes`,
+which *were* real regressions earlier in this pass, now pass.
 
 ### 10.2 Still unverified, and what would close it
 
 - The three units have never run together against live PostgreSQL, RabbitMQ and
   Redis. Heartbeat freshness, the 503 transition, and lease/ack behaviour are
   unit-tested against scripted readers only.
+- Message lifecycle against a real broker is unproven: ack, nack, requeue
+  settlement, lease expiry, stale reclaim, duplicate delivery, retry and recovery,
+  stale-generation fencing, and worker-crash recovery. `internal/execution` and
+  `internal/worker` pass under unit tests and `-race`, and
+  `cmd/worker/shutdown_signals_test.go` covers SIGHUP handling in-process, but
+  none of that is a live settlement against RabbitMQ.
 - The AlwaysData account facts in §6 remain unknown: plan tier, Public vs
   Private Cloud, Service entitlement, egress, DNS/IPv6, limits, Redis.
 - The Redis TLS gap is real and unaddressed: the client exposes no TLS setting,
   so a Private Cloud managed Redis requiring TLS cannot be configured as written.
 - Compose bring-up (B3) has never been executed; no Docker engine here.
+
+Everything in this list needs the same missing thing: a running stack. The
+harness fix in §3 means that when one is available, its first integration run
+will report real failures rather than an empty-token cascade, which is the
+prerequisite for trusting whatever it reports.
 
 The code is in a state where a release decision can be made. The three remaining
 blockers are all about *external facts that cannot be established from this
