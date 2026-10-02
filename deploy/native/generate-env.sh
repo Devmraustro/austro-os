@@ -80,6 +80,14 @@ AUSTRO_ENV=production
 AUSTRO_SERVER_ADDR=127.0.0.1:8080
 AUSTRO_PUBLIC_HOSTNAME=change-me-public-hostname
 
+# This deployment puts PostgreSQL, Redis and RabbitMQ on one host and binds them
+# to loopback, so every endpoint below is deliberately 127.0.0.1. Configuration
+# validation rejects a loopback endpoint unless it is declared, because a
+# development address left in a deployment starts cleanly and dials itself.
+# Stating it here is what makes the single-host layout legitimate rather than a
+# lucky escape from a check that could not see 127.0.0.1.
+AUSTRO_ALLOW_LOOPBACK=1
+
 AUSTRO_POSTGRES_DSN=postgres://austro:${PG_OWNER_PASSWORD}@127.0.0.1:5432/austro?sslmode=disable
 AUSTRO_POSTGRES_RUNTIME_DSN=postgres://austro_app:${PG_RUNTIME_PASSWORD}@127.0.0.1:5432/austro?sslmode=disable
 AUSTRO_POSTGRES_RUNTIME_PASSWORD=${PG_RUNTIME_PASSWORD}

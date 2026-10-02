@@ -52,6 +52,11 @@ jobs:
       GOTOOLCHAIN: local
       GOPROXY: https://proxy.golang.org,direct
       AUSTRO_ENV: development
+      # The services below run as job services with their ports published on the
+      # host, so this job dials 127.0.0.1 and says so. The config validator
+      # rejects an undeclared loopback endpoint because a development address
+      # left in a deployment starts cleanly and dials itself.
+      AUSTRO_ALLOW_LOOPBACK: "1"
       AUSTRO_SERVER_ADDR: ":8080"
       AUSTRO_POSTGRES_DSN: postgres://austro:austro@127.0.0.1:5432/austro?sslmode=disable
       AUSTRO_POSTGRES_RUNTIME_DSN: postgres://austro_app:austro-runtime-pw@127.0.0.1:5432/austro?sslmode=disable

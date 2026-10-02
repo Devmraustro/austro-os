@@ -144,7 +144,16 @@ type Config struct {
 	// silently treating a typo as "off".
 	preProvisionedRolesRaw string
 
-	RedisAddr        string
+	// RedisAddr is the whole Redis connection configuration. Three forms are
+	// accepted: host:port (legacy, plaintext), redis://host:port (plaintext)
+	// and rediss://host:port (encrypted, certificate verified). See
+	// ParseRedisAddr.
+	RedisAddr string
+	// RedisCAFile is an optional PEM bundle of additional certificate
+	// authorities for a rediss:// endpoint, for a managed Redis whose
+	// certificate is issued by a private CA. It is additive: the system roots
+	// are kept. Unused with a plaintext address, and rejected by Validate.
+	RedisCAFile      string
 	RabbitMQURL      string
 	RabbitMQQueue    string
 	JWTSecret        string
@@ -394,6 +403,7 @@ func defaults() *Config {
 		PostgresPreProvisionedRoles: preProvisionedRoles,
 		preProvisionedRolesRaw:      preProvisionedRolesRaw,
 		RedisAddr:                   getEnv("AUSTRO_REDIS_ADDR", "localhost:6379"),
+		RedisCAFile:                 os.Getenv("AUSTRO_REDIS_CA_FILE"),
 		RabbitMQURL:                 getEnv("AUSTRO_RABBITMQ_URL", "amqp://austro:austro@localhost:5672"),
 		RabbitMQQueue:               getEnv("AUSTRO_RABBITMQ_QUEUE", "austro.events"),
 		JWTSecret:                   getEnv("AUSTRO_JWT_SECRET", "change-me-in-production"),
@@ -481,11 +491,13 @@ func LoadStrict() (*Config, error) {
 // returned error lists setting names only; no secret values are exposed.
 func (c *Config) Validate() error {
 	var missing []string
+	allowLoopback := loopbackAllowed()
+
 	for name, value := range map[string]string{
 		"AUSTRO_POSTGRES_DSN": c.PostgresDSN,
 		"AUSTRO_RABBITMQ_URL": c.RabbitMQURL,
 	} {
-		if isInsecure(value) {
+		if isInsecure(value) || (!allowLoopback && isLoopbackEndpoint(value)) {
 			missing = append(missing, name)
 		}
 	}
@@ -498,8 +510,30 @@ func (c *Config) Validate() error {
 	// the dependency, since demanding a datastore credential from a process
 	// that never dials it is how a least-privilege split quietly stops being
 	// one. The API's own use is real and stays required there.
-	if c.UsesRedis() && isInsecure(c.RedisAddr) {
-		missing = append(missing, "AUSTRO_REDIS_ADDR")
+	if c.UsesRedis() {
+		if isInsecure(c.RedisAddr) || (!allowLoopback && isLoopbackEndpoint(c.RedisAddr)) {
+			missing = append(missing, "AUSTRO_REDIS_ADDR")
+		}
+		// The address is parsed here so a malformed value is reported as a
+		// configuration error that names the accepted forms, instead of
+		// reaching the client and surfacing as an opaque dial error at
+		// startup. It is the same parser the client uses, so validation and the
+		// connection cannot disagree about what was asked for.
+		if c.RedisAddr != "" {
+			endpoint, err := ParseRedisAddr(c.RedisAddr)
+			switch {
+			case err != nil:
+				// The parser's message already names the setting, the reason
+				// and the accepted forms, so it is reported as it stands rather
+				// than being wrapped in a second layer of naming.
+				missing = append(missing, err.Error())
+			case c.RedisCAFile != "" && !endpoint.TLS:
+				// A CA bundle supplied for a plaintext connection is a
+				// misconfiguration rather than a harmless extra: the operator
+				// asked for verification they are not getting.
+				missing = append(missing, "AUSTRO_REDIS_CA_FILE (requires a rediss:// AUSTRO_REDIS_ADDR)")
+			}
+		}
 	}
 
 	// The runtime DSN is optional (it is derived from the owner DSN when
@@ -510,7 +544,7 @@ func (c *Config) Validate() error {
 	// security for a table's owner, so an owner connection would look
 	// correctly configured while enforcing nothing.
 	if c.PostgresRuntimeDSN != "" {
-		if isInsecure(c.PostgresRuntimeDSN) {
+		if isInsecure(c.PostgresRuntimeDSN) || (!allowLoopback && isLoopbackEndpoint(c.PostgresRuntimeDSN)) {
 			missing = append(missing, "AUSTRO_POSTGRES_RUNTIME_DSN")
 		}
 		if c.PostgresRuntimeDSN == c.PostgresDSN {
@@ -535,10 +569,10 @@ func (c *Config) Validate() error {
 	}
 
 	if c.PostgresPreProvisionedRoles {
-		if c.PostgresRuntimeDSN == "" || isInsecure(c.PostgresRuntimeDSN) {
+		if c.PostgresRuntimeDSN == "" || isInsecure(c.PostgresRuntimeDSN) || (!allowLoopback && isLoopbackEndpoint(c.PostgresRuntimeDSN)) {
 			missing = append(missing, "AUSTRO_POSTGRES_RUNTIME_DSN")
 		}
-		if c.PostgresAdminDSN == "" || isInsecure(c.PostgresAdminDSN) {
+		if c.PostgresAdminDSN == "" || isInsecure(c.PostgresAdminDSN) || (!allowLoopback && isLoopbackEndpoint(c.PostgresAdminDSN)) {
 			missing = append(missing, "AUSTRO_POSTGRES_ADMIN_DSN")
 		}
 		if c.PostgresAdminDSN != "" && c.PostgresAdminDSN == c.PostgresDSN {
@@ -1205,8 +1239,6 @@ func MustLoad(cfg *Config) {
 	}
 }
 
-// isInsecure reports whether a required setting is absent or still set to one
-// of the development placeholders/defaults that must never be used at runtime.
 // DeriveRuntimeDSN rewrites an owner DSN into the unprivileged application
 // runtime DSN: same host, port, database and query options, with the role
 // replaced by AUSTRO_POSTGRES_RUNTIME_USER (default "austro_app") and the
@@ -1233,6 +1265,12 @@ func DeriveRuntimeDSN(ownerDSN string) string {
 	return u.String()
 }
 
+// isInsecure reports whether a required setting is absent or still set to one
+// of the development placeholders/defaults that must never be used at runtime.
+//
+// It is about content, not reachability: it applies to secrets as well as
+// endpoints, which is why the loopback question is a separate check
+// (isLoopbackEndpoint) applied only to endpoint settings.
 func isInsecure(v string) bool {
 	if v == "" {
 		return true

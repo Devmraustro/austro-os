@@ -376,6 +376,69 @@ deliberate no-op, and it is not required at all for the stub transport.
   is now explicitly labelled as the event queue so it cannot be mistaken for the
   execution queue.
 
+### 2.6 Redis can require TLS, and `localhost` can no longer pass by accident
+
+Two defects were found in this pass while re-reading configuration code rather
+than test output. Both were silent: nothing failed, and nothing said so.
+
+**The Redis client could not speak TLS at all.** `AUSTRO_REDIS_ADDR` was split
+on `:` and dialled as plaintext. That is fine for a local container and wrong for
+every managed Redis offering, because the sane ones — including AlwaysData's —
+are reachable only over TLS. It also meant the deployment advice in §6/B2 had to
+be "do not use managed Redis", when the real constraint was a missing client
+setting.
+
+`AUSTRO_REDIS_ADDR` is now the single connection setting, and the address alone
+decides the transport:
+
+| Value | Transport |
+|---|---|
+| `host:port` | plaintext, unchanged, so existing deployments keep working |
+| `redis://host:port` | plaintext, now explicit rather than implied |
+| `rediss://host:port` | TLS, minimum 1.2, certificate verified |
+
+There is no `AUSTRO_REDIS_TLS` boolean, and deliberately no second host or port
+setting: one address, one meaning, no way to write `rediss://` and a plaintext
+port at the same time. The parser rejects a missing or out-of-range port, and it
+rejects credentials, paths and query strings in the address, so an operator
+cannot put a secret in `AUSTRO_REDIS_ADDR` where it will be logged. A bare
+`redis:6379` is still read as host `redis`, port 6379, because a scheme is only
+recognised when it is followed by `//` — the legacy form is not reinterpreted.
+
+Certificates are verified, always: `InsecureSkipVerify` is never set, anywhere.
+`AUSTRO_REDIS_CA_FILE` is an optional CA bundle for a private certificate
+authority, appended to the system roots rather than replacing them. An
+unreadable or invalid file is a startup failure, not a warning — silently
+continuing with system roots would turn a configuration mistake into a confusing
+handshake error much later. Requesting a CA file on a plaintext address is
+rejected outright, since it means the operator believes they are encrypted when
+they are not.
+
+**`localhost` passed production validation.** The guard against pointing at a
+development endpoint enumerated three literal addresses — `localhost:5432`,
+`redis:6379`, `amqp://guest:guest@localhost` — and a service on a different port
+slipped straight past it. `127.0.0.1:5433` was not on the list. Meanwhile
+`AUSTRO_ALLOW_LOOPBACK` already existed and did exactly this job for every other
+endpoint, so the loopback rule was simply not applied to these two.
+
+Detection now covers `localhost`, the whole `127/8` range, `::1`, and the
+unspecified addresses, and it is enforced for PostgreSQL, RabbitMQ, both DSNs and
+Redis. The check inspects the address only. It does **not** resolve DNS, because
+a name that resolves to `127.0.0.1` would otherwise require a resolver call
+inside `config.Validate` — and a first implementation that did, with a per-call
+timeout, drove `go test ./internal/config/` into a 10-minute timeout, because
+enough tests each pay the timeout to turn a fast suite into a slow one. The
+residual gap is named rather than hidden: a hostname that resolves to loopback is
+still accepted. It is closed by refusing to resolve during validation, not by
+paying for a lookup that can block startup.
+
+`AUSTRO_ALLOW_LOOPBACK` is still the only way to run against loopback, it still
+accepts exactly `1`, `true` or `yes`, and it is now declared where loopback is
+the actual intent: the two CI service hosts and the native single-host
+deployment. That is the point of the flag — a deliberate, greppable declaration
+rather than an exemption granted silently to any address that happens to spell
+`127.0.0.1`.
+
 ---
 
 ## 3. Verification performed
@@ -398,6 +461,32 @@ assurance without a stated basis.
 | Candidate artifacts re-hashed against the manifest | 4/4 match, byte counts agree |
 | API + worker rebuilt and restarted against the live stack | pass — `/health/live` 200, `/health/ready` 200 |
 | Startup log confirms config-driven queue | pass — `execution-dispatch-started` with `"queue":"austro.executions","transport":"rabbitmq","workspaces":2` |
+
+### Redis TLS and loopback pass
+
+| Check | Result |
+|---|---|
+| `gofmt -l` on all changed Go files | clean |
+| `go build ./...`, `go vet ./...` | pass |
+| `go test ./internal/config/ -count=1` | pass — includes the new parser, CA-file and loopback tests |
+| `go test ./infrastructure/redis/ -count=1 -v` | pass — TLS selection, generated-CA trust, foreign-CA rejection, wrong-hostname rejection, no silent plaintext fallback |
+| Every package except `./tests`, under `-race`, `-count=1` | 27 packages `ok`, 0 failures, 0 data races |
+| `go test ./tests/ -count=1 -v` | 118 failing functions, 21 failing subtests, 139 `--- FAIL` markers, 3 skips — **identical to the counts recorded in §3 above**, so this change moved no test |
+| Every failing function names an unreachable service | 118/118; 0 unclassified |
+| Per-cause tally | PostgreSQL 103, API 9, RabbitMQ 6, Redis 3 (121 occurrences = 117 single-cause + `TestPhase1ExitCriteria`'s four) |
+| `TestPhase1ExitCriteria` subtests | 45 result lines (33 numbered criteria, criterion 22 nests twelve), **34 pass / 11 fail**; every failure is an infrastructure criterion, every static criterion passes |
+| `TestConfigValidPasses`, `TestOpenAPIMatchesRegisteredRoutes` | pass, absent from the failure list |
+| `Should NOT be empty` occurrences in the suite log | 0 |
+| Modified workflow YAML parse | pass, both files |
+| TLS handshake against a live managed endpoint | **not run** — no TLS endpoint is reachable from here |
+| `bash -n` on `deploy/native/generate-env.sh` | **not available** — the `bash` on this host is the WSL shim and no distribution is installed; the heredoc placement was checked by reading, not by a parser |
+
+Two of these rows are corrections to this report, not new results. The earlier
+§3 figure of "33 subtests" for `TestPhase1ExitCriteria` counted numbered
+criteria while ignoring the twelve tamper cases nested under criterion 22, and
+the subtest split was 34/11, not 34/12 — a naive `FAIL` filter also matches a
+subtest *named* `23_fail-fast_on_missing_required_configuration`, which passes.
+Both are fixed above and in §3.
 
 ### Build identity pass
 
@@ -510,11 +599,13 @@ still fails. What changed is that every failure now names the missing endpoint.
 The per-category figures previously printed in this section did not sum to the
 stated total, and the reason was a real overlap rather than a missing test.
 
-`TestPhase1ExitCriteria` is a gate that aggregates 33 subtests spanning all four
-services, so it fails for **four distinct reasons at once**. A per-cause tally
-counts it once in each category it matches, so the categories sum to more than
-the number of failing test functions. Exactly one function overlaps; the other
-112 each have a single cause.
+`TestPhase1ExitCriteria` is a gate that aggregates 33 numbered criteria spanning
+all four services — 45 result lines in all, because criterion 22 nests twelve
+tamper cases — and eleven of them need a live service. It therefore fails for
+**four distinct reasons at once**. A per-cause tally counts it once in each
+category it matches, so the categories sum to more than the number of failing
+test functions. Exactly one function overlaps; the other 117 each have a single
+cause.
 
 Reproduce, from the repository root:
 
@@ -534,8 +625,8 @@ test and its subtests without indenting, but indents the `--- PASS/FAIL/SKIP`
 line for a subtest. Counting `=== RUN` lines therefore counts subtests as though
 they were tests; the earlier figure of 113 was correct, but the categories
 beneath it were derived by a segmentation that treated `TestPhase1ExitCriteria`'s
-33 subtests as independent segments, split that one function's four causes across
-them, and inflated the PostgreSQL figure by one.
+45 subtest result lines as independent segments, split that one function's four
+causes across them, and inflated the PostgreSQL figure by one.
 
 Corrected, with each function assigned to its first matching cause in the order
 PostgreSQL, API, RabbitMQ, Redis:
@@ -944,7 +1035,12 @@ run this application.
   only**, and the alternative — self-hosting it on a Service port — publishes
   workspace memory on an internet-reachable, unfiltered port. This is a security
   decision for the account owner, and it is the one item that could still change
-  the recommended topology.
+  the recommended topology. It is now a decision about the account rather than
+  about this codebase: the client could not speak TLS at all when this blocker
+  was written, which forced the choice between a plaintext port and no Redis. §2.6
+  adds verified TLS, so an externally managed Redis over `rediss://` is a real
+  option and the plaintext-port workaround is no longer forced by a client
+  limitation.
 
 **Needs:** an AlwaysData account on which the checklist in the runbook is
 completed. Until then AlwaysData remains **documented but unexercised** — which
@@ -1187,6 +1283,12 @@ restoring it.
 | A near-miss value cannot enable offline mode | `off`, `0`, `true`, `yes`, `skip` all keep the strict default |
 | A release gate cannot pass by skipping | `AUSTRO_REQUIRE_LIVE_TESTS=1` refuses offline mode and requires a recorded live contact |
 | No infrastructure skip outside the policy | `TestNoInfrastructureSkipsOutsideThePolicy` scans `tests/` |
+| `rediss://` produces a verified TLS client, `redis://` and `host:port` do not | `infrastructure/redis/tls_test.go`; a generated CA is trusted, a foreign CA and a wrong hostname are both refused |
+| `InsecureSkipVerify` is never enabled | single `tls.Config` construction site in `infrastructure/redis/tls.go`; no such field anywhere in the tree |
+| A CA file cannot be set on a plaintext address | rejected in `config.Validate`, so the setting cannot imply encryption that is not there |
+| Secrets cannot enter `AUSTRO_REDIS_ADDR` | the parser rejects credentials, paths and query strings |
+| Loopback is refused in production on any port or address form | `localhost`, `127/8`, `::1` and unspecified addresses, across both DSNs, RabbitMQ and Redis |
+| Loopback stays possible when it is intended | `AUSTRO_ALLOW_LOOPBACK` declared by CI and the native single-host deployment |
 
 Local suite result: `gofmt` clean on the changed files, `go build ./...` clean,
 `go vet ./...` clean, and every unit-test package passing — 27 test packages
@@ -1240,8 +1342,15 @@ declining to do.
   across a generation — is unexercised.
 - The AlwaysData account facts in §6 remain unknown: plan tier, Public vs
   Private Cloud, Service entitlement, egress, DNS/IPv6, limits, Redis.
-- The Redis TLS gap is real and unaddressed: the client exposes no TLS setting,
-  so a Private Cloud managed Redis requiring TLS cannot be configured as written.
+- Redis TLS is implemented and unit-tested (§2.6), but **no live TLS endpoint has
+  been connected to**, so "the handshake works against a managed provider" is not
+  a claim this report makes. The gap that was here — a client with no TLS setting
+  at all — is closed; what remains is a live connection and the provider's real
+  certificate chain.
+- Loopback detection deliberately does not resolve DNS (§2.6), so a hostname
+  resolving to `127.0.0.1` is still accepted in production unless
+  `AUSTRO_ALLOW_LOOPBACK` is unset. This is a known, deliberate limitation, not an
+  oversight.
 - Compose bring-up (B3) has never been executed; no Docker engine here.
 
 Everything in this list needs the same missing thing: a running stack. The

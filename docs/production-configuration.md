@@ -128,7 +128,9 @@ negative control.
 
 | Variable | Class | Notes |
 |---|---|---|
-| `AUSTRO_REDIS_ADDR` | **REQUIRED** | `SAFE DEFAULT` in compose: `redis:6379`. A loopback value is rejected. |
+| `AUSTRO_REDIS_ADDR` | **REQUIRED** | `SAFE DEFAULT` in compose: `redis:6379`. The whole connection configuration; its form decides the transport. `host:port` and `redis://host:port` are plaintext, `rediss://host:port` is TLS 1.2+ with the certificate verified. A loopback value is rejected unless `AUSTRO_ALLOW_LOOPBACK` is set. |
+| `AUSTRO_REDIS_CA_FILE` | **OPTIONAL** | PEM bundle of extra certificate authorities for a `rediss://` address issued by a private CA. Added to the system roots, never substituted for them. Rejected with a plaintext address. A missing or unusable file is fatal at startup. Certificate verification cannot be disabled by any setting. |
+| `AUSTRO_ALLOW_LOOPBACK` | **OPTIONAL** | `1`/`true`/`yes` to permit a loopback endpoint, which CI needs because its databases are containers with published ports. Any other value leaves the rejection in force. |
 | `AUSTRO_REDIS_PASSWORD` | **REQUIRED** | Read directly by `infrastructure/redis` at connect time. Note it is **not** checked by `Config.Validate`; a wrong value surfaces as `redis-connect-failed` at startup, which is still fail-fast, just later. |
 | `AUSTRO_RABBITMQ_URL` | **REQUIRED** | Derived in compose from `amqp://<user>:<password>@rabbitmq:5672/`. |
 | `AUSTRO_RABBITMQ_USER` | **REQUIRED** | `SAFE DEFAULT` `austro`. |

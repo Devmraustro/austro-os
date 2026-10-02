@@ -256,11 +256,35 @@ and it would put workspace-scoped writes on the same database the row level
 security policies already constrain. It is a project, not a toggle, and it is not
 available as a way out of this decision.
 
-**One gap to note for options B and C.** The current Redis client is configured
-with address, password, and database index only — there is no TLS setting. An
-external managed Redis reached over authenticated TLS (option B) therefore needs
-a code change before it can be used. That is small, but it is not zero, and it
-should be scoped before option B is presented as ready.
+**The TLS gap that used to block options B and C is closed.** This runbook
+previously recorded that the Redis client was "configured with address, password,
+and database index only — there is no TLS setting", which meant an external
+managed Redis reached over TLS could not be used at all. `AUSTRO_REDIS_ADDR` is
+now the whole connection configuration and its form selects the transport:
+
+| Value | Transport |
+|---|---|
+| `host:port` | plaintext (legacy; unchanged) |
+| `redis://host:port` | plaintext, stated explicitly |
+| `rediss://host:port` | TLS 1.2 or later, server certificate verified |
+
+`AUSTRO_REDIS_CA_FILE` optionally supplies additional certificate authorities for
+a private CA and is added to the system roots rather than replacing them.
+Certificate verification cannot be turned off by any setting: `InsecureSkipVerify`
+is set by no input and reachable from no configuration.
+
+So option B is no longer blocked by the client. Two things about it remain
+unproven and are not claimed here: **no live TLS Redis endpoint was available**, so
+what is tested is that a `rediss://` address produces a client that verifies a
+certificate issued by the supplied CA and rejects one that is not — verified
+offline against a generated authority, not against a real service. And option A
+still depends on the account being Private Cloud, which is an account fact, not a
+code question.
+
+For option A, set `AUSTRO_REDIS_ADDR=rediss://<alwaysdata-redis-host>:<port>`.
+Whether AlwaysData's managed Redis presents a publicly-issued certificate or one
+from a private authority is a panel fact to confirm on the account; if it is a
+private authority, export its PEM and point `AUSTRO_REDIS_CA_FILE` at it.
 
 ## Account checks required before deploying
 
@@ -378,7 +402,8 @@ Key settings for AlwaysData:
 | `AUSTRO_POSTGRES_DSN` | `postgres://austro:...@postgresql-austro.alwaysdata.net:5432/austro_os?sslmode=require` | Owner DSN |
 | `AUSTRO_POSTGRES_RUNTIME_DSN` | `postgres://austro_app:...@postgresql-austro.alwaysdata.net:5432/austro_os?sslmode=require` | Runtime DSN |
 | `AUSTRO_POSTGRES_ADMIN_DSN` | `postgres://austro_app_admin:...@postgresql-austro.alwaysdata.net:5432/austro_os?sslmode=require` | Admin DSN |
-| `AUSTRO_REDIS_ADDR` | managed Redis, or the Service address. **API site only** | **Unresolved — see "Unresolved: Redis"** |
+| `AUSTRO_REDIS_ADDR` | managed Redis, or the Service address. Use `rediss://host:port` when the service requires TLS. **API site only** | **Choice still open — see "Unresolved: Redis"; TLS is no longer a blocker** |
+| `AUSTRO_REDIS_CA_FILE` | PEM bundle, only if the Redis certificate comes from a private CA | **API site only** |
 | `AUSTRO_RABBITMQ_URL` | `amqp://austro:...@rabbitmq-austro.alwaysdata.net:5672/austro_dz` | vhost `austro_dz` |
 | `AUSTRO_PROCESS_ROLE` | `api` / `dispatcher` / `worker` | **Per unit.** Both binaries refuse a role they cannot serve |
 | `AUSTRO_EXECUTION_TRANSPORT_BACKEND` | `rabbitmq` | `stub` is refused in production unless the exemption is set |

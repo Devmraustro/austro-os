@@ -153,12 +153,16 @@ jobs:
           timeout 180 sudo apt-get install -y --no-install-recommends $opts postgresql-client
 
       - name: Start API and wait for readiness
-        # Loopback 127.0.0.1 connection strings are used so the strict config
-        # validator does not reject the development placeholders (localhost:PORT
-        # is insecure by design). The API binds :8080 (dual-stack) so the test
-        # suite's localhost:8080 probes resolve over both IPv4 and IPv6.
+        # These databases run as Actions services with their ports published on
+        # the host, so this job legitimately dials 127.0.0.1 and declares it
+        # with AUSTRO_ALLOW_LOOPBACK. It used to write 127.0.0.1 in order to slip
+        # past a validator that only matched the literal text "localhost:PORT";
+        # that check now resolves loopback literals properly, and stating the
+        # intent is what replaces the evasion. The API binds :8080 (dual-stack)
+        # so the test suite's localhost:8080 probes resolve over IPv4 and IPv6.
         env:
           AUSTRO_ENV: development
+          AUSTRO_ALLOW_LOOPBACK: "1"
           AUSTRO_SERVER_ADDR: ":8080"
           AUSTRO_POSTGRES_DSN: postgres://austro:austro@127.0.0.1:5432/austro?sslmode=disable
           # The application runtime role. It is deliberately NOT the schema
@@ -237,8 +241,11 @@ jobs:
         # research->script->review->publish->complete. The docker-compose runtime
         # runs a worker container, but GitHub Actions services do not, so the CI
         # runtime must start the worker itself before the regression suite runs.
+        # AUSTRO_ALLOW_LOOPBACK, as above: the worker dials the same published
+        # Actions service ports.
         env:
           AUSTRO_ENV: development
+          AUSTRO_ALLOW_LOOPBACK: "1"
           AUSTRO_SERVER_ADDR: ":8080"
           AUSTRO_POSTGRES_DSN: postgres://austro:austro@127.0.0.1:5432/austro?sslmode=disable
           # The application runtime role. It is deliberately NOT the schema
