@@ -496,21 +496,61 @@ verifies running services and a skip would hide a broken deployment.
 
 Evidence, from `go test ./tests/ -count=1 -v` on a machine with no stack:
 
-| | Before | After |
+| | Before the fix | After the fix |
 |---|---|---|
-| Failing tests | 134 | 134 |
+| `--- FAIL` markers (functions + subtests) | 134 | 134 |
 | `Should NOT be empty` | 22 | **0** |
 | Failures naming an unreachable service | 112 | **134** |
 
-Every one of the 113 failing test functions is now classified, and every failure
-names a missing endpoint rather than an empty value:
+The count is deliberately unchanged: the stack is still absent, so the suite
+still fails. What changed is that every failure now names the missing endpoint.
 
-| Cause | Failing test functions |
-|---|---|
-| `lookup postgres` | 97 |
-| `lookup api` | 8 |
-| `lookup redis` | 2 |
-| `lookup rabbitmq` | 5 |
+### Reconciling the failure counts
+
+The per-category figures previously printed in this section did not sum to the
+stated total, and the reason was a real overlap rather than a missing test.
+
+`TestPhase1ExitCriteria` is a gate that aggregates 33 subtests spanning all four
+services, so it fails for **four distinct reasons at once**. A per-cause tally
+counts it once in each category it matches, so the categories sum to more than
+the number of failing test functions. Exactly one function overlaps; the other
+112 each have a single cause.
+
+Reproduce, from the repository root:
+
+```powershell
+$env:GOROOT='C:\Users\AUSTRO\AppData\Local\opencode-tools\go'
+$env:PATH="$env:GOROOT\bin;$env:PATH"
+go test ./tests/ -count=1 -v 2>&1 | Tee-Object tests-suite.log
+
+# failing test FUNCTIONS: only unindented markers. Subtest cases are indented.
+(Select-String -Path tests-suite.log -Pattern '^--- FAIL: ').Count        # 118
+(Select-String -Path tests-suite.log -Pattern '^\s+--- FAIL: ').Count    # 21
+(Select-String -Path tests-suite.log -Pattern '^--- SKIP: ').Count        # 3
+```
+
+The distinction that matters is the indentation. Go prints `=== RUN` for both a
+test and its subtests without indenting, but indents the `--- PASS/FAIL/SKIP`
+line for a subtest. Counting `=== RUN` lines therefore counts subtests as though
+they were tests; the earlier figure of 113 was correct, but the categories
+beneath it were derived by a segmentation that treated `TestPhase1ExitCriteria`'s
+33 subtests as independent segments, split that one function's four causes across
+them, and inflated the PostgreSQL figure by one.
+
+Corrected, with each function assigned to its first matching cause in the order
+PostgreSQL, API, RabbitMQ, Redis:
+
+| Cause | Before the policy change | After the policy change |
+|---|---|---|
+| PostgreSQL unreachable | 98 | 103 |
+| API unreachable | 8 | 8 |
+| RabbitMQ unreachable | 5 | 5 |
+| Redis unreachable | 2 | 2 |
+| **Failing test functions** | **113** | **118** |
+
+Cross-check for the "after" column: 117 functions have one cause and one has
+four, so per-cause occurrences are 103 + 9 + 3 + 6 = 121 = 117×1 + 1×4. No
+failing function lacks a recognised cause, so nothing is unaccounted for.
 
 A representative before/after for the same test:
 
@@ -530,12 +570,83 @@ cannot be observed from the inside), unreachable API and Postgres, a `200`
 without an `access_token`, a malformed body, and DSN redaction. Verified offline
 in 1.1s, and under `-race`.
 
-This closes the harness defect. It does not close lifecycle verification: the
-RabbitMQ ack/nack/requeue settlement, lease expiry and stale reclaim, heartbeat
-cancellation, duplicate delivery, recovery, stale-generation fencing, worker-crash
-recovery and a real SIGHUP shutdown are still unproven against running services,
-because no stack is available here. Those are recorded in §10.2 as they were,
-and no lifecycle result is claimed here.
+### One live-infrastructure policy
+
+The package previously mixed two opposite behaviours for the same condition.
+Most tests failed when a service was unreachable, which is correct for a suite
+that verifies running services. Five tests skipped instead, via a helper whose
+own comment justified it as "degrades gracefully":
+
+```go
+// skipIfNoDB skips the test when the live PostgreSQL fixture is unreachable
+func skipIfNoDB(t *testing.T) *sql.DB {
+    ...
+    t.Skipf("postgres unavailable, skipping RLS test: %v", err)
+}
+```
+
+The reasoning — that a skipped environment "simply does not claim RLS coverage" —
+was the flaw. A skip is not a disclaimer: in a non-verbose `go test` run a skipped
+test is invisible, so the suite reported green over five security tests
+(`TestExecutionRLSPoliciesEnabled`, `TestExecutionWorkspaceIsolation`,
+`TestReclaimStaleRecoversCrashWithNoPendingRetry`,
+`TestReclaimStaleFinalizesTheClaimedRetry`,
+`TestRescheduleIsFencedAgainstThePreReclaimGeneration`) that had verified
+nothing. Those five are exactly the +5 between the 113 and 118 columns above:
+they moved from skip to fail and now name the missing database.
+
+The policy is now stated once, in `tests/live_policy_test.go`, and applied
+through one helper:
+
+1. **Default: live infrastructure is required.** An unreachable service fails,
+   naming the service, the endpoint, the cause, and the opt-in. A gate that
+   cannot reach its datastore has verified nothing, so it must not read as green.
+2. **Explicit offline mode.** `AUSTRO_TEST_MODE=offline` lets a
+   infrastructure-dependent test skip with a reason naming both the dependency
+   and the opt-in. It is never inferred from a failed connection and never the
+   default. Only the exact value enables it — `off`, `0`, `true`, `yes` and
+   `skip` all leave the strict default in place, so a typo in CI cannot convert a
+   gate into a suite of skips.
+3. **A gate cannot be satisfied by skipping.** `AUSTRO_REQUIRE_LIVE_TESTS=1`
+   contradicts offline mode, and the contradiction is a failure rather than a
+   downgrade to skips. The same variable asserts that live PostgreSQL and the
+   live API were each actually contacted during the run, so a gate cannot pass
+   having reached nothing.
+
+`tests/live_policy_regression_test.go` asserts all three clauses. The
+skip-versus-fail distinction cannot be observed from inside a test, because a
+skipped subtest and a passed one both report success to `t.Run`, so those cases
+re-execute the compiled test binary against the reserved `.invalid` TLD and
+assert on its exit status and output. It also pins the strict default against
+near-miss values, and scans the package for infrastructure-availability skips
+outside the policy file — the check was verified to fail when the old
+`skipIfNoDB` line is reintroduced.
+
+Skips that are *not* about infrastructure availability are unaffected, and are a
+different thing: `TestManifestAgreesWithBinaryIdentity` and
+`TestReproducibilityClaimIsBackedByTheArtifactSet` skip when no
+`release-manifest.json` exists, and the audit chain test skips when the chain is
+too short to page. Those tests are inapplicable, not unverified.
+
+Deliberately **not** done: the remaining 113 infrastructure failures were not
+converted into offline-mode skips. Widening offline mode to the whole package
+would make a broken deployment indistinguishable from a developer's laptop, which
+is the failure this policy exists to prevent.
+
+Three tests skip in the default run and are reported as skipped, not passed: the
+two manifest-dependent ones above, and `TestReleaseGateRequiresLiveInfrastructure`,
+which asserts the gate's live-contact requirement and is itself skipped unless
+`AUSTRO_REQUIRE_LIVE_TESTS=1` is set.
+
+This closes the harness defect and the policy inconsistency. It does not close
+lifecycle verification: RabbitMQ ack/nack/requeue settlement, lease expiry and
+stale reclaim, heartbeat cancellation, duplicate delivery, recovery,
+stale-generation fencing, worker-crash recovery and a real SIGHUP shutdown are
+still unproven against running services, because no stack is available here. Note
+that three of those five newly-failing tests are themselves stale-reclaim and
+generation-fencing tests, so their coverage is currently **known to be absent**
+rather than merely unverified. Those are recorded in §10.2, and no lifecycle
+result is claimed here.
 
 ---
 
@@ -1072,20 +1183,42 @@ restoring it.
 | Route parity between server and published contract | `TestOpenAPIMatchesRegisteredRoutes` |
 | A shared session initializer cannot lose its error | `sync.Once` bodies are free of `*testing.T`; `tests/shared_session_harness_test.go` |
 | An unreachable service is named, never reported as an empty token | `sharedTokenFailure`; every failure in `austro-os/tests` now names its endpoint |
+| Unavailable infrastructure fails by default, skips only on explicit opt-in | `tests/live_policy_test.go`; `AUSTRO_TEST_MODE=offline` is the only opt-in |
+| A near-miss value cannot enable offline mode | `off`, `0`, `true`, `yes`, `skip` all keep the strict default |
+| A release gate cannot pass by skipping | `AUSTRO_REQUIRE_LIVE_TESTS=1` refuses offline mode and requires a recorded live contact |
+| No infrastructure skip outside the policy | `TestNoInfrastructureSkipsOutsideThePolicy` scans `tests/` |
 
 Local suite result: `gofmt` clean on the changed files, `go build ./...` clean,
-`go vet ./...` clean, and every unit-test package passing — 38 packages, all green
-under `-race` with zero data races. The only failing package is `austro-os/tests`,
-which needs a running Compose stack.
+`go vet ./...` clean, and every unit-test package passing — 27 test packages
+green under `-race` with zero data races, out of 38 packages in total (the other
+11 have no test files). The static gates pass: OpenAPI route parity,
+principle references and registry, orphan schemas, bearer-auth declarations, and
+every static subtest of `TestPhase1ExitCriteria`. The only failing package is
+`austro-os/tests`, which needs a running Compose stack.
 
-That package's 134 failures are now individually classified rather than assumed,
-and all 134 name an unreachable service: 97 `lookup postgres`, 8 `lookup api`,
-2 `lookup redis`, 5 `lookup rabbitmq` across 113 failing test functions. An
-earlier statement in this report called all 134 `no such host`; 22 of them were
-actually `Should NOT be empty`, a secondary symptom of the harness defect
-described in §3, which is fixed — that count is now 0. None of the 134 is a code
+That package's failures are individually classified rather than assumed, by the
+reproducible commands in §3:
+
+| Measure | Count |
+|---|---|
+| `--- FAIL` test functions (unindented) | 118 |
+| `--- FAIL` subtest cases (indented) | 21 |
+| `--- FAIL` markers total | 139 |
+| `--- SKIP` test functions | 3 |
+| `Should NOT be empty` | 0 |
+
+All 118 name an unreachable service: 98 PostgreSQL, 8 API, 5 RabbitMQ, 2 Redis
+after assigning the one four-service function (`TestPhase1ExitCriteria`) to
+PostgreSQL by precedence; per-cause occurrences are 103/9/6/3. The three skips
+are the two release-manifest-dependent tests and the gate's own live-contact
+assertion, none of which is an infrastructure test. None of the 118 is a code
 regression; `TestConfigValidPasses` and `TestOpenAPIMatchesRegisteredRoutes`,
 which *were* real regressions earlier in this pass, now pass.
+
+Five of the 118 are tests that previously **skipped** and reported nothing —
+the RLS and stale-reclaim tests governed by the old `skipIfNoDB`. They now fail
+by the stated policy, so the suite is honest about work it had been silently
+declining to do.
 
 ### 10.2 Still unverified, and what would close it
 
@@ -1098,6 +1231,13 @@ which *were* real regressions earlier in this pass, now pass.
   `internal/worker` pass under unit tests and `-race`, and
   `cmd/worker/shutdown_signals_test.go` covers SIGHUP handling in-process, but
   none of that is a live settlement against RabbitMQ.
+- Five lifecycle tests are now known **not** to have run, rather than merely
+  being unverified: `TestExecutionRLSPoliciesEnabled`,
+  `TestExecutionWorkspaceIsolation`, and the three stale-reclaim and
+  generation-fencing tests in `execution_reclaim_live_test.go` skipped before the
+  policy change and now fail. Their subject matter — that the execution
+  aggregates carry forced RLS, and that a stale claim cannot be rescheduled
+  across a generation — is unexercised.
 - The AlwaysData account facts in §6 remain unknown: plan tier, Public vs
   Private Cloud, Service entitlement, egress, DNS/IPv6, limits, Redis.
 - The Redis TLS gap is real and unaddressed: the client exposes no TLS setting,
@@ -1106,8 +1246,10 @@ which *were* real regressions earlier in this pass, now pass.
 
 Everything in this list needs the same missing thing: a running stack. The
 harness fix in §3 means that when one is available, its first integration run
-will report real failures rather than an empty-token cascade, which is the
-prerequisite for trusting whatever it reports.
+will report real failures rather than an empty-token cascade, and the policy in
+§3 means that a run which reaches nothing will fail the gate instead of appearing
+green. Those two changes are the prerequisite for trusting whatever the first
+live run reports.
 
 The code is in a state where a release decision can be made. The three remaining
 blockers are all about *external facts that cannot be established from this

@@ -36,7 +36,7 @@ const (
 // runtime role: the role that actually performs recovery in production.
 func reclaimFixture(t *testing.T) (*sql.DB, *sql.DB, uuid.UUID) {
 	t.Helper()
-	admin := skipIfNoDB(t)
+	admin := requireLivePostgres(t, getEnv().postgresDSN)
 	topo := topologyFixture(t)
 	seedWorkspace(t, topo, reclaimWorkspaceA, "Reclaim A")
 

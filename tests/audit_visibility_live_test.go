@@ -141,6 +141,7 @@ func initAuditFounderSession(apiBase, username, password string) (string, error)
 	if tok.AccessToken == "" {
 		return "", fmt.Errorf("founder login returned no access_token: %s", body)
 	}
+	recordLiveContact("API")
 	return tok.AccessToken, nil
 }
 

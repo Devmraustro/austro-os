@@ -1,10 +1,8 @@
 package austro_os_test
 
 import (
-	"context"
 	"database/sql"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -23,25 +21,6 @@ var executionTables = []string{
 	"execution_contexts",
 }
 
-// skipIfNoDB skips the test when the live PostgreSQL fixture is unreachable,
-// so the execution suite degrades gracefully on environments that only run
-// unit tests. Every live test here is a security test, not a smoke test, so a
-// skipped environment simply does not claim RLS coverage.
-func skipIfNoDB(t *testing.T) *sql.DB {
-	t.Helper()
-	db, err := getEnv().AdminDB()
-	if err != nil {
-		t.Skipf("postgres unavailable, skipping RLS test: %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	if err := db.PingContext(ctx); err != nil {
-		_ = db.Close()
-		t.Skipf("postgres unavailable, skipping RLS test: %v", err)
-	}
-	return db
-}
-
 // grantExecutionToRestrictedRoles grants the restricted isolation roles DML on
 // the execution tables (additive setup via the admin connection).
 func grantExecutionToRestrictedRoles(t *testing.T, admin *sql.DB, roles ...string) {
@@ -56,7 +35,7 @@ func grantExecutionToRestrictedRoles(t *testing.T, admin *sql.DB, roles ...strin
 // the standard workspace isolation policy and has row-level security enabled
 // and forced.
 func TestExecutionRLSPoliciesEnabled(t *testing.T) {
-	admin := skipIfNoDB(t)
+	admin := requireLivePostgres(t, getEnv().postgresDSN)
 	defer admin.Close()
 
 	for _, tbl := range executionTables {
@@ -78,7 +57,7 @@ func TestExecutionRLSPoliciesEnabled(t *testing.T) {
 // a session bound to workspace A sees exactly its own row and never a row the
 // admin seeded into workspace B.
 func TestExecutionWorkspaceIsolation(t *testing.T) {
-	admin := skipIfNoDB(t)
+	admin := requireLivePostgres(t, getEnv().postgresDSN)
 	defer admin.Close()
 	require.NoError(t, ensureIsolationRoles(admin, "Workspace A", "Workspace B"))
 	grantExecutionToRestrictedRoles(t, admin, workspaceARole, workspaceBRole)
