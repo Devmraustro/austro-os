@@ -18,7 +18,11 @@ import (
 const (
 	canaryWorkspaceA = "deadbeef-0000-4000-8000-00000000000a"
 	canaryWorkspaceB = "deadbeef-0000-4000-8000-00000000000b"
-	canaryName       = "austro-rls-canary"
+	// The two probes need two names, not one. workspaces.name is globally
+	// unique, so seeding both probes under a shared name made the canary fail
+	// its own constraint on the second insert.
+	canaryNameA = "austro-rls-canary-a"
+	canaryNameB = "austro-rls-canary-b"
 )
 
 // VerifyRuntimeSecurity proves, against the live connection the application is
@@ -228,14 +232,21 @@ func verifyIsolationLive(ctx context.Context, db *sql.DB) error {
 
 	// Seed both rows, each from a transaction bound to its own workspace so the
 	// WITH CHECK expression (which defaults to the USING expression) accepts it.
-	for _, ws := range []uuid.UUID{a, b} {
+	for _, probe := range []struct {
+		id   uuid.UUID
+		name string
+	}{
+		{a, canaryNameA},
+		{b, canaryNameB},
+	} {
+		ws, name := probe.id, probe.name
 		if err := inWorkspace(ctx, db, ws, func(tx *sql.Tx) error {
 			// Remove a probe left behind by an interrupted run before re-seeding,
 			// otherwise the primary key insert fails.
 			if _, err := tx.ExecContext(ctx, `DELETE FROM workspaces WHERE id = $1`, ws); err != nil {
 				return err
 			}
-			_, err := tx.ExecContext(ctx, `INSERT INTO workspaces (id, name) VALUES ($1, $2)`, ws, canaryName)
+			_, err := tx.ExecContext(ctx, `INSERT INTO workspaces (id, name) VALUES ($1, $2)`, ws, name)
 			return err
 		}); err != nil {
 			return fmt.Errorf("isolation canary seed: %w", err)

@@ -81,9 +81,10 @@ $DC exec redis sh -c 'redis-cli --no-auth-warning ping'
   `REDISCLI_AUTH` as the healthcheck does.
 - `Could not connect` — the container is down. `$DC ps redis`, `$DC logs redis`.
 
-Note: `AUSTRO_REDIS_PASSWORD` is not checked by the configuration validator (it
-is read directly at connect time), so a wrong value surfaces here rather than at
-startup validation.
+Note: `AUSTRO_REDIS_PASSWORD` is read from the configuration surface as
+`Config.RedisPassword`, and startup validation rejects a placeholder value for
+it. A wrong-but-plausible value cannot be detected without the server, so it
+still surfaces here as `redis-connect-failed` rather than at validation.
 
 ---
 

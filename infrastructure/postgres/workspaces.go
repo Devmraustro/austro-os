@@ -30,26 +30,24 @@ func NewWorkspaceStore(db *sql.DB) *WorkspaceStore {
 	return &WorkspaceStore{db: db}
 }
 
-// Create inserts a workspace and returns the persisted record. The insert is
-// guarded against an existing name atomically, so a duplicate never silently
-// creates a second workspace and a sequential caller always receives a
-// deterministic ErrNameTaken.
+// Create inserts a workspace and returns the persisted record. Uniqueness of
+// the name is enforced by the uq_workspaces_name constraint rather than by a
+// read before the write: a `SELECT ... WHERE NOT EXISTS` guard reads a snapshot
+// and then writes outside it, so two creates racing each other can both observe
+// the name as free and both insert. The constraint makes the decision inside the
+// write, so of two concurrent creates exactly one succeeds and the other is
+// rejected by the database, which surfaces here as ErrNameTaken and at the API
+// as the documented 409.
 func (s *WorkspaceStore) Create(ctx context.Context, name string) (*workspace.Workspace, error) {
 	var w workspace.Workspace
 	err := s.db.QueryRowContext(ctx, `
 		INSERT INTO workspaces (name)
-		SELECT $1
-		WHERE NOT EXISTS (SELECT 1 FROM workspaces WHERE name = $1)
+		VALUES ($1)
 		RETURNING id, name, created_at, updated_at`, name).
 		Scan(&w.ID, &w.Name, &w.CreatedAt, &w.UpdatedAt)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			// Defense-in-depth: a unique constraint anywhere on name surfaces
-			// as a conflict, not as an internal error.
-			return nil, workspace.ErrNameTaken
-		}
-		if errors.Is(err, sql.ErrNoRows) {
 			return nil, workspace.ErrNameTaken
 		}
 		return nil, err

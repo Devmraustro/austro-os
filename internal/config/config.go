@@ -149,6 +149,19 @@ type Config struct {
 	// and rediss://host:port (encrypted, certificate verified). See
 	// ParseRedisAddr.
 	RedisAddr string
+	// RedisPassword is the AUTH password presented to the Redis server, read
+	// from AUSTRO_REDIS_PASSWORD.
+	//
+	// It is a separate setting rather than userinfo inside AUSTRO_REDIS_ADDR on
+	// purpose. ParseRedisAddr rejects credentials in the address exactly so that
+	// a secret cannot ride along in a value that gets logged, echoed in a dial
+	// error, or pasted into a ticket; the password belongs in its own variable
+	// that nothing formats. Empty means no AUTH is sent, which is the correct
+	// configuration for a server with no requirepass and is why this setting
+	// carries no "required" rule of its own.
+	//
+	// The value is never logged and never appears in a validation message.
+	RedisPassword string
 	// RedisCAFile is an optional PEM bundle of additional certificate
 	// authorities for a rediss:// endpoint, for a managed Redis whose
 	// certificate is issued by a private CA. It is additive: the system roots
@@ -404,6 +417,7 @@ func defaults() *Config {
 		preProvisionedRolesRaw:      preProvisionedRolesRaw,
 		RedisAddr:                   getEnv("AUSTRO_REDIS_ADDR", "localhost:6379"),
 		RedisCAFile:                 os.Getenv("AUSTRO_REDIS_CA_FILE"),
+		RedisPassword:               os.Getenv("AUSTRO_REDIS_PASSWORD"),
 		RabbitMQURL:                 getEnv("AUSTRO_RABBITMQ_URL", "amqp://austro:austro@localhost:5672"),
 		RabbitMQQueue:               getEnv("AUSTRO_RABBITMQ_QUEUE", "austro.events"),
 		JWTSecret:                   getEnv("AUSTRO_JWT_SECRET", "change-me-in-production"),
@@ -513,6 +527,15 @@ func (c *Config) Validate() error {
 	if c.UsesRedis() {
 		if isInsecure(c.RedisAddr) || (!allowLoopback && isLoopbackEndpoint(c.RedisAddr)) {
 			missing = append(missing, "AUSTRO_REDIS_ADDR")
+		}
+		// A password is optional, because a server with no requirepass needs
+		// none, so there is deliberately no presence rule for it. A placeholder
+		// is still refused: shipping one reads as configured, and against a
+		// server that happened to accept it the deployment would believe Redis
+		// is authenticated when nothing is enforcing it. The setting name is
+		// reported; the value never is.
+		if c.RedisPassword != "" && isInsecure(c.RedisPassword) {
+			missing = append(missing, "AUSTRO_REDIS_PASSWORD")
 		}
 		// The address is parsed here so a malformed value is reported as a
 		// configuration error that names the accepted forms, instead of

@@ -348,27 +348,35 @@ func TestBuildOptionsRejectsAMalformedAddress(t *testing.T) {
 	}
 }
 
-// TestBuildOptionsPassesTheCredentialThrough asserts the password is still read
-// from the environment and still never appears in a TLS-related error.
+// TestBuildOptionsPassesTheCredentialThrough asserts the password reaches the
+// client and still never appears in a TLS-related error.
+//
+// The password arrives on the Config rather than being re-read from the
+// environment here. Reading the environment inside the client meant the value
+// the connection used was whatever was in os.Getenv, not the value Load
+// validated and rejected placeholders on -- two sources of truth for one
+// credential.
 func TestBuildOptionsPassesTheCredentialThrough(t *testing.T) {
-	t.Setenv("AUSTRO_REDIS_PASSWORD", "s3cret-redis-password")
+	const password = "s3cret-redis-password"
+	addr := "rediss://redis.managed-host.net:6379"
 
-	options, err := buildOptions(&config.Config{RedisAddr: "rediss://redis.managed-host.net:6379"})
+	options, err := buildOptions(&config.Config{RedisAddr: addr, RedisPassword: password})
 	if err != nil {
 		t.Fatalf("buildOptions: %v", err)
 	}
-	if options.Password != "s3cret-redis-password" {
+	if options.Password != password {
 		t.Errorf("Password was not passed to the client")
 	}
 
 	_, err = buildOptions(&config.Config{
-		RedisAddr:   "rediss://redis.managed-host.net:6379",
-		RedisCAFile: filepath.Join(t.TempDir(), "absent.pem"),
+		RedisAddr:     addr,
+		RedisPassword: password,
+		RedisCAFile:   filepath.Join(t.TempDir(), "absent.pem"),
 	})
 	if err == nil {
 		t.Fatal("expected an error for the unusable CA file")
 	}
-	if strings.Contains(err.Error(), "s3cret-redis-password") {
+	if strings.Contains(err.Error(), password) {
 		t.Error("a configuration error must not print the password")
 	}
 }

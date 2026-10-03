@@ -126,6 +126,37 @@ is recorded as a known limitation.
 with `[redacted]` before anything is written. Values are never inspected and
 never copied into an error path.
 
+### Event ownership: the application, deliberately and exclusively
+
+Audit integrity here is **application-managed, and there is no PostgreSQL
+trigger**. This is stated explicitly because the absence of a trigger was
+previously ambiguous: a reviewer comparing this design against a conventional
+"append-only log" found no `CREATE TRIGGER` anywhere in the repository and could
+not tell whether that was an oversight or a decision.
+
+It is a decision. Ownership is single-writer and unambiguous:
+
+| Concern | Owner | Mechanism |
+|---|---|---|
+| Deciding *what* happened | application | `internal/audit` sinks, called by the code path that performed the action |
+| Chain linkage and signing | application | `hash_chain_parent`, `hash_chain_value`, `HMAC tag`, in `internal/audit` |
+| Appending the row | application | `INSERT` through the runtime or admin principal |
+| Refusing mutation | database | column grants: neither role holds `UPDATE`, `DELETE`, `TRUNCATE`, `REFERENCES` or `TRIGGER` |
+| Confining reads | database | `workspace_isolation_policy`, forced RLS |
+
+A trigger was considered and rejected. A `BEFORE INSERT` trigger cannot sign a
+row, because the chain pre-image includes the canonical timestamp and the
+event's own identity, both of which the application computes; a trigger would
+either duplicate the application's work or be handed a half-built row. A dual
+write — trigger *and* application — would be worse than either alone, because two
+writers racing on the same `seq` produce either a duplicate event or a silently
+broken chain, and the failure is invisible until verification.
+
+The protection is therefore split along the line each layer is actually good
+at: the application decides and signs, the database refuses to let anyone
+rewrite. Rewriting history still requires the owner or a superuser, and that is
+precisely the case the hash chain and HMAC tag exist to make detectable.
+
 ## ADR-020 refinements
 
 ADR-020 mandated `workspace_isolation_policy` on `audit_events`. That is now

@@ -14,11 +14,18 @@ import (
 
 // Initialize opens the memory bank's Redis connection, or exits.
 //
-// The connection is described by one setting, AUSTRO_REDIS_ADDR, whose form
-// decides whether it is encrypted: rediss:// requires TLS with the server
-// certificate verified, redis:// and the legacy bare host:port are plaintext.
-// Before this, the client had no way to ask for TLS at all, so a managed Redis
-// that requires it could not be reached by this application.
+// The connection is described by two settings. AUSTRO_REDIS_ADDR gives the
+// endpoint, and its form decides whether it is encrypted: rediss:// requires
+// TLS with the server certificate verified, redis:// and the legacy bare
+// host:port are plaintext. Before this, the client had no way to ask for TLS at
+// all, so a managed Redis that requires it could not be reached by this
+// application. AUSTRO_REDIS_PASSWORD supplies the AUTH credential separately,
+// because the address deliberately refuses to carry one.
+//
+// The password is never logged. Initialize reports only the event name and the
+// server's own error, and buildOptions never places the value into Addr, so
+// there is no path from this function to a log line or an error string
+// containing it.
 func Initialize(cfg *config.Config) *redis.Client {
 	options, err := buildOptions(cfg)
 	if err != nil {
@@ -62,8 +69,14 @@ func buildOptions(cfg *config.Config) (*redis.Options, error) {
 	}
 
 	options := &redis.Options{
-		Addr:     endpoint.Addr,
-		Password: os.Getenv("AUSTRO_REDIS_PASSWORD"),
+		Addr: endpoint.Addr,
+		// Read from the validated configuration rather than from the
+		// environment directly. Reading os.Getenv here worked, but it bypassed
+		// Config entirely: the password was absent from the configuration
+		// surface, from every test that builds a Config, and from the validation
+		// that rejects placeholders -- so the one setting that decides whether
+		// Redis is authenticated was the one setting nothing could check.
+		Password: cfg.RedisPassword,
 		DB:       0,
 	}
 

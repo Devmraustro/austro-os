@@ -118,6 +118,10 @@ func Bootstrap(owner *sql.DB, topo *Topology) error {
 		{"migrate-pipelines", func() error { return migratePipelines(owner) }},
 		{"migrate-organization", func() error { return migrateOrganization(owner) }},
 		{"migrate-executions", func() error { return migrateExecutions(owner) }},
+		// After every table migration, so the columns the composite keys cover
+		// are final, and before RLS, so a violation surfaces as a constraint
+		// failure here rather than as a policy error at first request.
+		{"workspace-integrity", func() error { return enforceWorkspaceIntegrity(owner) }},
 		{"enable-rls", func() error { return enableRLS(owner) }},
 		// Roles before policies: CREATE POLICY ... TO <role> requires the role
 		// to exist, so provisioning them afterwards fails the policy step. In
@@ -256,7 +260,6 @@ func createTables(db *sql.DB) error {
 		updated_at TIMESTAMP DEFAULT NOW()
 	);
 
-	CREATE INDEX IF NOT EXISTS idx_workspaces_name ON workspaces(name);
 	CREATE INDEX IF NOT EXISTS idx_ceos_workspace ON ceos(workspace_id);
 	CREATE INDEX IF NOT EXISTS idx_departments_workspace ON departments(workspace_id);
 	CREATE INDEX IF NOT EXISTS idx_teams_department ON teams(department_id);
@@ -944,6 +947,119 @@ func migratePublications(db *sql.DB) error {
 	`
 	if _, err := db.Exec(migration); err != nil {
 		return fmt.Errorf("migrate publications: %w", err)
+	}
+	return nil
+}
+
+// enforceWorkspaceIntegrity installs the database-level guarantees that a row's
+// workspace cannot disagree with its parent's, and that a workspace name is
+// unique.
+//
+// Both were previously assumed rather than enforced. Every tenant-scoped read
+// and write already runs inside a workspace-scoped transaction, so the service
+// layer never produced a mismatch; but row level security governs which rows a
+// role may *see*, never whether the values inside a row agree with each other.
+// A privileged writer, a migration, or a future code path could therefore
+// persist an execution pointing at another workspace's task, and the
+// authorization layer would faithfully serve a row that should not exist.
+//
+// The composite foreign keys below make the disagreement impossible rather than
+// merely unlikely. Each parent gains UNIQUE (id, workspace_id) to serve as the
+// referenced target -- required because a foreign key must point at a unique
+// key, and id alone cannot express "this row, in this workspace". Each child
+// then references that pair, so a mismatched workspace_id fails the constraint
+// on the same insert or update that introduced it.
+//
+// ai_executions.task_id keeps its original ON DELETE SET NULL behaviour when a
+// task is deleted, via the column-scoped form `SET NULL (task_id)`: PostgreSQL 15
+// and later can null one column of a composite key, which is required here
+// because the other column, workspace_id, is NOT NULL and a plain SET NULL
+// would attempt to null it too and fail the delete.
+//
+// The idempotency-guard style matches the other migrations here: each statement
+// is wrapped so a second run is a no-op, which keeps Bootstrap restartable and
+// its repeat run free of drift.
+func enforceWorkspaceIntegrity(db *sql.DB) error {
+	migration := `
+	-- Parent keys. UNIQUE (id, workspace_id) is redundant for uniqueness --
+	-- id is already the primary key -- and exists solely to give the composite
+	-- foreign keys below a valid target.
+	DO $$
+	BEGIN
+		IF NOT EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conname = 'uq_tasks_id_workspace' AND conrelid = 'tasks'::regclass
+		) THEN
+			ALTER TABLE tasks ADD CONSTRAINT uq_tasks_id_workspace
+				UNIQUE (id, workspace_id);
+		END IF;
+		IF NOT EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conname = 'uq_ai_executions_id_workspace' AND conrelid = 'ai_executions'::regclass
+		) THEN
+			ALTER TABLE ai_executions ADD CONSTRAINT uq_ai_executions_id_workspace
+				UNIQUE (id, workspace_id);
+		END IF;
+	END$$;
+
+	-- An execution's task must live in the execution's workspace. The
+	-- single-column foreign key is dropped rather than kept alongside: two
+	-- foreign keys on the same column means two sets of referential triggers
+	-- racing to null task_id on a task delete, and the composite key already
+	-- subsumes it, still refusing an orphan task_id on its own.
+	ALTER TABLE ai_executions DROP CONSTRAINT IF EXISTS ai_executions_task_id_fkey;
+	DO $$
+	BEGIN
+		IF NOT EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conname = 'fk_ai_executions_task_workspace' AND conrelid = 'ai_executions'::regclass
+		) THEN
+			ALTER TABLE ai_executions ADD CONSTRAINT fk_ai_executions_task_workspace
+				FOREIGN KEY (task_id, workspace_id) REFERENCES tasks(id, workspace_id)
+				ON DELETE SET NULL (task_id);
+		END IF;
+	END$$;
+
+	-- A retry row's workspace must match the execution it retries. ON DELETE
+	-- CASCADE is carried over unchanged and needs no column scoping, because a
+	-- deleted execution takes its whole retry history with it.
+	DO $$
+	BEGIN
+		IF NOT EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conname = 'fk_ai_execution_retries_execution_workspace'
+				AND conrelid = 'ai_execution_retries'::regclass
+		) THEN
+			ALTER TABLE ai_execution_retries ADD CONSTRAINT fk_ai_execution_retries_execution_workspace
+				FOREIGN KEY (execution_id, workspace_id) REFERENCES ai_executions(id, workspace_id)
+				ON DELETE CASCADE;
+		END IF;
+	END$$;
+
+	-- workspaces is the tenant root: it has no workspace_id of its own, so a
+	-- name can only be unique across the whole table. The service layer already
+	-- returned ErrNameTaken for a taken name; this makes the database the
+	-- authority for it, which is the only version of that guarantee that also
+	-- holds when two creates are in flight at the same time.
+	DO $$
+	BEGIN
+		IF NOT EXISTS (
+			SELECT 1 FROM pg_constraint
+			WHERE conname = 'uq_workspaces_name' AND conrelid = 'workspaces'::regclass
+		) THEN
+			ALTER TABLE workspaces ADD CONSTRAINT uq_workspaces_name UNIQUE (name);
+		END IF;
+	END$$;
+
+	-- Superseded by the unique constraint's own index; keeping both would store
+	-- the same key twice and let a future writer pick the weaker one.
+	DROP INDEX IF EXISTS idx_workspaces_name;
+	`
+	if _, err := db.Exec(migration); err != nil {
+		// Adding these can only fail if existing rows already violate the
+		// invariants. Surface it rather than skipping the constraint and
+		// leaving the schema quietly weaker than the code assumes.
+		return fmt.Errorf("enforce workspace integrity: %w", err)
 	}
 	return nil
 }
