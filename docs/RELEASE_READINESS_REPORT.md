@@ -1424,8 +1424,8 @@ been exercised, and it has not.
 |---|---|
 | Build source commit | `69d7fa726215c4099d824747686a400aafcf16ef` — tree `e74b2f1f2c06bd019b88212ec72f3860f26eef83`, 401 source files |
 | Commit carrying this report | necessarily later, and deliberately not the build source; a file cannot contain the SHA of the commit that contains it |
-| Working tree at this pass | `main` @ `69d7fa7`, the commit the Redis TLS and loopback work is in, and therefore the commit the artifacts above embed. The hardening commits that follow it (`.gitattributes`, the portable interpreter probe, two test files, the `build-release.sh` mode bit) change **no compiled input**, which §5 proves; so the artifacts remain those of `69d7fa7` and must not be described as containing the later commits |
-| Hardening commits after the build source | `.gitattributes` in `3aa2c66` (tree `46851f0e…`), plus the interpreter-probe/test/mode commit recorded below. Non-code and non-build-input only |
+| Working tree at this pass | `main`, at the commit carrying this report and therefore necessarily later than the build source. The artifacts above embed `69d7fa7`, the commit the Redis TLS and loopback work is in, and must not be described as containing any later commit. The hardening commits that follow `69d7fa7` (`.gitattributes`, the `build-release.sh` mode bit, the portable interpreter probe, two test files) change **no compiled input**, which §5 proves |
+| Hardening commits after the build source | four, none of which touches a compiled input: `.gitattributes` in `3aa2c66` (tree `46851f0e…`); the `build-release.sh` mode bit and its guard test in `2411104`; the portable interpreter probe, the verifier change and their tests in the commit carrying this report. The fourth is the documentation commit `d64e8f7` |
 | Line-ending policy | `.gitattributes` = `* text=auto eol=lf`. Index contains 0 CRLF blobs; a default-settings fresh clone has 0 CR bytes in any tracked file and 0 `git status` entries before and after a build |
 | Artifacts | 4 (linux/amd64, linux/arm64 × api, worker), byte-reproducible across two independent builds, each carrying `version=1.0` and its own source commit |
 | Build identity | embedded in every released binary, verified; see §5 |
@@ -1436,7 +1436,7 @@ been exercised, and it has not.
 | Frozen architecture gate | re-frozen to `9119aa71…` under approval, byte-identical throughout this pass; static verifier 199/0 with no shim |
 | Staged-tree verification | build 0, vet 0, buildinfo tests 0, identity contract suite 43 pass / 0 fail / 2 skip (22 of those are top-level functions; the rest are their subtests) |
 | Full `./tests` suite after this pass | 118 failing functions, 21 failing subtests, 139 `--- FAIL` markers, 3 skips — the **identical set of test names** as before this pass, so nothing regressed |
-| Regression guards added | `tests/verifier_python_detection_test.go` (5 tests) and `tests/shell_script_executable_bits_test.go` (1 test), all passing |
+| Regression guards added | `tests/verifier_python_detection_test.go` (4 test functions; 6 cases once the 3 subtests of the table-driven discovery test are counted) and `tests/shell_script_executable_bits_test.go` (1 test function), all passing |
 | Pushed | **No** |
 | Deployed | **No** |
 | Open blockers | B1 live AI provider, B2 AlwaysData account unvalidated, B3 Docker/Compose unexecuted |
