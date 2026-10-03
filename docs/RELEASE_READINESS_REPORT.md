@@ -638,6 +638,44 @@ beneath it were derived by a segmentation that treated `TestPhase1ExitCriteria`'
 45 subtest result lines as independent segments, split that one function's four
 causes across them, and inflated the PostgreSQL figure by one.
 
+Those three counters read rendered text, which is adequate but indirect: they
+count a marker rather than a test outcome, and they depend on Go's indentation
+being exactly one space. The authoritative method is `go test -json`, where every
+event carries the test name and the action, so the counts come from structured
+fields and never from the word "FAIL":
+
+```bash
+go test -json -count=1 ./tests/ > suite.json
+
+python - <<'PY'
+import json
+tests = {}
+for line in open("suite.json", encoding="utf-8"):
+    ev = json.loads(line)
+    if ev.get("Test") and ev.get("Action") in ("pass", "fail", "skip"):
+        tests[ev["Test"]] = ev["Action"]
+top = [n for n, a in tests.items() if a == "fail" and "/" not in n]
+sub = [n for n, a in tests.items() if a == "fail" and "/" in n]
+print("failing top-level functions:", len(top))   # 118
+print("failing subtests:", len(sub))              # 21
+print("total outcomes:", len(top) + len(sub))    # 139
+PY
+```
+
+This is what keeps the three quantities from being mixed. A **failing test
+function** is one entry whose name contains no `/`; a **failing subtest** is one
+that does; a **failed assertion** is a `t.Errorf`/`t.Fatal` site, and `go test
+-json` does not report those at all. No assertion count is claimed anywhere in
+this report: 139 is a count of failing outcomes, never of assertions. The same
+run on this machine reports 144 passing top-level functions and 3 skipped, so
+265 top-level functions were exercised.
+
+One trap when attributing causes: `go test -json` files a subtest's output under
+the subtest's name, not the parent's. Attributing by scanning only a parent's
+own output makes `TestPhase1ExitCriteria` look as though it names no service at
+all, which is how a 118-function tally once came to sum to 115. Causes must be
+collected over the function *and* its descendants.
+
 Corrected, with each function assigned to its first matching cause in the order
 PostgreSQL, API, RabbitMQ, Redis:
 
@@ -1496,13 +1534,17 @@ reproducible commands in §3:
 | `--- SKIP` test functions | 3 |
 | `Should NOT be empty` | 0 |
 
-All 118 name an unreachable service: 98 PostgreSQL, 8 API, 5 RabbitMQ, 2 Redis
+All 118 name an unreachable service: 103 PostgreSQL, 8 API, 5 RabbitMQ, 2 Redis
 after assigning the one four-service function (`TestPhase1ExitCriteria`) to
-PostgreSQL by precedence; per-cause occurrences are 103/9/6/3. The three skips
-are the two release-manifest-dependent tests and the gate's own live-contact
-assertion, none of which is an infrastructure test. None of the 118 is a code
-regression; `TestConfigValidPasses` and `TestOpenAPIMatchesRegisteredRoutes`,
-which *were* real regressions earlier in this pass, now pass.
+PostgreSQL by precedence, which sums to exactly 118. Per-cause occurrences are
+103/9/6/3 = 121, larger than 118 because that single function is counted once in
+each of the four categories it matches; every other failing function has exactly
+one cause, so 117 + 1 accounts for all 118 and nothing is unclassified. The three
+skips are the two release-manifest-dependent tests and the gate's own
+live-contact assertion, none of which is an infrastructure test. None of the 118
+is a code regression; `TestConfigValidPasses` and
+`TestOpenAPIMatchesRegisteredRoutes`, which *were* real regressions earlier in
+this pass, now pass.
 
 Five of the 118 are tests that previously **skipped** and reported nothing —
 the RLS and stale-reclaim tests governed by the old `skipIfNoDB`. They now fail
