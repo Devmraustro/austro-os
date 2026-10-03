@@ -30,11 +30,16 @@ package austro_os_test
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"net"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 const (
@@ -145,6 +150,93 @@ func requireLivePostgres(t *testing.T, dsn string) *sql.DB {
 	}
 	recordLiveContact("PostgreSQL")
 	return db
+}
+
+// isInfrastructureUnavailable reports whether err means the request never
+// reached a service, as opposed to a service that was reached and answered.
+//
+// This is the discriminator the offline policy is allowed to act on, and it is
+// deliberately one-sided. Only a network-level failure qualifies:
+//
+//   - *net.DNSError  the name did not resolve, so nothing was listening
+//   - *net.OpError    the connection was refused, reset, or timed out
+//
+// Everything else is a service that answered and is therefore never eligible
+// for a skip. That deliberately excludes:
+//
+//   - HTTP status codes. callAuthJSON returns (status, body, nil) for every
+//     status, so a 401, 403, 409, 429 or 500 arrives with a nil error and can
+//     never reach this function as an error at all. The exclusion is structural
+//     rather than a matter of matching strings.
+//   - *amqp.Error, which the broker returns for a protocol-level refusal such
+//     as ACCESS_REFUSED on bad credentials. The broker was reached; a wrong
+//     password is a configuration fault, not a missing service.
+//   - *pgconn.PgError, which PostgreSQL returns for SQL-level faults. The server
+//     was reached and rejected the statement.
+//
+// The asymmetry is the whole point. Treating a reachable service's refusal as
+// "infrastructure unavailable" is how a green run gets produced from a
+// deployment that is misconfigured, so anything ambiguous fails.
+func isInfrastructureUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return true
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return true
+	}
+	return false
+}
+
+// requireLiveDependency applies the live policy to a failure that is not
+// PostgreSQL's, using the same clause-1/clause-2 rule requireLivePostgres
+// applies: skip under explicit offline mode, fail otherwise.
+//
+// When the failure is not a network-level one the test fails even under offline
+// mode, because a service that answered is not an absent service. The message
+// says so explicitly, so a skip count that silently absorbed a real refusal is
+// visible in the output rather than inferred from a smaller number.
+func requireLiveDependency(t *testing.T, dependency, endpoint string, err error) {
+	t.Helper()
+	if isInfrastructureUnavailable(err) {
+		enforceLivePolicy(t, dependency, endpoint, err)
+		// Unreachable: enforceLivePolicy skips or fails.
+		t.Fatalf("unreachable: enforceLivePolicy must terminate the test")
+	}
+	t.Fatalf("%s answered at %s but the request failed, which is not an absent service and is never a skip: %v. "+
+		"A refusal from a reachable service (a wrong password, a denied grant, a rejected statement) is a "+
+		"configuration or product fault: fix it rather than setting %s=%s.",
+		dependency, endpoint, err, testModeEnv, offlineTestMode)
+}
+
+// requireLiveHTTP applies the live policy to a failed HTTP call.
+//
+// The error is only ever non-nil when the exchange did not complete: the
+// request could not be built or sent, or the connection failed or was dropped
+// mid-body. A completed exchange returns a status and a nil error, so routing
+// this path through the policy cannot convert an HTTP status into a skip.
+func requireLiveHTTP(t *testing.T, err error) {
+	t.Helper()
+	requireLiveDependency(t, "the API", getEnv().apiURL, err)
+}
+
+// liveDependencyForError attributes a failure to the dependency that produced
+// it. The shared-session initializers talk to both the API and PostgreSQL, so a
+// skip must name the one that actually failed instead of guessing.
+func liveDependencyForError(err error) (name, endpoint string) {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return "PostgreSQL", getEnv().postgresDSN
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return "the API", getEnv().apiURL
+	}
+	return "the live stack", getEnv().apiURL
 }
 
 // TestReleaseGateRequiresLiveInfrastructure is the third clause of the policy: a

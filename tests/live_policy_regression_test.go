@@ -16,6 +16,12 @@ package austro_os_test
 // infrastructure is absent.
 
 import (
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,6 +30,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgconn"
+	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/require"
 )
 
@@ -143,6 +151,126 @@ func TestLivePolicyGateIsRecognisedOnlyByOne(t *testing.T) {
 		t.Setenv(requireLiveEnv, "1")
 		require.True(t, currentLivePolicy(t).requireLive)
 	})
+}
+
+// The tests below pin the offline policy's safety property: the opt-in may only
+// ever absorb a service that was never reached, never a service that answered.
+//
+// The classifier itself is asserted directly, because it is a pure function of
+// an error value. The behavioural cases then run the compiled binary, since a
+// skipped subtest and a failed one both report success to t.Run and so cannot be
+// distinguished from the inside. None of this needs live infrastructure, and
+// none of it needs a running API: the discriminator depends only on the error's
+// type, which is why it can be verified with the stack down.
+
+// policyModeEnv selects which probe case the child process runs. It is separate
+// from policyProbeEnv because the existing probe harness keys off the latter.
+const policyModeEnv = "AUSTRO_POLICY_MODE"
+
+// TestInfrastructureUnavailableClassifier pins the one-sided rule: only a
+// network-level failure counts as an absent service.
+func TestInfrastructureUnavailableClassifier(t *testing.T) {
+	t.Run("a DNS failure is an absent service", func(t *testing.T) {
+		require.True(t, isInfrastructureUnavailable(&url.Error{
+			Op: "Get", URL: unreachableAPI, Err: &net.DNSError{Err: "no such host", Name: "austro-api.invalid"},
+		}))
+	})
+
+	t.Run("a refused connection is an absent service", func(t *testing.T) {
+		require.True(t, isInfrastructureUnavailable(&net.OpError{
+			Op: "dial", Net: "tcp", Err: errors.New("connection refused"),
+		}))
+	})
+
+	t.Run("the rule survives wrapping", func(t *testing.T) {
+		wrapped := fmt.Errorf("POST /api/auth/login against %s: %w", unreachableAPI, &url.Error{
+			Op: "Post", URL: unreachableAPI, Err: &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("refused")},
+		})
+		require.True(t, isInfrastructureUnavailable(wrapped),
+			"the initializer wraps the transport error, so the rule must unwrap")
+	})
+
+	t.Run("a broker refusal is a reachable service answering", func(t *testing.T) {
+		require.False(t, isInfrastructureUnavailable(&amqp.Error{
+			Code: 403, Reason: "ACCESS_REFUSED - login was refused", Server: true,
+		}), "a wrong password reached the broker; it is a configuration fault, not an absent service")
+	})
+
+	t.Run("a SQL-level fault is a reachable server answering", func(t *testing.T) {
+		require.False(t, isInfrastructureUnavailable(&pgconn.PgError{Code: "42501"}),
+			"permission denied came from PostgreSQL, so the server was reached")
+	})
+
+	t.Run("an unrecognised error is never an absent service", func(t *testing.T) {
+		require.False(t, isInfrastructureUnavailable(errors.New("connection refused")),
+			"the rule matches on type, not on message text, so a plain error fails closed")
+		require.False(t, isInfrastructureUnavailable(nil))
+	})
+}
+
+// TestHTTPErrorStatusIsNeverOfflineSkippable is the property that matters most,
+// and it is structural rather than a matter of classification: callAuthJSON
+// returns a nil error for every status, so an HTTP status cannot reach the
+// policy as an error in the first place.
+func TestHTTPErrorStatusIsNeverOfflineSkippable(t *testing.T) {
+	for _, status := range []int{
+		http.StatusUnauthorized, http.StatusForbidden, http.StatusConflict,
+		http.StatusTooManyRequests, http.StatusInternalServerError,
+	} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(`{"error":"refused"}`))
+			}))
+			defer srv.Close()
+
+			gotStatus, body, err := callAuthJSON(srv.URL, http.MethodGet, "/api/whoami", nil, "")
+			require.NoError(t, err,
+				"a %d from a reachable server is a completed exchange, so it must not be an error", status)
+			require.Equal(t, status, gotStatus)
+			require.NotEmpty(t, body)
+			require.False(t, isInfrastructureUnavailable(err),
+				"and it can never be classified as an absent service")
+		})
+	}
+}
+
+// TestOfflinePolicySkipsOnlyAbsentServices is the behavioural half: offline mode
+// absorbs a service that was never reached, the default policy still fails it,
+// and a reachable service's refusal is refused a skip either way.
+func TestOfflinePolicySkipsOnlyAbsentServices(t *testing.T) {
+	switch os.Getenv(policyModeEnv) {
+	case "absent-offline":
+		t.Setenv(testModeEnv, offlineTestMode)
+		_, _, err := callAuthJSON(unreachableAPI, http.MethodGet, "/api/whoami", nil, "")
+		require.Error(t, err)
+		requireLiveHTTP(t, err) // must skip
+	case "absent-default":
+		t.Setenv(testModeEnv, "")
+		_, _, err := callAuthJSON(unreachableAPI, http.MethodGet, "/api/whoami", nil, "")
+		require.Error(t, err)
+		requireLiveHTTP(t, err) // must fail
+	case "answered":
+		t.Setenv(testModeEnv, offlineTestMode)
+		requireLiveDependency(t, "the API", "http://austro-api.invalid:8080",
+			&amqp.Error{Code: 403, Reason: "ACCESS_REFUSED", Server: true}) // must fail
+	default:
+		t.Run("offline mode absorbs an absent service", func(t *testing.T) {
+			out, _ := runPolicyProbe(t, t.Name(), policyModeEnv+"=absent-offline")
+			require.Contains(t, out, "claims no coverage of it",
+				"the skip must name the dependency and the opt-in, and claim no coverage")
+		})
+		t.Run("the default policy still fails an absent service", func(t *testing.T) {
+			out, _ := runPolicyProbe(t, t.Name(), policyModeEnv+"=absent-default")
+			require.Contains(t, out, "unavailable infrastructure is a failure by default",
+				"without the opt-in, unavailable infrastructure must remain a failure")
+		})
+		t.Run("offline mode refuses to absorb a reachable service", func(t *testing.T) {
+			out, _ := runPolicyProbe(t, t.Name(), policyModeEnv+"=answered")
+			require.Contains(t, out, "which is not an absent service and is never a skip",
+				"a refusal from a reachable service must fail even under the opt-in")
+		})
+	}
 }
 
 // TestLiveContactLedgerRecordsReachableDependencies is the second half of clause

@@ -37,7 +37,12 @@ type authMeResponse struct {
 func authJSON(t *testing.T, method, path string, body map[string]string, token string) (int, []byte) {
 	t.Helper()
 	status, out, err := callAuthJSON(getEnv().apiURL, method, path, body, token)
-	require.NoError(t, err)
+	if err != nil {
+		// A non-nil error means the exchange never completed, so the live policy
+		// may act on it. A completed exchange returns its status with a nil
+		// error, which is why no 401, 403, 409, 429 or 500 can reach here.
+		requireLiveHTTP(t, err)
+	}
 	return status, out
 }
 

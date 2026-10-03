@@ -28,7 +28,13 @@ func testQueue(t *testing.T, ch *amqp.Channel) string {
 func openRabbit(t *testing.T) (*amqp.Connection, *amqp.Channel) {
 	t.Helper()
 	conn, err := amqp.Dial(getEnv().rabbitURL)
-	require.NoError(t, err)
+	if err != nil {
+		// amqp.Dial returns *amqp.Error when the broker was reached and refused
+		// the connection -- ACCESS_REFUSED on a wrong password, for instance --
+		// and a *net.OpError or *net.DNSError when it was never reached. Only the
+		// latter is an absent service, so only the latter may be skipped.
+		requireLiveDependency(t, "RabbitMQ", redactDSN(getEnv().rabbitURL), err)
+	}
 	ch, err := conn.Channel()
 	require.NoError(t, err)
 	t.Cleanup(func() { ch.Close(); conn.Close() })

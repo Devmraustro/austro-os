@@ -204,8 +204,18 @@ func initAuditWorkspaceTokens(dsn string) (rbacSessions, error) {
 // requireSharedToken is the only place a shared-session failure is surfaced.
 // It reports the initializer's error, so an unreachable service or a rejected
 // credential is named instead of showing up later as an empty token.
+//
+// A dependency that was never reached is offered to the policy first, so an
+// explicit offline run can skip instead of failing. Every other fault falls
+// through to the original diagnostic, which stays the message a real failure
+// reports: a rejected credential or a wrong token is a harness fault, and
+// relabelling it as a skip would hide it.
 func requireSharedToken(t *testing.T, kind string, err error, tokens map[string]string) {
 	t.Helper()
+	if isInfrastructureUnavailable(err) {
+		name, endpoint := liveDependencyForError(err)
+		requireLiveDependency(t, name, endpoint, err)
+	}
 	if msg := sharedTokenFailure(kind, err, tokens); msg != "" {
 		t.Fatal(msg)
 	}

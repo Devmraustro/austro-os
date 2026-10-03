@@ -46,7 +46,12 @@ func authJSONRaw(t *testing.T, method, path, raw string, token string) (int, []b
 	}
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
-	require.NoError(t, err)
+	if err != nil {
+		// The request never completed, so the live policy may act on it. A
+		// response of any status, including 401, 403, 409, 429 and 500, is a
+		// completed exchange and is asserted on below rather than here.
+		requireLiveHTTP(t, err)
+	}
 	defer resp.Body.Close()
 	out, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
