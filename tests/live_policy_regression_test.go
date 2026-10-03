@@ -148,7 +148,28 @@ func TestLivePolicyGateIsRecognisedOnlyByOne(t *testing.T) {
 // TestLiveContactLedgerRecordsReachableDependencies is the second half of clause
 // 3, at unit level: the ledger the gate asserts on must actually record.
 func TestLiveContactLedgerRecordsReachableDependencies(t *testing.T) {
-	require.Empty(t, liveContactSnapshot(), "a fresh process must have contacted nothing")
+	// Start from a ledger this test owns.
+	//
+	// liveContacts is a process-wide counter by design: the gate reads it after
+	// every test in the package has run. That makes it the wrong thing to assert
+	// "is empty" about from inside the package, because every other live test
+	// that reached PostgreSQL before this one has already written to it. The
+	// original assertion passed only when this test happened to run first,
+	// which made the outcome a function of declaration order rather than of the
+	// behaviour under test. Swap the map out for the duration instead: the
+	// property being verified is that recording increments and snapshotting
+	// copies, both of which are independent of what anything else recorded.
+	liveContactMu.Lock()
+	saved := liveContacts
+	liveContacts = map[string]int{}
+	liveContactMu.Unlock()
+	t.Cleanup(func() {
+		liveContactMu.Lock()
+		liveContacts = saved
+		liveContactMu.Unlock()
+	})
+
+	require.Empty(t, liveContactSnapshot(), "a ledger this test has not written to must be empty")
 
 	recordLiveContact("PostgreSQL")
 	recordLiveContact("PostgreSQL")

@@ -112,6 +112,18 @@ func TestValidateRejectsLoopbackEndpointsUnlessDeclared(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// Pin the opt-in to absent rather than inheriting it.
+			//
+			// Validate resolves loopbackAllowed() from the environment on every
+			// call instead of from a Config field, so this test's premise -- that
+			// an undeclared loopback endpoint is rejected -- is only true when
+			// nothing in the ambient environment declares it. A developer or CI
+			// runner that exports AUSTRO_ALLOW_LOOPBACK=1 for an unrelated
+			// integration run would otherwise fail this test for the wrong
+			// reason, and would see a production guard reported as broken when
+			// the guard is behaving correctly.
+			t.Setenv(allowLoopbackEnv, "")
+
 			cfg := secureCore()
 			tc.mutate(cfg)
 

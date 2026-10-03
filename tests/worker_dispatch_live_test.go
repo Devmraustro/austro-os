@@ -21,13 +21,36 @@ import (
 func TestWorkerAdvancesPipelineFromEventToComplete(t *testing.T) {
 	db, err := getEnv().AdminDB()
 	require.NoError(t, err)
-	defer db.Close()
+
+	// Close through t.Cleanup, registered before the deletes below, rather than
+	// through defer.
+	//
+	// Cleanup functions run last-in-first-out, and a deferred call runs as the
+	// test function returns -- which is *before* any t.Cleanup. With defer here,
+	// db.Close() executed first and the deletes below then ran against a closed
+	// pool, failing silently because their errors were discarded. Nothing was
+	// ever cleaned up: every run of this test leaked a pipeline and a workspace,
+	// and the leak was invisible because the failing statements were the ones
+	// whose results nobody looked at.
+	//
+	// The leak only became visible once uq_workspaces_name made the name unique.
+	// This test inserts a fixed name ("dispatch-test") against a fresh random
+	// id, so a row left by any earlier run -- an interrupted run, a crash, or the
+	// silently-failing cleanup -- made every subsequent run fail on insert and
+	// made the suite non-repeatable against a database it had already used.
+	// Registering the close first makes it run last, so the deletes happen while
+	// the pool is still open.
+	t.Cleanup(func() { _ = db.Close() })
 
 	wsID := uuid.New()
 	pipeID := uuid.New()
 	t.Cleanup(func() {
-		_, _ = db.Exec(`DELETE FROM pipelines WHERE id=$1`, pipeID)
-		_, _ = db.Exec(`DELETE FROM workspaces WHERE id=$1`, wsID)
+		if _, err := db.Exec(`DELETE FROM pipelines WHERE id=$1`, pipeID); err != nil {
+			t.Errorf("could not clean up pipeline %s: %v", pipeID, err)
+		}
+		if _, err := db.Exec(`DELETE FROM workspaces WHERE id=$1`, wsID); err != nil {
+			t.Errorf("could not clean up workspace %s: %v", wsID, err)
+		}
 	})
 
 	_, err = db.Exec(`INSERT INTO workspaces (id, name) VALUES ($1,$2)`, wsID, "dispatch-test")

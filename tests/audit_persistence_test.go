@@ -414,6 +414,14 @@ func newTestAuthHandler(t *testing.T, rt *sql.DB, sink audit.Sink) *api.AuthHand
 		ExecutionSweepInterval:     5 * time.Second,
 		ExecutionRetryBackoffBase:  2 * time.Second,
 		ExecutionRetryBackoffMax:   2 * time.Minute,
+		// The process heartbeat pair, not the execution lease above. Validate
+		// requires both to be positive, and this literal bypasses config.Load(),
+		// which is what normally supplies them; without them the zero values
+		// fail validation and the test never reaches the audit behaviour it
+		// exists to prove. Spelled out explicitly, as in config_test.go, rather
+		// than read from the environment so the helper stays hermetic.
+		HeartbeatInterval:   15 * time.Second,
+		HeartbeatStaleAfter: 60 * time.Second,
 	}
 	require.NoError(t, cfg.Validate())
 	return api.NewAuthHandler(cfg, auth.Initialize(cfg), postgres.NewUserStore(rt)).SetAuditSink(sink)
