@@ -313,15 +313,88 @@ printf '\n=== 5b. Production compose — structural lint ===\n'
 # the one this was authored in) that have no Docker at all.
 COMPOSE_LINT_EXPECTED="postgres,redis,rabbitmq,api,worker,reverse-proxy,reverse-proxy-caddy"
 
+# ---------------------------------------------------------------------------
+# Python discovery
+# ---------------------------------------------------------------------------
+# Three checks below need Python: the compose linter, the workflow lint and the
+# operator-script audit. They used to probe for `python3` by name and report
+# BLOCKED when it was absent. That is wrong on Windows, where CPython installs as
+# python.exe and no python3.exe is created at all, so a machine with Python
+# installed and working reported this gate as unable to run. It also assumed the
+# interpreter was Python 3, because the linter uses f-strings; on a host where
+# `python` is Python 2 the linter would have died on its own syntax and the
+# failure would have read like a lint error in the compose file.
+#
+# So the interpreter is resolved once, by trying each name in turn, and the probe
+# requires a Python that can actually execute the version check - which is what
+# makes "python is Python 2 here" a skip to the next candidate rather than a
+# confusing downstream error.
+#
+# The result is an array rather than a string because `py -3` carries an argument
+# that must not be glued onto the interpreter name. Every invocation goes through
+# run_python, which appends its arguments after the candidate words and returns
+# the interpreter's own exit status untouched: a caller cannot accidentally test
+# the exit status of the wrapper instead of the check.
+PYTHON_CMD=()
+PYTHON_TRIED="python3, python, py -3"
+
+# Succeeds only for a Python 3 able to run code. $@ is candidate words, which may
+# be more than one (`py -3`).
+python_probe() {
+    "$@" -c 'import sys; raise SystemExit(0 if sys.version_info[0] >= 3 else 1)' \
+        >/dev/null 2>&1
+}
+
+resolve_python() {
+    local candidate
+    for candidate in "python3" "python" "py -3"; do
+        # ${candidate%% *} is the command word for the existence check. The
+        # unquoted expansions below are deliberate word splitting: they are how
+        # "py -3" becomes two arguments. shellcheck cannot see that, hence the
+        # directives.
+        # shellcheck disable=SC2086
+        if command -v ${candidate%% *} >/dev/null 2>&1 && python_probe ${candidate}; then
+            # shellcheck disable=SC2086
+            PYTHON_CMD=( ${candidate} )
+            return 0
+        fi
+    done
+    PYTHON_CMD=()
+    return 1
+}
+
+have_python() { [ "${#PYTHON_CMD[@]}" -gt 0 ]; }
+
+# run_python <args...> - runs the resolved interpreter, preserving arguments and
+# propagating its exit code.
+run_python() {
+    "${PYTHON_CMD[@]}" "$@"
+}
+
+resolve_python || true
+
+# Informational, deliberately not a check. Which interpreter answered matters when
+# a gate behaves differently on two machines, and it is the first thing to look at
+# when one of the three Python checks reports BLOCKED. It is not counted as a pass
+# so the total does not depend on whether Python is installed.
+if have_python; then
+    printf 'INFO  Python 3 for the YAML and operator-script checks: %s (%s)\n' \
+        "${PYTHON_CMD[*]}" \
+        "$(run_python -c 'import sys; print(sys.version.split()[0])')"
+fi
+
 # The linter is written to a temp file once and reused by sections 5b and 5c.
 COMPOSE_LINT="$(mktemp)"
 COMPOSE_LINT_PROBE="$(mktemp)"
 UNSAFE_PROBE="$(mktemp)"
 trap 'rm -f "$COMPOSE_LINT" "$COMPOSE_LINT_PROBE" "$UNSAFE_PROBE"' EXIT
 
-if ! command -v python3 >/dev/null 2>&1; then
-    # Not a pass: the check could not run at all.
-    fail "YAML structural lint could not run (python3 unavailable) — BLOCKED"
+if ! have_python; then
+    # Not a pass: the check could not run at all. This is a hard failure on
+    # purpose. If Python is genuinely absent the right response is to install it
+    # or to be told the gate could not run, not to see a green summary that
+    # quietly omits three validations.
+    fail "YAML structural lint could not run (no Python 3 interpreter; tried: $PYTHON_TRIED) — BLOCKED"
 else
     cat >"$COMPOSE_LINT" <<'PYTHON_LINTER_EOF'
 #!/usr/bin/env python3
@@ -479,18 +552,18 @@ if __name__ == "__main__":
     print("compose lint: PASS")
 PYTHON_LINTER_EOF
 
-    if python3 "$COMPOSE_LINT" "$COMPOSE" "$COMPOSE_LINT_EXPECTED" >/dev/null 2>&1; then
+    if run_python "$COMPOSE_LINT" "$COMPOSE" "$COMPOSE_LINT_EXPECTED" >/dev/null 2>&1; then
         pass "production compose parses as structurally well-formed YAML"
     else
         fail "production compose failed structural lint:"
-        python3 "$COMPOSE_LINT" "$COMPOSE" "$COMPOSE_LINT_EXPECTED" >&2 || true
+        run_python "$COMPOSE_LINT" "$COMPOSE" "$COMPOSE_LINT_EXPECTED" >&2 || true
     fi
 
     # Negative control. A linter that cannot fail proves nothing, so two real
     # faults are injected into a copy and the linter MUST reject it.
     cp "$COMPOSE" "$COMPOSE_LINT_PROBE"
     printf '\tbug: 1\n' >>"$COMPOSE_LINT_PROBE"
-    if python3 "$COMPOSE_LINT" "$COMPOSE_LINT_PROBE" "$COMPOSE_LINT_EXPECTED" >/dev/null 2>&1; then
+    if run_python "$COMPOSE_LINT" "$COMPOSE_LINT_PROBE" "$COMPOSE_LINT_EXPECTED" >/dev/null 2>&1; then
         fail "compose linter accepted a deliberately broken file (check is vacuous)"
     else
         pass "compose linter rejects a deliberately broken file (negative control)"
@@ -506,13 +579,13 @@ printf '\n=== 5c. CI workflow lint ===\n'
 WORKFLOW_FILE=".github/workflows/production-deployment.yml"
 if [[ ! -f "$WORKFLOW_FILE" ]]; then
     fail "file missing: $WORKFLOW_FILE"
-elif ! command -v python3 >/dev/null 2>&1; then
-    fail "workflow lint could not run (python3 unavailable) — BLOCKED"
-elif python3 "$COMPOSE_LINT" "$WORKFLOW_FILE" "" "name,on,permissions,env,jobs" >/dev/null 2>&1; then
+elif ! have_python; then
+    fail "workflow lint could not run (no Python 3 interpreter; tried: $PYTHON_TRIED) — BLOCKED"
+elif run_python "$COMPOSE_LINT" "$WORKFLOW_FILE" "" "name,on,permissions,env,jobs" >/dev/null 2>&1; then
     pass "CI workflow parses as structurally well-formed YAML"
 else
     fail "CI workflow failed structural lint:"
-    python3 "$COMPOSE_LINT" "$WORKFLOW_FILE" "" "name,on,permissions,env,jobs" >&2 || true
+    run_python "$COMPOSE_LINT" "$WORKFLOW_FILE" "" "name,on,permissions,env,jobs" >&2 || true
 fi
 
 # ---------------------------------------------------------------------------
@@ -534,10 +607,10 @@ printf '\n=== 5d. Operator scripts never rely on an unset variable ===\n'
 # is missing from. Nothing is read bare.
 if [[ ! -f scripts/healthcheck.sh ]]; then
     fail "file missing: scripts/healthcheck.sh"
-elif ! command -v python3 >/dev/null 2>&1; then
-    fail "operator-script variable audit could not run (python3 unavailable) — BLOCKED"
+elif ! have_python; then
+    fail "operator-script variable audit could not run (no Python 3 interpreter; tried: $PYTHON_TRIED) — BLOCKED"
 else
-    bare_refs="$(python3 - scripts/healthcheck.sh <<'PY_SCAN'
+    bare_refs="$(run_python - scripts/healthcheck.sh <<'PY_SCAN'
 import re
 import sys
 

@@ -478,7 +478,8 @@ assurance without a stated basis.
 | `TestConfigValidPasses`, `TestOpenAPIMatchesRegisteredRoutes` | pass, absent from the failure list |
 | `Should NOT be empty` occurrences in the suite log | 0 |
 | Deployment-contract tests that read the edited CI, env and deploy files | 7/7 pass, including all four subtests of `TestDeploymentArtifactsDeclareTheExecutionTransportContract` |
-| `scripts/verify-production-deployment.sh` | **199 passed, 0 failed** — unchanged, after supplying the temporary `python3` shim described in §6/B6; without it three checks report BLOCKED |
+| `scripts/verify-production-deployment.sh` | **199 passed, 0 failed** — now on this host **without any shim**, because the interpreter probe is portable; see §6/B6 |
+| Interpreter resolution exercised under all four conditions | pass — `python3`; `python` after a `python3` that fails the version probe; `py -3` after both fail; and hard failure naming all three candidates when none works (§6/B6) |
 | `tests/build_identity_contract_test.go` | 22 passed, 0 failed, 2 skipped (the two manifest tests, which skip while the manifest lives outside the repository) |
 | Two independent clones, four artifacts | **byte-for-byte identical** |
 | Artifact inspection via `debug/elf` | 4/4 ELF64, `ET_EXEC`, correct machine, no `PT_INTERP` |
@@ -487,7 +488,8 @@ assurance without a stated basis.
 | Previous candidate after this pass | 6/6 files unchanged |
 | Modified workflow YAML parse | pass, both files |
 | TLS handshake against a live managed endpoint | **not run** — no TLS endpoint is reachable from here |
-| `bash -n` on `deploy/native/generate-env.sh` | **not available** — the `bash` on this host is the WSL shim and no distribution is installed; the heredoc placement was checked by reading, not by a parser |
+| `bash -n` on every tracked shell script | pass — 22/22 parse, including `deploy/native/generate-env.sh`, whose heredoc placement was previously only checked by reading. Git Bash (`C:\Program Files\Git\bin\bash.exe`) supplies the parser; the bare `bash` on this host is still the WSL shim and is not used |
+| `scripts/build-release.sh` stored mode | was `100644` while `.github/workflows/native-arm64-deploy.yml` executes it directly; corrected to `100755`, see §6/B7 |
 
 Two of these rows are corrections to this report, not new results. The earlier
 §3 figure of "33 subtests" for `TestPhase1ExitCriteria` counted numbered
@@ -823,15 +825,39 @@ view. Each clone's tracked tree was asserted clean before building, and
 `scripts/build-release.sh` independently refuses a tracked-dirty tree. The
 binaries therefore cannot claim a commit that does not describe their source.
 
-The clones were made with `-c core.autocrlf=false`. This repository has no
-`.gitattributes` and this host has `core.autocrlf=true`, so a default clone
-checks the tree out with CRLF, which makes `scripts/build-release.sh`
-unrunnable and leaves the working tree dirty for reasons that have nothing to do
-with the source. Pinning the conversion at clone time is what makes "clean
-tracked tree" mean the same thing here as it does on a Linux builder. The
-working tree of the primary checkout is *not* a candidate source for the same
-reason: it carries ~117 line-ending-only entries that `git status` reports as
-modified and `git diff` reports as unchanged.
+At the time those two builds were made, the clones had to be created with
+`-c core.autocrlf=false`: this repository had no `.gitattributes` and this host has
+`core.autocrlf=true`, so a default clone checked the tree out with CRLF, which made
+`scripts/build-release.sh` unrunnable and left the working tree dirty for reasons
+unrelated to the source.
+
+**That is no longer true, and the difference is a repository change rather than a
+command-line convenience.** `.gitattributes` now pins `* text=auto eol=lf`. A fresh
+clone created with **default** settings — `core.autocrlf=true`, no `-c` override —
+comes out with:
+
+| Property of a default-settings fresh clone | Result |
+|---|---|
+| `git status --porcelain` before building | 0 entries |
+| Tracked files containing any CR byte | **0** |
+| Frozen gate SHA-256 | `9119aa71…`, matching the primary checkout |
+| `scripts/build-release.sh` | runs to completion, exit 0 |
+| Working tree after building | still 0 entries, when the output directory is outside the repository |
+
+The 126 entries that `git status` reported as modified in the primary checkout
+while `git diff` reported them unchanged were a stale index/stat condition left by
+an earlier mixed-line-ending checkout under `core.autocrlf=true` — the working-tree
+bytes already matched the index blobs (for `internal/api/handler.go` the cached index
+size was 16246 against an actual 15792). They were cleared by re-adding those 126
+paths explicitly, by path, which changed **no** blob: no tracked content was
+renormalized.
+
+One honest caveat about this host: 69 tracked files in the *primary working
+directory* still physically hold CRLF, because they were checked out before the
+policy existed and have not been re-checked-out. Git reports them clean, since the
+`eol=lf` clean filter normalises CRLF on comparison and any future commit stores
+LF, and the index itself contains **0** CRLF blobs. The authoritative portability
+evidence is the fresh clone above, not the state of this working directory.
 
 Built with the repository's own flags: `-trimpath -ldflags '-s -w'` plus the
 linked identity, `CGO_ENABLED=0`, via `scripts/build-release.sh` - the single
@@ -863,6 +889,43 @@ embedded HTTP response example. A control that occurs naturally in the artifact
 proves nothing. The control was replaced with the previous candidate's commit
 `91e9c8c3b084e3a96ebc912c9132fa458e299c2c`, which is absent from all four, so
 the check now discriminates.
+
+### Why these artifacts were not rebuilt — proven, not assumed
+
+The hardening work that followed `69d7fa7` touched `.gitattributes`, a shell
+verifier, two test files and one file mode. None of those is a compiled input, so
+the candidate above stays as it is. That claim is checked rather than assumed.
+
+A clean rebuild of `linux/amd64` from `3aa2c66` (clean tree, `vcs.modified=false`,
+output written outside the repository) was compared against the shipped candidate
+byte for byte:
+
+| | `austro-api` | `austro-worker` |
+|---|---|---|
+| Size, candidate vs rebuild | 14,008,482 = 14,008,482 | 12,026,018 = 12,026,018 |
+| Differing bytes before normalising | 233 | 230 |
+| Differing bytes after rewriting commit, commit-time and module pseudo-version | 80 | 77 |
+| Where those remaining bytes are | the Go build action ID at offsets 3900–4200 | same |
+
+The build action ID is a hash *derived from* the fields that were normalised, so it
+is expected to move with them. After that rewrite the two binaries are identical
+outside a hash of their own provenance. **No code and no data differs.**
+
+Two findings from this comparison are worth recording because both would have made
+the comparison lie:
+
+- The first attempt built with the output directory *inside* the clone. Go then
+  stamped `build.vcs.modified=true`, and the worker showed 4434 differing bytes
+  rather than 230 — the dirty-tree flag shifted a build-info region and it looked
+  like a code change. Building outside the repository removed it. A build that writes
+  into its own source tree is not a clean build, whatever its exit code says.
+- A compiled Go binary contains many 40-character hex runs (crypto bignum constants),
+  so "the embedded commit" cannot be found by pattern. It is identified as the run
+  present in one binary and absent from the other — 74 runs in the API, 73 of them
+  shared, leaving exactly one unique to each build.
+
+The candidate is therefore still the artifact of `69d7fa7`, and this report does not
+claim otherwise.
 
 ### Previous candidate — preserved, superseded
 
@@ -1154,11 +1217,11 @@ The commit's own SHA cannot appear inside itself, so the authoritative identifie
 for a rebuilt candidate is the manifest, which records the commit SHA alongside
 the artifact digests.
 
-### B6 — RESOLVED: the three "python3 unavailable" blocks were a false negative
-**Severity: none (cleared in this pass)**
+### B6 — RESOLVED IN THE GATE: the three "python3 unavailable" blocks were a false negative, and the probe is now portable
+**Severity: none (cause fixed in the verifier, not worked around)**
 
-`scripts/verify-production-deployment.sh` probes for `python3` and reported three
-checks as BLOCKED:
+`scripts/verify-production-deployment.sh` probed for `python3` by name and reported
+three checks as BLOCKED:
 
 ```
 FAIL  YAML structural lint could not run (python3 unavailable) — BLOCKED
@@ -1168,34 +1231,98 @@ FAIL  operator-script variable audit could not run (python3 unavailable) — BLO
 
 This was **not** a missing dependency. This machine has Python 3.14.7 installed at
 `C:\Python314\python.exe`; it is simply not exposed under the name `python3` in Git
-Bash. The gate probes by name, so it concluded Python was absent.
+Bash. The gate probed by name, so it concluded Python was absent. A hard BLOCKED on
+a machine that has Python is a reporting bug in the gate, so it has been fixed in
+the gate rather than papered over with a shim on `PATH`.
 
-Running the script with a temporary `python3` shim on `PATH` (a file in the
-scratch directory, not a change to the repository or the system) executes all
-three. They **pass**:
+The verifier now resolves its interpreter once, trying `python3`, then `python`,
+then `py -3`, and requires a candidate that actually passes
+`sys.version_info[0] >= 3` before accepting it. Two details matter:
+
+- **The probe runs code.** A host where `python` is Python 2 fails the version check
+  and moves to the next candidate, instead of letting a Python 2 run a linter
+  written with f-strings and reporting the syntax error as a lint failure in
+  `docker-compose.production.yml`.
+- **The result is an array, not a string.** `py -3` carries an argument that must not
+  be glued onto the command name. Every invocation goes through `run_python`, which
+  appends its arguments after the candidate words and returns the interpreter's own
+  exit code untouched.
+
+**Static verification after the approved re-freeze: 189 passed, 0 failed.**
+
+**After the build identity change: 199 passed, 0 failed.** Ten checks were added
+for identity in the image build.
+
+**After this fix: 199 passed, 0 failed on this host with no shim on `PATH`.** The
+verifier reports which interpreter answered, so a future reader can tell a genuine
+lint failure from an environment problem at a glance:
+
+```
+INFO  Python 3 for the YAML and operator-script checks: python (3.14.7)
+```
+
+The three checks genuinely execute, and they **pass**:
 
 - `production compose parses as structurally well-formed YAML`
 - `CI workflow parses as structurally well-formed YAML`
 - `operator-script variable audit` — passes
 
-The verification script also runs a negative control, which passed:
-`compose linter rejects a deliberately broken file (negative control)`. That
-matters, because a linter that accepts anything would also "pass" the real file;
-the control proves the check discriminates. **The new execution-transport block in
-`docker-compose.production.yml` is therefore machine-validated, not merely
-read over.**
+The negative control still passes, which is what makes the two rows above mean
+something: `compose linter rejects a deliberately broken file (negative control)`.
+A linter that accepts anything would also "pass" the real file. **The
+execution-transport block in `docker-compose.production.yml` is machine-validated,
+not merely read over.**
 
-**Static verification after the approved re-freeze: 189 passed, 0 failed.**
+`tests/verifier_python_detection_test.go` pins all four conditions by shadowing every
+supported name inside a sandbox directory placed first on `PATH`, so the result does
+not depend on what the host has installed:
 
-**After the build identity change: 199 passed, 0 failed.** Ten checks were added
-for identity in the image build, and the three `python3` BLOCKED false negatives
-were cleared by running the verifier on a host that provides `python3`, which is
-the harness fix the note below describes.
+| Condition | Result |
+|---|---|
+| `python3` present | uses `python3`, 199/0, exit 0 |
+| `python3` fails the version probe | falls through to `python`, 199/0, exit 0 |
+| both fail | uses `py -3`, argument preserved, 199/0, exit 0 |
+| none usable | **exit 1**, 3 failures, 3 `BLOCKED` lines naming all three candidates, 0 lint passes |
 
-The naming sensitivity itself is worth fixing at some point so this does not
-mislead the next person: a `python3`-only probe reports a hard BLOCKED on a
-machine that has Python. That is a latent reporting bug in the gate, not in the
-code under test.
+The last row is the important one: absent Python is still a hard failure. The fix
+makes the gate portable, not permissive.
+
+### B7 — RESOLVED: a release script that CI executes directly was not executable
+**Severity: latent CI failure (mode bit, pre-existing)**
+
+`.github/workflows/native-arm64-deploy.yml` runs the release build as its single
+source of truth:
+
+```yaml
+run: |
+  set -euo pipefail
+  scripts/build-release.sh /tmp/native arm64
+```
+
+There is no `chmod` before it, but `scripts/build-release.sh` was tracked as mode
+`100644`. A file stored `100644` checks out non-executable, so on a Linux runner
+that step fails with `Permission denied` under `set -euo pipefail`.
+
+This was **born broken, not introduced by this pass**: the mode was `100644` in
+`af59c4e`, the same commit that added the workflow line, and it stayed `100644`
+through every commit since. It was invisible here because Git Bash on Windows does
+not enforce the stored mode bit — `./scripts/build-release.sh` ran fine on this
+host — so the defect could only surface on the runner that matters.
+
+Fixed to mode `100755`. The blob is unchanged (`426f8f9c…`); only the mode moved, so
+no artifact byte is affected.
+
+The other four non-executable tracked scripts were checked and deliberately left
+alone. `scripts/browser-e2e-mutation.sh` is also invoked directly, but
+`.github/workflows/browser-e2e.yml` runs `chmod +x` on it first, so it works;
+`scripts/phase2-verify.sh`, `scripts/publish.sh` and `scripts/verify_build.sh` have
+no direct invocation anywhere in the repository.
+
+`tests/shell_script_executable_bits_test.go` now enforces this: any tracked shell
+script executed directly — outside a comment, not through `bash name.sh`, and not
+chmod'd by the invoking file — must be tracked `100755`, or the test fails naming
+the file and line. The guard was confirmed to have teeth by reverting the mode and
+watching it report `native-arm64-deploy.yml:62`.
 
 ---
 
@@ -1224,10 +1351,10 @@ code under test.
 - No secret value read, displayed, copied into a file, or committed.
 - No `git reset`, `git checkout`, `git clean` or `stash`. The pre-existing dirty
   tree was preserved; only the reviewed paths were staged, by explicit path. The
-  30 line-ending-only entries in `tests/` were left untouched: they differ from
-  the committed blobs only in CRLF, and "fixing" them would have put unrelated
-  line-ending churn into this commit. The release builds therefore ran in
-  independent clones rather than in the working directory, which sidesteps the
+  30 line-ending-only entries in `tests/` that an earlier pass left untouched have
+  since been resolved by `.gitattributes` plus a path-by-path re-add that changed
+  no blob; they are no longer carried as a known-dirty exception. The release builds
+  ran in independent clones rather than in the working directory, which sidesteps the
   question entirely and is the stronger option anyway.
 - No edit to the banned-term list in the frozen-gate test, and no tightening of
   the `.githubx` prefix behaviour, since either would need a further approved
@@ -1249,8 +1376,8 @@ code under test.
 
 ## 9. To reach `RELEASE CANDIDATE READY — VERIFIED SCOPE`
 
-B4, B5 and the build identity gap are closed. The remaining work is external,
-and none of it can be settled from this environment:
+B4, B5, B6 and B7 and the build identity gap are closed. The remaining work is
+external, and none of it can be settled from this environment:
 
 1. **B1** — run the live provider test (§4) with a real credential, obtained
    securely and with approval for a possibly billable request, and add the
@@ -1297,15 +1424,19 @@ been exercised, and it has not.
 |---|---|
 | Build source commit | `69d7fa726215c4099d824747686a400aafcf16ef` — tree `e74b2f1f2c06bd019b88212ec72f3860f26eef83`, 401 source files |
 | Commit carrying this report | necessarily later, and deliberately not the build source; a file cannot contain the SHA of the commit that contains it |
-| Working tree at this pass | `main` @ `69d7fa7`, the commit this pass produced; the Redis TLS and loopback work is in it and therefore in the artifacts above. After it, the tree carries only line-ending-only entries that `git status` reports as modified and `git diff` does not, plus the untracked `specifications/Final_Technical_Specification.md` |
+| Working tree at this pass | `main` @ `69d7fa7`, the commit the Redis TLS and loopback work is in, and therefore the commit the artifacts above embed. The hardening commits that follow it (`.gitattributes`, the portable interpreter probe, two test files, the `build-release.sh` mode bit) change **no compiled input**, which §5 proves; so the artifacts remain those of `69d7fa7` and must not be described as containing the later commits |
+| Hardening commits after the build source | `.gitattributes` in `3aa2c66` (tree `46851f0e…`), plus the interpreter-probe/test/mode commit recorded below. Non-code and non-build-input only |
+| Line-ending policy | `.gitattributes` = `* text=auto eol=lf`. Index contains 0 CRLF blobs; a default-settings fresh clone has 0 CR bytes in any tracked file and 0 `git status` entries before and after a build |
 | Artifacts | 4 (linux/amd64, linux/arm64 × api, worker), byte-reproducible across two independent builds, each carrying `version=1.0` and its own source commit |
 | Build identity | embedded in every released binary, verified; see §5 |
 | Per-build provenance | `release-manifest.json` (digests, toolchain, build time), written outside the repository |
 | Prior release-candidate commit | `91e9c8c3b084e3a96ebc912c9132fa458e299c2c` — the 56 reviewed paths |
 | Superseded candidate | `af59c4e`, preserved unmodified at `austro-release-candidate\`; verified as unchanged by re-hashing all six of its files after this pass |
 | Follow-ups | documentation-only commits, which change no artifact byte; plus the build identity commit `af59c4e` and the Redis TLS commit `69d7fa7`, which do |
-| Frozen architecture gate | re-frozen to `9119aa71…` under approval; static verifier 199/0 |
-| Staged-tree verification | build 0, vet 0, buildinfo tests 0, identity contract suite 43 pass / 0 fail / 2 skip |
+| Frozen architecture gate | re-frozen to `9119aa71…` under approval, byte-identical throughout this pass; static verifier 199/0 with no shim |
+| Staged-tree verification | build 0, vet 0, buildinfo tests 0, identity contract suite 43 pass / 0 fail / 2 skip (22 of those are top-level functions; the rest are their subtests) |
+| Full `./tests` suite after this pass | 118 failing functions, 21 failing subtests, 139 `--- FAIL` markers, 3 skips — the **identical set of test names** as before this pass, so nothing regressed |
+| Regression guards added | `tests/verifier_python_detection_test.go` (5 tests) and `tests/shell_script_executable_bits_test.go` (1 test), all passing |
 | Pushed | **No** |
 | Deployed | **No** |
 | Open blockers | B1 live AI provider, B2 AlwaysData account unvalidated, B3 Docker/Compose unexecuted |
@@ -1332,6 +1463,11 @@ restoring it.
 | An unreachable service is named, never reported as an empty token | `sharedTokenFailure`; every failure in `austro-os/tests` now names its endpoint |
 | Unavailable infrastructure fails by default, skips only on explicit opt-in | `tests/live_policy_test.go`; `AUSTRO_TEST_MODE=offline` is the only opt-in |
 | A near-miss value cannot enable offline mode | `off`, `0`, `true`, `yes`, `skip` all keep the strict default |
+| The verifier's interpreter probe is portable and still fails closed | `tests/verifier_python_detection_test.go` — all three names accepted, a non-Python-3 candidate passed over, absence of Python still a hard BLOCKED |
+| The verifier cannot regress to a hard-coded interpreter name | `TestVerifierSourceInvokesNoInterpreterByHardCodedName` matches `python3` in command position only |
+| A shell script CI runs directly is executable in the repository | `tests/shell_script_executable_bits_test.go`, which names the invoking file and line when it is not |
+| Line endings are pinned by the repository, not by a clone flag | `.gitattributes` = `* text=auto eol=lf`; a default-settings fresh clone has 0 CR bytes and 0 status entries |
+| The shipped candidate still matches its stated source | §5: a clean rebuild of `3aa2c66` is identical to the `69d7fa7` artifacts outside their own provenance fields |
 | A release gate cannot pass by skipping | `AUSTRO_REQUIRE_LIVE_TESTS=1` refuses offline mode and requires a recorded live contact |
 | No infrastructure skip outside the policy | `TestNoInfrastructureSkipsOutsideThePolicy` scans `tests/` |
 | `rediss://` produces a verified TLS client, `redis://` and `host:port` do not | `infrastructure/redis/tls_test.go`; a generated CA is trusted, a foreign CA and a wrong hostname are both refused |
