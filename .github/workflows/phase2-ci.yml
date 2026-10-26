@@ -216,19 +216,44 @@ jobs:
                   AND tablename IN ('founders','ceos','workspaces','departments','teams','ai_employees','audit_events','tasks','knowledge_documents','memory_embeddings','publications','pipelines','users')) <> 13 THEN
               RAISE EXCEPTION 'database schema incomplete (expected 13 application tables)';
             END IF;
-            IF (SELECT count(*) FROM pg_class c
-                JOIN pg_namespace n ON n.oid = c.relnamespace
-                WHERE n.nspname = 'public'
-                  AND c.relname IN ('workspaces','departments','teams','ai_employees','ceos','tasks','knowledge_documents','memory_embeddings','publications','pipelines','users','audit_events')
-                  AND c.relrowsecurity) <> 12 THEN
-              RAISE EXCEPTION 'row level security not enabled on all 12 protected tables';
+            -- Row level security enabled coverage: every table rlsTables()
+            -- protects, including the six execution tables. Naming the missing
+            -- tables makes a red job actionable.
+            SELECT string_agg(v.tbl, ', ' ORDER BY v.tbl) INTO missing
+              FROM (VALUES
+                ('workspaces'), ('departments'), ('teams'), ('ai_employees'),
+                ('ceos'), ('tasks'), ('knowledge_documents'),
+                ('memory_embeddings'), ('publications'), ('pipelines'),
+                ('users'), ('audit_events'), ('ai_executions'),
+                ('ai_execution_retries'), ('retry_dispatch_log'),
+                ('ai_execution_dlq'), ('ai_tool_calls'), ('execution_contexts')
+              ) AS v(tbl)
+             WHERE NOT EXISTS (
+               SELECT 1 FROM pg_class c
+                WHERE c.oid = to_regclass('public.' || v.tbl)
+                  AND c.relrowsecurity);
+            IF missing IS NOT NULL THEN
+              RAISE EXCEPTION 'row level security not enabled on: %', missing;
             END IF;
-            IF (SELECT count(*) FROM pg_class c
-                JOIN pg_namespace n ON n.oid = c.relnamespace
-                WHERE n.nspname = 'public'
-                  AND c.relname IN ('workspaces','departments','teams','ai_employees','ceos','tasks','knowledge_documents','memory_embeddings','publications','pipelines','users','audit_events')
-                  AND c.relforcerowsecurity) <> 12 THEN
-              RAISE EXCEPTION 'row level security not FORCED on all 12 protected tables';
+            -- Row level security forced coverage: the same rlsTables() set.
+            -- ENABLE alone does not bind the table owner, so a table that is
+            -- merely enabled still reads across tenants for the owner and for
+            -- any role with BYPASSRLS. forceRLS() applies FORCE to this list.
+            SELECT string_agg(v.tbl, ', ' ORDER BY v.tbl) INTO missing
+              FROM (VALUES
+                ('workspaces'), ('departments'), ('teams'), ('ai_employees'),
+                ('ceos'), ('tasks'), ('knowledge_documents'),
+                ('memory_embeddings'), ('publications'), ('pipelines'),
+                ('users'), ('audit_events'), ('ai_executions'),
+                ('ai_execution_retries'), ('retry_dispatch_log'),
+                ('ai_execution_dlq'), ('ai_tool_calls'), ('execution_contexts')
+              ) AS v(tbl)
+             WHERE NOT EXISTS (
+               SELECT 1 FROM pg_class c
+                WHERE c.oid = to_regclass('public.' || v.tbl)
+                  AND c.relforcerowsecurity);
+            IF missing IS NOT NULL THEN
+              RAISE EXCEPTION 'row level security not FORCED on: %', missing;
             END IF;
             -- workspace_isolation_policy coverage: the exact table list that
             -- infrastructure/database setupRLSPolicies provisions. Naming the
