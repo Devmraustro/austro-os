@@ -150,7 +150,10 @@ SQL
 	fi
 fi
 
-redis_ping="$(REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli -h services-austro.alwaysdata.net -p 8300 --no-auth-warning ping 2>/dev/null | tr -d '[:space:]' || true)"
+[[ -n "${AUSTRO_REDIS_ADDR:-}" ]] || die "AUSTRO_REDIS_ADDR is not set (needed to locate Redis)"
+redis_host="${AUSTRO_REDIS_ADDR%:*}"
+redis_port="${AUSTRO_REDIS_ADDR##*:}"
+redis_ping="$(REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli -h "$redis_host" -p "$redis_port" --no-auth-warning ping 2>/dev/null | tr -d '[:space:]' || true)"
 if [[ "$redis_ping" == "PONG" ]]; then
 	ok "Redis answered an authenticated PING"
 else
@@ -159,10 +162,12 @@ fi
 
 if command -v python3 >/dev/null 2>&1; then
 	python3 -c "
-import urllib.request, json, sys, base64, os
+import urllib.request, urllib.parse, json, sys, base64, os
 try:
-    auth = base64.b64encode(b'austro:' + os.environ.get('AUSTRO_RABBITMQ_PASSWORD', '').encode()).decode()
-    req = urllib.request.Request('https://rabbitmq-austro.alwaysdata.net:15672/api/queues/austro_dz', headers={'Authorization': 'Basic ' + auth})
+    broker = urllib.parse.urlparse(os.environ.get('AUSTRO_RABBITMQ_URL', ''))
+    vhost = urllib.parse.quote(broker.path.lstrip('/') or '/', safe='')
+    auth = base64.b64encode((urllib.parse.unquote(broker.username or '') + ':' + urllib.parse.unquote(broker.password or '')).encode()).decode()
+    req = urllib.request.Request('https://' + (broker.hostname or '') + ':15672/api/queues/' + vhost, headers={'Authorization': 'Basic ' + auth})
     with urllib.request.urlopen(req, timeout=10) as resp:
         data = json.loads(resp.read().decode())
     queues = [q['name'] for q in data]

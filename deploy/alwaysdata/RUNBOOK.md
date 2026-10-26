@@ -207,7 +207,7 @@ SELECT status, count(*) FROM ai_executions GROUP BY status ORDER BY status;
 | Redis | Self-hosted (systemd), used by all processes | **Unresolved — see below.** Used by the API only |
 | TLS | Self-hosted (fail-closed) | Terminated by the User Program site |
 | Process Manager | systemd | AlwaysData Service Manager |
-| User | austro (OS user) | austro (AlwaysData SSH user) |
+| User | austro (OS user) | [account] (AlwaysData SSH user) |
 | Release Dir | /opt/austro/releases | ~/austro/releases |
 | Symlink | /opt/austro/current | ~/austro/current |
 | API listener | 127.0.0.1:8080 (loopback only) | the site's `$IP:$PORT` |
@@ -353,14 +353,14 @@ push to main and on every PR. The `vet-build-unit` job builds both binaries
 
 2. **Upload binaries to AlwaysData** via SFTP/SCP:
    ```bash
-   sftp austro@ssh-austro.alwaysdata.net
+   sftp [account]@ssh-[account].alwaysdata.net
    put austro-api
    put austro-worker
    ```
 
 3. **Install the release** on AlwaysData:
    ```bash
-   ssh austro@ssh-austro.alwaysdata.net
+   ssh [account]@ssh-[account].alwaysdata.net
    ~/austro/deploy/alwaysdata/install-release.sh \
      ~/austro/releases/<sha>/austro-api \
      ~/austro/releases/<sha>/austro-worker \
@@ -399,12 +399,12 @@ Key settings for AlwaysData:
 | `AUSTRO_EXECUTION_DISPATCH_MODE` | `off` on the site, `service` on the dispatcher | Which process sweeps. `off` on the site is valid in production only with a declared companion; paired with the wrong role it is a startup failure. |
 | `AUSTRO_SERVER_ADDR` | the site's `$IP:$PORT` | Site only. Ignored by the dispatcher and worker, which open no listener. |
 | `AUSTRO_POSTGRES_PREPROVISIONED_ROLES` | `true` | **Required** for AlwaysData |
-| `AUSTRO_POSTGRES_DSN` | `postgres://austro:...@postgresql-austro.alwaysdata.net:5432/austro_os?sslmode=require` | Owner DSN |
-| `AUSTRO_POSTGRES_RUNTIME_DSN` | `postgres://austro_app:...@postgresql-austro.alwaysdata.net:5432/austro_os?sslmode=require` | Runtime DSN |
-| `AUSTRO_POSTGRES_ADMIN_DSN` | `postgres://austro_app_admin:...@postgresql-austro.alwaysdata.net:5432/austro_os?sslmode=require` | Admin DSN |
+| `AUSTRO_POSTGRES_DSN` | `postgres://austro:...@postgresql-[account].alwaysdata.net:5432/austro_os?sslmode=require` | Owner DSN |
+| `AUSTRO_POSTGRES_RUNTIME_DSN` | `postgres://austro_app:...@postgresql-[account].alwaysdata.net:5432/austro_os?sslmode=require` | Runtime DSN |
+| `AUSTRO_POSTGRES_ADMIN_DSN` | `postgres://austro_app_admin:...@postgresql-[account].alwaysdata.net:5432/austro_os?sslmode=require` | Admin DSN |
 | `AUSTRO_REDIS_ADDR` | managed Redis, or the Service address. Use `rediss://host:port` when the service requires TLS. **API site only** | **Choice still open — see "Unresolved: Redis"; TLS is no longer a blocker** |
 | `AUSTRO_REDIS_CA_FILE` | PEM bundle, only if the Redis certificate comes from a private CA | **API site only** |
-| `AUSTRO_RABBITMQ_URL` | `amqp://austro:...@rabbitmq-austro.alwaysdata.net:5672/austro_dz` | vhost `austro_dz` |
+| `AUSTRO_RABBITMQ_URL` | `amqp://austro:...@rabbitmq-[account].alwaysdata.net:5672/[vhost]` | vhost `[vhost]` |
 | `AUSTRO_PROCESS_ROLE` | `api` / `dispatcher` / `worker` | **Per unit.** Both binaries refuse a role they cannot serve |
 | `AUSTRO_EXECUTION_TRANSPORT_BACKEND` | `rabbitmq` | `stub` is refused in production unless the exemption is set |
 | `AUSTRO_EXECUTION_DISPATCH_MODE` | `off` (site), `service` (dispatcher), `off` (worker) | **Per unit.** Must agree with the role or startup is refused |
@@ -568,7 +568,7 @@ The `install-release.sh` script keeps the previous release for instant rollback.
 | Site refuses to start with `AUSTRO_EXPECT_COMPANION_PROCESSES` | A production site on the broker transport that does not sweep has not named its dispatcher. Add `dispatcher` to the list |
 | DB connection failed | Verify PostgreSQL TLS, credentials, and that the `austro_app` role exists |
 | Redis connection failed | Check `AUSTRO_REDIS_ADDR`; if it is a Service, check that the account is Public Cloud and that the client can reach it over IPv6. Note this only applies to the **site** — the dispatcher and worker never dial Redis and do not have this setting |
-| RabbitMQ connection failed | Verify vhost `austro_dz`, user `austro`, port 5672, and that this host is allowed to reach the broker |
+| RabbitMQ connection failed | Verify vhost `[vhost]`, user `[user]`, port 5672, and that this host is allowed to reach the broker |
 | Service disabled in the panel | Repeated failures. Find the crash in `~/admin/logs/services/` and fix the cause before re-enabling — restarting into the same condition disables it again. The heartbeat for that role will be absent, which is what the site's 503 is reporting |
 | Service exits right after start | Almost always the env file: the dispatcher and worker are strict about their configuration and exit rather than run degraded. Read the message — it names the setting |
 | Worker not processing | Check worker logs, then both queues: `austro.events` for pipeline/publication events and `austro.executions` (the `AUSTRO_EXECUTION_QUEUE` value) for AI execution dispatches. A worker that consumes only the first while the second backs up means the two processes disagree about the queue name — check `AUSTRO_EXECUTION_QUEUE` is set identically for the dispatcher and the worker. |
@@ -580,7 +580,7 @@ The `install-release.sh` script keeps the previous release for instant rollback.
 
 - All secrets in `~/austro/austro.env` (chmod 600)
 - PostgreSQL uses TLS (`sslmode=require`)
-- RabbitMQ uses a dedicated vhost `austro_dz` and user `austro`
+- RabbitMQ uses a dedicated vhost `[vhost]` and user `[user]`
 - The API is a User Program site, so TLS is terminated by the platform and the
   application never serves plaintext HTTP to a public port
 - Neither the dispatcher nor the worker opens a listening port, so there is
@@ -619,22 +619,22 @@ ss -ltnp
 # Process liveness, straight from the table rather than through the site.
 # 'age' beyond AUSTRO_HEARTBEAT_STALE_AFTER means the row is not evidence of
 # anything, and the site's readiness check is already reporting 503.
-psql "postgres://austro_app:...@postgresql-austro.alwaysdata.net:5432/austro_os?sslmode=require" \
+psql "postgres://austro_app:...@postgresql-[account].alwaysdata.net:5432/austro_os?sslmode=require" \
   -c "SELECT role, instance_id, now() - last_seen_at AS age FROM process_heartbeats ORDER BY role"
 
 # Execution progress. The heartbeat cannot detect a dispatcher that is running
 # but sweeping nothing, and this can.
-psql "postgres://austro_app:...@postgresql-austro.alwaysdata.net:5432/austro_os?sslmode=require" \
+psql "postgres://austro_app:...@postgresql-[account].alwaysdata.net:5432/austro_os?sslmode=require" \
   -c "SELECT status, count(*) FROM ai_executions GROUP BY status ORDER BY status"
 
 # Test database connectivity
-psql "postgres://austro_app:...@postgresql-austro.alwaysdata.net:5432/austro_os?sslmode=require" -c "SELECT 1"
+psql "postgres://austro_app:...@postgresql-[account].alwaysdata.net:5432/austro_os?sslmode=require" -c "SELECT 1"
 
 # Test Redis (API site only — the other two units have no Redis setting)
 redis-cli -h <host> -p <port> -a <password> PING
 
 # Test RabbitMQ reachability
-nc -vz rabbitmq-austro.alwaysdata.net 5672
+nc -vz rabbitmq-[account].alwaysdata.net 5672
 
 # Prove the shutdown path is graceful rather than a kill: SIGHUP is what the
 # platform sends. Watch for a shutdown log line, not just a PID change.
