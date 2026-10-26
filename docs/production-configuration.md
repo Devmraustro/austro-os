@@ -54,6 +54,48 @@ reports the offending setting **name** — never a value.
 
 ---
 
+## Build identity
+
+The production compose file will not parse without these two values. An image
+that cannot name its source commit looks correct and cannot be traced later, so
+a missing identity has to fail the deploy rather than produce one. Neither value
+is a secret.
+
+| Variable | Class | Contract |
+|---|---|---|
+| `AUSTRO_BUILD_COMMIT` | **REQUIRED** | Full 40-character lowercase git SHA of the source being built. Never a branch name, a short SHA or the literal `HEAD`. |
+| `AUSTRO_BUILD_VERSION` | **REQUIRED** | Release version stamped into the image label and into both binaries. |
+
+`docker-compose.production.yml` declares both with compose's `:?` form, so an
+unset or empty value aborts the parse with an error that names the variable,
+instead of building an image that reports `commit=unknown`. The Dockerfile
+independently refuses an empty version, and refuses a commit that is not 40
+lowercase hex characters, so a wrong value fails twice rather than once.
+
+`scripts/deploy.sh` resolves them when the environment file leaves them unset:
+
+- the commit comes from `git rev-parse HEAD` of the tree being deployed, and the
+  deploy stops if that tree has uncommitted tracked changes — `HEAD` would not
+  describe the source being built;
+- the version comes from the Dockerfile's `ARG VERSION` default, which is the
+  single place the release version is declared.
+
+Set both explicitly when deploying something that is not a git checkout, such as
+a release tarball, using the identity recorded for that release. CI takes the
+commit from the workflow run (`github.sha`) and the version from the same
+Dockerfile default, so a compose-resolved release and an image-built release
+cannot disagree.
+
+A deployed process reports what it was stamped with:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.production.yml \
+  exec -T api /app/main --version
+# austro-os api version=1.0 commit=<40-character sha>
+```
+
+---
+
 ## Database
 
 The application runs **three principals**; this is the security model, not an

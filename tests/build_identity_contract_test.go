@@ -364,6 +364,28 @@ func TestProductionComposePassesBuildIdentityToBothServices(t *testing.T) {
 		"both the api and the worker service build the image and both must pass the identity args")
 }
 
+// Every CI environment file that docker compose reads must carry the build
+// identity. The compose file makes both values mandatory, so a generator that
+// omits them fails the job at the first `compose config` with nothing built —
+// which is how a required variable with no supplier reached main once. This pins
+// the supplier and the consumer together.
+func TestEveryCIComposeEnvironmentSuppliesBuildIdentity(t *testing.T) {
+	root := repoRootForIdentity(t)
+	wf := readFile(t, root, ".github/workflows/production-deployment.yml")
+
+	generators := strings.Count(wf, "Generate a CI production environment file")
+	require.Positive(t, generators, "expected at least one CI environment generator in the workflow")
+
+	require.Equal(t, generators, strings.Count(wf, `echo "AUSTRO_BUILD_COMMIT=`),
+		"every generated CI environment file must write AUSTRO_BUILD_COMMIT; the production compose aborts the parse without it")
+	require.Equal(t, generators, strings.Count(wf, `echo "AUSTRO_BUILD_VERSION=`),
+		"every generated CI environment file must write AUSTRO_BUILD_VERSION; the production compose aborts the parse without it")
+
+	// The value must be the commit the run checked out, not a name that moves.
+	require.Contains(t, wf, "AUSTRO_BUILD_COMMIT: ${{ github.sha }}",
+		"CI must stamp the commit this run checked out, so the built image and the resolved compose release cannot disagree")
+}
+
 // The development compose intentionally keeps the defaults so a contributor can
 // run it with no setup. This pins that difference so the strictness is not
 // accidentally applied (or removed) without a decision.

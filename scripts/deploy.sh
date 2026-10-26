@@ -152,6 +152,42 @@ esac
 log "configuration validated"
 
 # ---------------------------------------------------------------------------
+# 2b. Build identity
+# ---------------------------------------------------------------------------
+# The production compose file makes both values mandatory (`:?`), because an
+# image that cannot name its source commit looks correct and cannot be traced
+# later. A value set explicitly in the environment file wins, so a release
+# deployed from a tarball uses the identity recorded for it. Otherwise it is
+# derived from the tree being deployed — never from a branch name, a short SHA,
+# or the literal HEAD.
+if [[ -z "${AUSTRO_BUILD_COMMIT:-}" ]]; then
+    command -v git >/dev/null 2>&1 \
+        || die "AUSTRO_BUILD_COMMIT is unset and git is not available, so the source commit cannot be resolved; set it to the full 40-character SHA recorded for this release"
+    git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1 \
+        || die "AUSTRO_BUILD_COMMIT is unset and $REPO_ROOT is not a git checkout, so the source commit cannot be resolved; set it to the full 40-character SHA recorded for this release"
+    if [[ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no)" ]]; then
+        die "AUSTRO_BUILD_COMMIT is unset and the tree has uncommitted changes, so HEAD would not describe the source being deployed; commit them, or set AUSTRO_BUILD_COMMIT explicitly to the revision this source belongs to"
+    fi
+    AUSTRO_BUILD_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+    export AUSTRO_BUILD_COMMIT
+    log "build commit resolved from HEAD: $AUSTRO_BUILD_COMMIT"
+fi
+
+# The Dockerfile accepts only the full 40-character form, so reject anything
+# else here, before a build or a container starts.
+[[ "$AUSTRO_BUILD_COMMIT" =~ ^[0-9a-f]{40}$ ]] \
+    || die "AUSTRO_BUILD_COMMIT must be the full 40-character lowercase git SHA of the deployed source"
+
+if [[ -z "${AUSTRO_BUILD_VERSION:-}" ]]; then
+    # The version has one source: the image label default in the Dockerfile.
+    AUSTRO_BUILD_VERSION="$(sed -n 's/^ARG VERSION="\([^"]*\)".*$/\1/p' "$REPO_ROOT/Dockerfile" | head -n 1)"
+    [[ -n "$AUSTRO_BUILD_VERSION" ]] \
+        || die "AUSTRO_BUILD_VERSION is unset and the Dockerfile declares no ARG VERSION default"
+    export AUSTRO_BUILD_VERSION
+    log "build version resolved from the Dockerfile label default: $AUSTRO_BUILD_VERSION"
+fi
+
+# ---------------------------------------------------------------------------
 # 3. Compose validation
 # ---------------------------------------------------------------------------
 # Resolves the whole file (interpolation, anchors, schema) before anything is

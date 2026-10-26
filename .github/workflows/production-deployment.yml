@@ -31,6 +31,20 @@ permissions:
 env:
   COMPOSE_FILE: docker-compose.production.yml
   ENV_FILE: .env.production
+  # Build identity for every compose path in this workflow (resolve, smoke and
+  # rehearsal). The production compose file makes both values mandatory with
+  # `:?`, so a job whose environment file omits them aborts at the first
+  # `docker compose ... config` before anything is created.
+  #
+  # Defined once here and written into each generated environment file, so the
+  # three jobs and the image build cannot disagree.
+  #
+  # AUSTRO_BUILD_COMMIT is the exact commit this run checked out — never a
+  # branch name, a short SHA or the literal HEAD. AUSTRO_BUILD_VERSION mirrors
+  # the image label default in the Dockerfile (ARG VERSION="1.0"), which is the
+  # single place the release version is declared.
+  AUSTRO_BUILD_COMMIT: ${{ github.sha }}
+  AUSTRO_BUILD_VERSION: "1.0"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -223,6 +237,8 @@ jobs:
         run: |
           set -euo pipefail
           {
+            echo "AUSTRO_BUILD_COMMIT=${AUSTRO_BUILD_COMMIT}"
+            echo "AUSTRO_BUILD_VERSION=${AUSTRO_BUILD_VERSION}"
             echo "AUSTRO_POSTGRES_PASSWORD=$(openssl rand -hex 24)"
             echo "AUSTRO_POSTGRES_RUNTIME_PASSWORD=$(openssl rand -hex 24)"
             echo "AUSTRO_REDIS_PASSWORD=$(openssl rand -hex 24)"
@@ -342,6 +358,8 @@ jobs:
         run: |
           set -euo pipefail
           {
+            echo "AUSTRO_BUILD_COMMIT=${AUSTRO_BUILD_COMMIT}"
+            echo "AUSTRO_BUILD_VERSION=${AUSTRO_BUILD_VERSION}"
             echo "AUSTRO_POSTGRES_PASSWORD=$(openssl rand -hex 24)"
             echo "AUSTRO_POSTGRES_RUNTIME_PASSWORD=$(openssl rand -hex 24)"
             echo "AUSTRO_REDIS_PASSWORD=$(openssl rand -hex 24)"
@@ -460,6 +478,8 @@ jobs:
         run: |
           set -euo pipefail
           {
+            echo "AUSTRO_BUILD_COMMIT=${AUSTRO_BUILD_COMMIT}"
+            echo "AUSTRO_BUILD_VERSION=${AUSTRO_BUILD_VERSION}"
             echo "AUSTRO_POSTGRES_PASSWORD=$(openssl rand -hex 24)"
             echo "AUSTRO_POSTGRES_RUNTIME_PASSWORD=$(openssl rand -hex 24)"
             echo "AUSTRO_REDIS_PASSWORD=$(openssl rand -hex 24)"
