@@ -208,6 +208,8 @@ jobs:
         run: |
           psql "postgres://austro:austro@127.0.0.1:5432/austro?sslmode=disable" -v ON_ERROR_STOP=1 -P pager=off <<'SQL'
           DO $$
+          DECLARE
+            missing text;
           BEGIN
             IF (SELECT count(*) FROM pg_tables
                 WHERE schemaname = 'public'
@@ -228,8 +230,26 @@ jobs:
                   AND c.relforcerowsecurity) <> 12 THEN
               RAISE EXCEPTION 'row level security not FORCED on all 12 protected tables';
             END IF;
-            IF (SELECT count(*) FROM pg_policy WHERE polname = 'workspace_isolation_policy') <> 10 THEN
-              RAISE EXCEPTION 'workspace_isolation_policy not fully provisioned (expected 10)';
+            -- workspace_isolation_policy coverage: the exact table list that
+            -- infrastructure/database setupRLSPolicies provisions. Naming the
+            -- missing tables makes a red job actionable; the bare count this
+            -- replaces drifted to 10 while the schema grew to 16, and failed a
+            -- database that was correct.
+            SELECT string_agg(v.tbl, ', ' ORDER BY v.tbl) INTO missing
+              FROM (VALUES
+                ('workspaces'), ('ceos'), ('departments'), ('teams'),
+                ('ai_employees'), ('tasks'), ('knowledge_documents'),
+                ('memory_embeddings'), ('publications'), ('pipelines'),
+                ('ai_executions'), ('ai_execution_retries'),
+                ('retry_dispatch_log'), ('ai_execution_dlq'),
+                ('ai_tool_calls'), ('execution_contexts')
+              ) AS v(tbl)
+             WHERE NOT EXISTS (
+               SELECT 1 FROM pg_policy
+                WHERE polname = 'workspace_isolation_policy'
+                  AND polrelid = to_regclass('public.' || v.tbl));
+            IF missing IS NOT NULL THEN
+              RAISE EXCEPTION 'workspace_isolation_policy missing on: %', missing;
             END IF;
           END;
           $$;
