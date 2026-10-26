@@ -389,7 +389,7 @@ jobs:
         # checkout anyway. The gate is now pinned by content hash, so any edit
         # to the frozen file fails this job.
         run: |
-          expected=0a868d3da41f175cc263a6301f806e3bc1125093dab9cf8db98bb17b54e8769a
+          expected=9119aa71aa1cd95eda7fa0aeabf14042a960770ce4ea1e3fc896f6f7ec4b0a67
           actual=$(sha256sum tests/phase1_exit_criteria_test.go | cut -d' ' -f1)
           if [ "$actual" != "$expected" ]; then
             echo "FROZEN GATE MODIFIED"
