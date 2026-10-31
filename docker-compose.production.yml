@@ -341,6 +341,16 @@ services:
       - .env.production
     environment:
       <<: *austro-app-environment
+      # This container runs ./cmd/worker. The shared default role is "api", and
+      # the worker entrypoint refuses a role it cannot honour rather than
+      # silently overriding it. A consumer never sweeps, so the mode is "off" —
+      # exactly the role/mode pair the validator accepts.
+      AUSTRO_PROCESS_ROLE: "worker"
+      AUSTRO_EXECUTION_DISPATCH_MODE: "off"
+      # .env.production carries the dispatcher's workspace list for the API.
+      # This process does not dispatch, and production rejects a workspace list
+      # on a non-dispatching unit, so it is cleared here. The API keeps it.
+      AUSTRO_EXECUTION_WORKSPACE_IDS: ""
     # No `expose:` and no sockets: the worker consumes from RabbitMQ and writes
     # to PostgreSQL.
     volumes:

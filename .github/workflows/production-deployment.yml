@@ -249,6 +249,16 @@ jobs:
             echo "AUSTRO_FOUNDER_PASSWORD=$(openssl rand -hex 16)"
             echo "AUSTRO_AI_BACKEND=stub"
             echo "AUSTRO_PUBLISH_BACKEND=stub"
+            # This run is deliberately offline and uses the deterministic stub
+            # adapters, which production refuses unless the documented opt-in is
+            # set. It is scoped to this generated CI file only; a real
+            # deployment leaves the compose default (false).
+            echo "AUSTRO_ALLOW_STUB_BACKENDS=true"
+            # The API dispatches in this topology, and production requires a
+            # workspace to sweep when the broker transport is selected. A fixed
+            # CI-only UUID keeps the generated file deterministic; the sweep
+            # simply finds no work.
+            echo "AUSTRO_EXECUTION_WORKSPACE_IDS=00000000-0000-4000-8000-000000000001"
             echo "AUSTRO_PUBLIC_HOSTNAME=ci.example.invalid"
             echo "AUSTRO_ACME_EMAIL=ci@example.invalid"
           } > "$ENV_FILE"
@@ -370,6 +380,16 @@ jobs:
             echo "AUSTRO_FOUNDER_PASSWORD=$(openssl rand -hex 16)"
             echo "AUSTRO_AI_BACKEND=stub"
             echo "AUSTRO_PUBLISH_BACKEND=stub"
+            # This run is deliberately offline and uses the deterministic stub
+            # adapters, which production refuses unless the documented opt-in is
+            # set. It is scoped to this generated CI file only; a real
+            # deployment leaves the compose default (false).
+            echo "AUSTRO_ALLOW_STUB_BACKENDS=true"
+            # The API dispatches in this topology, and production requires a
+            # workspace to sweep when the broker transport is selected. A fixed
+            # CI-only UUID keeps the generated file deterministic; the sweep
+            # simply finds no work.
+            echo "AUSTRO_EXECUTION_WORKSPACE_IDS=00000000-0000-4000-8000-000000000001"
           } > "$ENV_FILE"
 
       - name: Validate the compose configuration
@@ -490,6 +510,16 @@ jobs:
             echo "AUSTRO_FOUNDER_PASSWORD=$(openssl rand -hex 16)"
             echo "AUSTRO_AI_BACKEND=stub"
             echo "AUSTRO_PUBLISH_BACKEND=stub"
+            # This run is deliberately offline and uses the deterministic stub
+            # adapters, which production refuses unless the documented opt-in is
+            # set. It is scoped to this generated CI file only; a real
+            # deployment leaves the compose default (false).
+            echo "AUSTRO_ALLOW_STUB_BACKENDS=true"
+            # The API dispatches in this topology, and production requires a
+            # workspace to sweep when the broker transport is selected. A fixed
+            # CI-only UUID keeps the generated file deterministic; the sweep
+            # simply finds no work.
+            echo "AUSTRO_EXECUTION_WORKSPACE_IDS=00000000-0000-4000-8000-000000000001"
             echo "AUSTRO_RABBITMQ_QUEUE=austro.events"
             echo "AUSTRO_PUBLIC_HOSTNAME=ci-rehearsal.invalid"
             echo "AUSTRO_TLS_CERT_DIR=./deploy/tls"
