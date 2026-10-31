@@ -296,6 +296,10 @@ jobs:
           # The assertion stays intact: this is the workflow telling the truth
           # about the process it starts, not the binary relaxing its check.
           AUSTRO_PROCESS_ROLE: worker
+          # A consumer never sweeps, and validation requires the role/mode pair
+          # to agree. The dispatch mode defaults to "api", which a worker is
+          # rejected for, so it is declared "off" here as well.
+          AUSTRO_EXECUTION_DISPATCH_MODE: "off"
           AUSTRO_ALLOW_LOOPBACK: "1"
           AUSTRO_SERVER_ADDR: ":8080"
           AUSTRO_POSTGRES_DSN: postgres://austro:austro@127.0.0.1:5432/austro?sslmode=disable
