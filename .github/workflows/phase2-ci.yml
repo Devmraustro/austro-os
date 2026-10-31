@@ -334,6 +334,13 @@ jobs:
       - name: Full stack regression test suite
         env:
           AUSTRO_ENV: development
+          # The suite dials the same published Actions service ports, so the
+          # loopback endpoints below are declared rather than relied upon, as
+          # in the API and worker steps. Without this, every test that loads
+          # configuration from this environment is rejected for an undeclared
+          # loopback endpoint before it reaches the behaviour it exists to
+          # prove, and the failure reads as a missing setting.
+          AUSTRO_ALLOW_LOOPBACK: "1"
           AUSTRO_POSTGRES_DSN: postgres://austro:austro@127.0.0.1:5432/austro?sslmode=disable
           # The application runtime role. It is deliberately NOT the schema
           # owner above: PostgreSQL applies no row level security to a table's
