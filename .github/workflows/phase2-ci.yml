@@ -290,6 +290,12 @@ jobs:
         # Actions service ports.
         env:
           AUSTRO_ENV: development
+          # This step runs ./cmd/worker. AUSTRO_PROCESS_ROLE defaults to "api",
+          # and the worker entrypoint refuses a role it cannot honour rather
+          # than silently overriding it, so the unit has to declare what it is.
+          # The assertion stays intact: this is the workflow telling the truth
+          # about the process it starts, not the binary relaxing its check.
+          AUSTRO_PROCESS_ROLE: worker
           AUSTRO_ALLOW_LOOPBACK: "1"
           AUSTRO_SERVER_ADDR: ":8080"
           AUSTRO_POSTGRES_DSN: postgres://austro:austro@127.0.0.1:5432/austro?sslmode=disable
