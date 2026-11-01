@@ -221,11 +221,22 @@ func TestHealthChecks(t *testing.T) {
 	t.Cleanup(func() { respReady.Body.Close() })
 	require.Equal(t, http.StatusOK, respReady.StatusCode, "/health/ready must return 200")
 
+	// The readiness response is the typed probe whose wire contract is pinned
+	// by TestReadinessResponseShape in the repository root: "ready" is the
+	// leading boolean, and status/requires/companions accompany it. The whole
+	// body is not a map of booleans, so it must be decoded structurally.
 	readyBody, err := io.ReadAll(respReady.Body)
 	require.NoError(t, err)
-	var ready map[string]bool
+	var ready struct {
+		Ready  bool     `json:"ready"`
+		Status string   `json:"status"`
+		Reason string   `json:"reason"`
+		Req    []string `json:"requires"`
+	}
 	require.NoError(t, json.Unmarshal(readyBody, &ready))
-	require.True(t, ready["ready"], "/health/ready must report ready=true")
+	require.True(t, ready.Ready, "/health/ready must report ready=true")
+	require.Equal(t, "ok", ready.Status, "/health/ready must report status=ok")
+	require.NotNil(t, ready.Req, "/health/ready must always report its requires list")
 
 	// Liveness and readiness must be semantically distinct endpoints.
 	require.NotEqual(t, string(liveBody), string(readyBody),

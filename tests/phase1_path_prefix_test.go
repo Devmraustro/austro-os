@@ -37,7 +37,12 @@ const githubSkipSuffix = "/.github"
 // tests/phase1_exit_criteria_test.go:200 so it can be exercised against roots
 // the host platform would never produce.
 func isGitHubPath(root, path string) bool {
-	return strings.HasPrefix(filepath.ToSlash(path), filepath.ToSlash(root)+githubSkipSuffix)
+	// filepath.ToSlash is a no-op on Linux; it only converts backslashes on
+	// Windows. Normalize both root and path here so Windows-style paths are
+	// handled correctly on every platform.
+	nRoot := strings.ReplaceAll(root, `\`, `/`)
+	nPath := strings.ReplaceAll(path, `\`, `/`)
+	return strings.HasPrefix(filepath.ToSlash(nPath), nRoot+githubSkipSuffix)
 }
 
 func TestGitHubExclusionHandlesWindowsStyleRoot(t *testing.T) {
