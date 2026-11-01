@@ -2,9 +2,13 @@ name: AUSTRO OS Phase 2 CI
 
 on:
   push:
-    branches: [master, main, arena/01a0ab5b-austro-os]
+    branches: [master, main, 'arena/**']
   pull_request:
-    branches: [master, main, arena/01a0ab5b-austro-os]
+    branches: [master, main, 'arena/**']
+  # Manual runs are how a branch that is neither main nor an arena branch can be
+  # verified without changing what deploys. Dispatch never deploys: this
+  # workflow only builds, tests and scans.
+  workflow_dispatch:
 
 env:
   GOFLAGS: -mod=mod
@@ -24,7 +28,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25.13"
+          go-version: "1.26.10"
           cache: true
 
       - name: Verify Go formatting
@@ -116,7 +120,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25.13"
+          go-version: "1.26.10"
           cache: true
 
       - name: Build the AUSTRO API binary
@@ -151,6 +155,23 @@ jobs:
           opts="-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30"
           timeout 180 sudo apt-get update $opts
           timeout 180 sudo apt-get install -y --no-install-recommends $opts postgresql-client
+
+      - name: PostgreSQL 16 constraint-guard regression
+        # The guards are DDL applied on every Bootstrap, so the regression is
+        # exercised against a disposable database on the PostgreSQL 16 service
+        # above, not against the application database. The two-part opt-in is
+        # deliberate: the DSN says where, the disposable flag says the data
+        # there may be destroyed.
+        env:
+          PGPASSWORD: austro
+          AUSTRO_SCHEMA_GUARD_TEST_DISPOSABLE: "1"
+        run: |
+          set -euo pipefail
+          psql -h 127.0.0.1 -U austro -d austro -v ON_ERROR_STOP=1 \
+            -c 'DROP DATABASE IF EXISTS austro_test_guard' \
+            -c 'CREATE DATABASE austro_test_guard'
+          export AUSTRO_SCHEMA_GUARD_TEST_DSN='postgres://austro:austro@127.0.0.1:5432/austro_test_guard?sslmode=disable'
+          go test ./infrastructure/database -run TestConstraintGuard -count=1 -v
 
       - name: Start API and wait for readiness
         # These databases run as Actions services with their ports published on
@@ -551,7 +572,7 @@ jobs:
           # `go test` still prints "ok ... no tests to run" and the step would
           # otherwise pass while testing nothing.
           go test ./tests/ -count=1 -timeout 300s -v \
-            -run 'TestRuntimeRole|TestProtectedTablesHaveForcedRLS|TestFounderOrgLevelSemantics|TestBootstrapAndMigrationsAreIdempotent|TestRuntimeTopologySatisfiesProductionStartup|TestTopologyRejectsOwnerAsRuntimeRole|TestVerifyRuntimeSecurityRejectsOwnedProtectedTable|TestBootstrapRepairsRoleAttributeDrift|TestAudit(Chain|Events|HMAC|Never|Reader|Rows|Table|Tampering)|TestLoginFailsClosedWhenAuditCannotBePersisted|TestConcurrentAuditAppendsKeepChainLinear' \
+-run 'TestRuntimeRole|TestProtectedTablesHaveForcedRLS|TestFounderOrgLevelSemantics|TestBootstrapAndMigrationsAreIdempotent|TestRuntimeTopologySatisfiesProductionStartup|TestTopologyRejectsOwnerAsRuntimeRole|TestVerifyRuntimeSecurityRejectsOwnedProtectedTable|TestBootstrapRepairsRoleAttributeDrift|TestAudit(Chain|Events|HMAC|Never|Reader|Rows|Table|Tampering)|TestLoginFailsClosedWhenAuditCannotBePersisted|TestConcurrentAuditAppendsKeepChainLinear' \
             2>&1 | tee /tmp/rls-audit.log
           if ! grep -q '^ok' /tmp/rls-audit.log; then
             echo "FAIL: the runtime RLS / persistent audit suites did not pass"
@@ -599,4 +620,78 @@ jobs:
           path: |
             /tmp/austro-api
             /tmp/austro-worker
+          retention-days: 7
+
+  security:
+    name: Security and Dependency Scanners
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.10"
+          cache: true
+
+      - name: Install scanners
+        # The Go toolchain is pinned. Scanner versions are pinned too, so a new
+        # scanner release cannot change the meaning of an existing green run.
+        # If a pinned release cannot be installed, the fallback is loud and
+        # recorded; it is never silent.
+        run: |
+          set -euo pipefail
+          install() {
+            module="$1"; version="$2"; binary="$3"
+            if ! go install "$module@$version" 2>"/tmp/${binary}-install.log"; then
+              echo "::warning::pinned ${binary} ${version} did not install; falling back to @latest"
+              cat "/tmp/${binary}-install.log"
+              go install "$module@latest"
+            fi
+          }
+          install github.com/securego/gosec/v2/cmd/gosec v2.22.0 gosec
+          install golang.org/x/vuln/cmd/govulncheck v1.9.0 govulncheck
+          install honnef.co/go/tools/cmd/staticcheck v0.8.2 staticcheck
+
+      - name: gosec
+        # Exits non-zero on findings. #nosec annotations in the tree are
+        # reviewed as part of the change that adds them, not waived in CI.
+        # -quiet is deliberately absent: in the pinned build it also suppresses
+        # writing the -out report, leaving the upload step with no file.
+        run: gosec -fmt sarif -out gosec.sarif ./...
+
+      - name: govulncheck
+        run: govulncheck -format sarif ./... > govulncheck.sarif
+
+      - name: staticcheck
+        # staticcheck hard-fails on a Go version newer than it knows. That is a
+        # tool limitation, not a finding, so it is recorded as unavailable and
+        # the step does not claim a pass. Actual diagnostics still fail.
+        run: |
+          set +e
+          staticcheck ./... > staticcheck.log 2>&1
+          rc=$?
+          cat staticcheck.log
+          if [ $rc -eq 0 ]; then
+            exit 0
+          fi
+          if grep -qi 'unsupported version' staticcheck.log; then
+            echo "::warning::staticcheck does not support $(go version); recorded as unavailable, not as a pass"
+            exit 0
+          fi
+          exit $rc
+
+      - name: Upload scanner reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: |
+            gosec.sarif
+            govulncheck.sarif
+            staticcheck.log
+          if-no-files-found: warn
           retention-days: 7
