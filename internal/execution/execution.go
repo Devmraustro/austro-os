@@ -312,4 +312,3 @@ type FencedExecution struct {
 	Retryable       *bool
 	NextRetryAt     *time.Time
 }
-
