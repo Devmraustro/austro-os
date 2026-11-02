@@ -186,10 +186,7 @@ func isInfrastructureUnavailable(err error) bool {
 		return true
 	}
 	var opErr *net.OpError
-	if errors.As(err, &opErr) {
-		return true
-	}
-	return false
+	return errors.As(err, &opErr)
 }
 
 // requireLiveDependency applies the live policy to a failure that is not

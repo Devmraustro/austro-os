@@ -312,9 +312,3 @@ type FencedExecution struct {
 	Retryable       *bool
 	NextRetryAt     *time.Time
 }
-
-// ownerMatches is a domain-side guard used by the stores: a mutation may only
-// continue when the caller's worker identity equals the lease owner.
-func ownerMatches(exec *Execution, workerID string) bool {
-	return exec.LeaseOwner != nil && *exec.LeaseOwner == workerID
-}

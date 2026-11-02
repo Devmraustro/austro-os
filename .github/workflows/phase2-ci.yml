@@ -555,6 +555,10 @@ jobs:
         # suite output.
         env:
           AUSTRO_ENV: development
+          # This step uses loopback-published PostgreSQL service ports. The
+          # config loader rejects loopback DSNs unless this CI-only opt-in is
+          # explicit; keep it scoped to this test step.
+          AUSTRO_ALLOW_LOOPBACK: "1"
           AUSTRO_POSTGRES_DSN: postgres://austro:austro@127.0.0.1:5432/austro?sslmode=disable
           AUSTRO_POSTGRES_RUNTIME_DSN: postgres://austro_app:austro-runtime-pw@127.0.0.1:5432/austro?sslmode=disable
           AUSTRO_JWT_SECRET: austro-dev-jwt-secret-key-min-32-chars
@@ -572,7 +576,7 @@ jobs:
           # `go test` still prints "ok ... no tests to run" and the step would
           # otherwise pass while testing nothing.
           go test ./tests/ -count=1 -timeout 300s -v \
--run 'TestRuntimeRole|TestProtectedTablesHaveForcedRLS|TestFounderOrgLevelSemantics|TestBootstrapAndMigrationsAreIdempotent|TestRuntimeTopologySatisfiesProductionStartup|TestTopologyRejectsOwnerAsRuntimeRole|TestVerifyRuntimeSecurityRejectsOwnedProtectedTable|TestBootstrapRepairsRoleAttributeDrift|TestAudit(Chain|Events|HMAC|Never|Reader|Rows|Table|Tampering)|TestLoginFailsClosedWhenAuditCannotBePersisted|TestConcurrentAuditAppendsKeepChainLinear' \
+            -run 'TestRuntimeRole|TestProtectedTablesHaveForcedRLS|TestFounderOrgLevelSemantics|TestBootstrapAndMigrationsAreIdempotent|TestRuntimeTopologySatisfiesProductionStartup|TestTopologyRejectsOwnerAsRuntimeRole|TestVerifyRuntimeSecurityRejectsOwnedProtectedTable|TestBootstrapRepairsRoleAttributeDrift|TestAudit(Chain|Events|HMAC|Never|Reader|Rows|Table|Tampering)|TestLoginFailsClosedWhenAuditCannotBePersisted|TestConcurrentAuditAppendsKeepChainLinear' \
             2>&1 | tee /tmp/rls-audit.log
           if ! grep -q '^ok' /tmp/rls-audit.log; then
             echo "FAIL: the runtime RLS / persistent audit suites did not pass"

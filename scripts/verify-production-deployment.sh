@@ -180,7 +180,7 @@ assert_no_grep_i "no Kafka service in production compose" 'kafka' "$COMPOSE"
 printf '\n=== 4. Dockerfile hardening ===\n'
 # ---------------------------------------------------------------------------
 assert_grep "multi-stage build" '^FROM .+ AS builder' "$DOCKERFILE"
-assert_grep "builder image is pinned to the CI Go release" '^FROM golang:1\.25\.13-alpine AS builder' "$DOCKERFILE"
+assert_grep "builder image is pinned to the CI Go release" '^FROM golang:1\.26\.10-alpine AS builder' "$DOCKERFILE"
 assert_grep "runtime image is a minimal pinned Alpine" '^FROM alpine:3\.' "$DOCKERFILE"
 assert_grep "runtime runs as a non-root user" '^USER appuser' "$DOCKERFILE"
 assert_no_grep "runtime never switches back to root" '^USER root' "$DOCKERFILE"

@@ -75,7 +75,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25.13"
+          go-version: "1.26.10"
           cache: true
 
       - name: Set up Node.js
@@ -132,7 +132,8 @@ jobs:
             exit 1
           fi
 
-          nohup /tmp/austro-worker > /tmp/austro-worker.log 2>&1 &
+          # The API uses the default role; the worker must declare its own role explicitly.
+          AUSTRO_PROCESS_ROLE=worker AUSTRO_EXECUTION_DISPATCH_MODE=off nohup /tmp/austro-worker > /tmp/austro-worker.log 2>&1 &
           echo $! > /tmp/austro-worker.pid
           worker_ready=0
           for _ in $(seq 1 60); do

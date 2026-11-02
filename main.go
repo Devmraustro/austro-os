@@ -574,7 +574,12 @@ func newExecutionPublisher(cfg *config.Config) (execution.Publisher, func(), err
 		if err != nil {
 			return nil, nil, err
 		}
-		return rabbitmq.NewExecutionPublisher(execSink), func() { execSink.Close() }, nil
+		return rabbitmq.NewExecutionPublisher(execSink), func() {
+			if err := execSink.Close(); err != nil {
+				logger.NewEntry("execution-publisher-close-failed").
+					SetLevel("error").WithError(err).Log()
+			}
+		}, nil
 	default:
 		return nil, nil, fmt.Errorf("unknown execution transport backend %q", cfg.ExecutionTransportBackend)
 	}

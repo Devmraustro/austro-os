@@ -155,13 +155,6 @@ func TestVersionArgSpelling(t *testing.T) {
 // but what an operator gets from a file on a host. Only a real build can catch a
 // linker flag that does nothing.
 
-// releaseBuild describes one binary built with the release identity.
-type releaseBuild struct {
-	name   string
-	binary string
-	commit string
-}
-
 const releaseVersion = "1.0"
 
 // moduleRoot locates the module root from the test's own working directory, so
