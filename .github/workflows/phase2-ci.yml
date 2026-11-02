@@ -555,6 +555,10 @@ jobs:
         # suite output.
         env:
           AUSTRO_ENV: development
+          # This step uses loopback-published PostgreSQL service ports. The
+          # config loader rejects loopback DSNs unless this CI-only opt-in is
+          # explicit; keep it scoped to this test step.
+          AUSTRO_ALLOW_LOOPBACK: "1"
           AUSTRO_POSTGRES_DSN: postgres://austro:austro@127.0.0.1:5432/austro?sslmode=disable
           AUSTRO_POSTGRES_RUNTIME_DSN: postgres://austro_app:austro-runtime-pw@127.0.0.1:5432/austro?sslmode=disable
           AUSTRO_JWT_SECRET: austro-dev-jwt-secret-key-min-32-chars
