@@ -128,6 +128,8 @@ func cleanup(ctx context.Context, db *sql.DB, envFile string) {
 }
 
 func writeEnv(path string, values map[string]string) {
+	// path is supplied by the isolated CI job through RUNNER_TEMP.
+	// #nosec G304 -- this test helper writes only its caller-provided env file.
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		fatal("open browser E2E environment file", err)
@@ -149,6 +151,8 @@ func writeEnv(path string, values map[string]string) {
 }
 
 func readEnv(path string) map[string]string {
+	// path is supplied by the isolated CI job through RUNNER_TEMP.
+	// #nosec G304 -- this test helper reads only its caller-provided env file.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		fatal("read browser E2E environment file", err)
