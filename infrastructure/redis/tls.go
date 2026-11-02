@@ -33,6 +33,8 @@ func tlsConfigFor(host, caFile string) (*tls.Config, error) {
 	}
 
 	if caFile != "" {
+		// The path is explicit operator configuration for the trust bundle.
+		// #nosec G304 -- reading the configured CA file is the intended contract.
 		pem, err := os.ReadFile(caFile)
 		if err != nil {
 			return nil, fmt.Errorf("AUSTRO_REDIS_CA_FILE could not be read: %w", err)
