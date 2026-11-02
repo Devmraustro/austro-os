@@ -17,9 +17,9 @@
 # ---------------------------------------------------------------------------
 # Build stage
 # ---------------------------------------------------------------------------
-# Pinned to the same Go release the CI workflows pin (go-version 1.25.13), so a
+# Pinned to the same Go release the CI workflows pin (go-version 1.26.10), so a
 # binary built here is built by the same toolchain the test suite validated.
-FROM golang:1.25.13-alpine AS builder
+FROM golang:1.26.10-alpine AS builder
 
 # git is required for `go mod download` to resolve VCS-hosted modules.
 RUN apk add --no-cache git
