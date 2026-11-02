@@ -572,7 +572,7 @@ jobs:
           # `go test` still prints "ok ... no tests to run" and the step would
           # otherwise pass while testing nothing.
           go test ./tests/ -count=1 -timeout 300s -v \
--run 'TestRuntimeRole|TestProtectedTablesHaveForcedRLS|TestFounderOrgLevelSemantics|TestBootstrapAndMigrationsAreIdempotent|TestRuntimeTopologySatisfiesProductionStartup|TestTopologyRejectsOwnerAsRuntimeRole|TestVerifyRuntimeSecurityRejectsOwnedProtectedTable|TestBootstrapRepairsRoleAttributeDrift|TestAudit(Chain|Events|HMAC|Never|Reader|Rows|Table|Tampering)|TestLoginFailsClosedWhenAuditCannotBePersisted|TestConcurrentAuditAppendsKeepChainLinear' \
+            -run 'TestRuntimeRole|TestProtectedTablesHaveForcedRLS|TestFounderOrgLevelSemantics|TestBootstrapAndMigrationsAreIdempotent|TestRuntimeTopologySatisfiesProductionStartup|TestTopologyRejectsOwnerAsRuntimeRole|TestVerifyRuntimeSecurityRejectsOwnedProtectedTable|TestBootstrapRepairsRoleAttributeDrift|TestAudit(Chain|Events|HMAC|Never|Reader|Rows|Table|Tampering)|TestLoginFailsClosedWhenAuditCannotBePersisted|TestConcurrentAuditAppendsKeepChainLinear' \
             2>&1 | tee /tmp/rls-audit.log
           if ! grep -q '^ok' /tmp/rls-audit.log; then
             echo "FAIL: the runtime RLS / persistent audit suites did not pass"
