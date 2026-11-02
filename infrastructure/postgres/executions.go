@@ -79,6 +79,9 @@ func (s *ExecutionStore) AdmissionAdmit(ctx context.Context, req execution.Admit
 		return execution.AdmitResult{}, err
 	}
 
+	// PostgreSQL advisory locks accept signed bigint values. This conversion
+	// intentionally preserves the full 64-bit hash bit pattern.
+	// #nosec G115 -- the signed representation is required by pg_advisory_xact_lock.
 	if _, err := tx.ExecContext(ctx,
 		"SELECT pg_advisory_xact_lock($1)",
 		int64(admissionLockKey(req.WorkspaceID, req.AIEmployeeID))); err != nil {
