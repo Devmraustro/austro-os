@@ -132,7 +132,8 @@ jobs:
             exit 1
           fi
 
-          nohup /tmp/austro-worker > /tmp/austro-worker.log 2>&1 &
+          # The API uses the default role; the worker must declare its own role explicitly.
+          AUSTRO_PROCESS_ROLE=worker nohup /tmp/austro-worker > /tmp/austro-worker.log 2>&1 &
           echo $! > /tmp/austro-worker.pid
           worker_ready=0
           for _ in $(seq 1 60); do
